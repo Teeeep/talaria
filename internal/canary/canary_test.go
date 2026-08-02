@@ -540,17 +540,49 @@ func TestAMissingCredentialIsReportedWithoutAValue(t *testing.T) {
 // Redactor already claims: "a bearer token the user typed into --header is as
 // sensitive as one talaria resolved itself". The value's origin does not change
 // what it is.
+//
+// The --query case is here rather than in a test of its own because it is the
+// same claim about a different flag: §5a names query-string API keys as a
+// credential location, so `--query api_key=…` is covered by the built-in name
+// matcher exactly as `--header X-Api-Key: …` is.
 func TestAUserSuppliedHeaderIsRedactedLikeASpecCredential(t *testing.T) {
-	headers := []struct {
-		name   string
-		header func(value string) string
+	cases := []struct {
+		name string
+		flag string
+		// arg builds the flag's name=value argument around the canary.
+		arg func(value string) string
+		// sent returns what the server actually received under that name, so
+		// each case can prove the value still went out before asserting that
+		// no surface printed it.
+		sent func(name string, req recordedRequest) string
 	}{
-		{name: "authorization", header: func(v string) string { return "Authorization=Bearer " + v }},
-		{name: "api-key", header: func(v string) string { return "X-Api-Key=" + v }},
-		{name: "token", header: func(v string) string { return "X-Session-Token=" + v }},
+		{
+			name: "authorization",
+			flag: "--header",
+			arg:  func(v string) string { return "Authorization=Bearer " + v },
+			sent: func(name string, req recordedRequest) string { return req.Header.Get(name) },
+		},
+		{
+			name: "api-key",
+			flag: "--header",
+			arg:  func(v string) string { return "X-Api-Key=" + v },
+			sent: func(name string, req recordedRequest) string { return req.Header.Get(name) },
+		},
+		{
+			name: "token",
+			flag: "--header",
+			arg:  func(v string) string { return "X-Session-Token=" + v },
+			sent: func(name string, req recordedRequest) string { return req.Header.Get(name) },
+		},
+		{
+			name: "query-api-key",
+			flag: "--query",
+			arg:  func(v string) string { return "api_key=" + v },
+			sent: func(name string, req recordedRequest) string { return req.Query.Get(name) },
+		},
 	}
 
-	for _, tc := range headers {
+	for _, tc := range cases {
 		for _, format := range canary.Formats() {
 			t.Run(tc.name+"/"+format, func(t *testing.T) {
 				t.Parallel()
@@ -561,17 +593,18 @@ func TestAUserSuppliedHeaderIsRedactedLikeASpecCredential(t *testing.T) {
 
 				runs := []result{
 					h.runOK("call", specPath, "getPublic", "--base-url", srv.URL,
-						"--header", tc.header(value), "--output", format, "--dry-run"),
+						tc.flag, tc.arg(value), "--output", format, "--dry-run"),
 					h.runOK("call", specPath, "getPublic", "--base-url", srv.URL,
-						"--header", tc.header(value), "--output", format),
+						tc.flag, tc.arg(value), "--output", format),
 					h.runOK("history", "--output", format),
 					h.runOK("history", "show", "1", "--output", format),
 				}
 
 				// It still has to arrive: redaction is about what talaria prints,
 				// not about dropping what the user asked to send.
-				if got := srv.received().Header.Get(strings.SplitN(tc.header(value), "=", 2)[0]); !strings.Contains(got, value) {
-					t.Fatalf("the server never saw the --header value; the leak assertions below prove nothing")
+				name := strings.SplitN(tc.arg(value), "=", 2)[0]
+				if got := tc.sent(name, srv.received()); !strings.Contains(got, value) {
+					t.Fatalf("the server never saw the %s value; the leak assertions below prove nothing", tc.flag)
 				}
 
 				var surfaces []canary.Surface

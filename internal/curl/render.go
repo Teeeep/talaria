@@ -143,7 +143,12 @@ func urlWord(req *request.Request, render func(request.Value) string) *word {
 		}
 		w.literal(separator + url.QueryEscape(q.Name) + "=")
 
-		if q.Value.IsSecret() {
+		// Sensitive rather than secret: a literal hidden by name has no value to
+		// render here either, and percent-encoding its placeholder would print
+		// %3Credacted%3E where a reader expects <redacted>. Skipping the encode
+		// is safe because render is Symbolic or String — display forms, never a
+		// resolving renderer.
+		if q.Value.IsSensitive() {
 			w.credential(render(q.Value), q.Value)
 			continue
 		}

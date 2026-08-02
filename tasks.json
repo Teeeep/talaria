@@ -10,7 +10,7 @@
       "title": "Redact credentials passed in the query string",
       "line_start": 48,
       "line_end": 87,
-      "done": false
+      "done": true
     },
     {
       "id": 2,

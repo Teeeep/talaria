@@ -509,6 +509,63 @@ func TestBuildHidesALiteralUnderACredentialShapedHeaderName(t *testing.T) {
 	}
 }
 
+func TestBuildHidesALiteralUnderACredentialShapedQueryName(t *testing.T) {
+	in := inputs(t, "listPets")
+	in.Params = []string{"limit=10"}
+	in.Query = []string{"api_key=" + canary, "page=2"}
+
+	req := build(t, in)
+
+	// §5a names "query-string API keys (?api_key=)" as a credential location,
+	// so the built-in name matcher applies here exactly as it does to headers.
+	value := find(t, req.Query, "api_key")
+	if !value.IsSensitive() {
+		t.Error("--query api_key is not sensitive; a query-string API key is a credential (§5a)")
+	}
+	if got := value.String(); got != secret.Placeholder {
+		t.Errorf("api_key displays as %q, want %q", got, secret.Placeholder)
+	}
+	if got := value.Reveal(); got != canary {
+		t.Errorf("api_key no longer carries the value it will send: %q", got)
+	}
+
+	// By name, as everywhere else: an ordinary query parameter is untouched.
+	if got := find(t, req.Query, "page").String(); got != "2" {
+		t.Errorf("query page = %q, want 2", got)
+	}
+}
+
+// TestQueryStringEscapesAResolvedSensitiveLiteral pins the half of the fix that
+// is easy to lose: QueryString is shared with the wire path, so skipping the
+// percent-encoding is only ever safe for a placeholder, never for a value.
+func TestQueryStringEscapesAResolvedSensitiveLiteral(t *testing.T) {
+	req := Request{
+		BaseURL: "https://api.example.com",
+		Path:    "/pets",
+		Query:   []Pair{{Name: "api_key", Value: Literal("a b&c").Sensitive()}},
+	}
+
+	resolve := func(v Value) (string, error) { return v.Reveal(), nil }
+
+	got, err := req.QueryString(resolve)
+	if err != nil {
+		t.Fatalf("QueryString: %v", err)
+	}
+	if got != "api_key=a+b%26c" {
+		t.Errorf("QueryString(resolve) = %q, want the resolved value percent-encoded", got)
+	}
+
+	// The display form is the placeholder, and it is the one case that skips
+	// the escape so it stays readable.
+	got, err = req.QueryString(Redacted)
+	if err != nil {
+		t.Fatalf("QueryString(Redacted): %v", err)
+	}
+	if got != "api_key="+secret.Placeholder {
+		t.Errorf("QueryString(Redacted) = %q, want %q", got, "api_key="+secret.Placeholder)
+	}
+}
+
 func equal(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

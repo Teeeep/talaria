@@ -73,7 +73,11 @@ func Build(in Inputs) (*Request, error) {
 	bound := b.params()
 	req.Path = b.path(bound)
 
-	req.Query = append(b.located(bound, inQuery), b.pairs(in.Query, "--query")...)
+	// Query goes through hide for the same reason headers and cookies do: §5a
+	// names query-string API keys (`?api_key=`) as a credential location, and a
+	// value's origin — spec, profile, --param or --query — does not change what
+	// the name says it is.
+	req.Query = hide(append(b.located(bound, inQuery), b.pairs(in.Query, "--query")...))
 	req.Headers = hide(b.headers(bound))
 	req.Cookies = hide(b.located(bound, inCookie))
 	// After the headers, because the body's content type defers to a

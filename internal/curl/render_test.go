@@ -244,6 +244,45 @@ func TestURLShowsCredentialsRedacted(t *testing.T) {
 	assertNoCanary(t, got)
 }
 
+// hiddenQueryReq is a GET whose api_key is a literal the user typed, hidden by
+// name rather than resolved from a ref — the shape `--query api_key=…` builds.
+func hiddenQueryReq() *request.Request {
+	return &request.Request{
+		Method:  "GET",
+		BaseURL: "https://api.example.com",
+		Path:    "/pets",
+		Query: []request.Pair{
+			{Name: "q", Value: request.Literal("a b")},
+			{Name: "api_key", Value: request.Literal(canary).Sensitive()},
+		},
+	}
+}
+
+// TestRenderRedactsAHiddenLiteralQueryValue: a hidden literal has no symbolic
+// form, so it renders as the placeholder — and as the placeholder itself, not
+// percent-encoded into %3Credacted%3E. Both renderers here are display-only.
+func TestRenderRedactsAHiddenLiteralQueryValue(t *testing.T) {
+	got := Render(hiddenQueryReq())
+
+	if !strings.Contains(got, "?q=a+b&api_key=<redacted>") {
+		t.Errorf("Render() = %s\nwant it to contain ?q=a+b&api_key=<redacted>", got)
+	}
+	if strings.Contains(got, "%3Credacted%3E") {
+		t.Errorf("Render() percent-encoded the placeholder:\n%s", got)
+	}
+	assertNoCanary(t, got)
+}
+
+func TestURLRedactsAHiddenLiteralQueryValue(t *testing.T) {
+	got := URL(hiddenQueryReq())
+
+	const want = "https://api.example.com/pets?q=a+b&api_key=<redacted>"
+	if got != want {
+		t.Errorf("URL() = %q, want %q", got, want)
+	}
+	assertNoCanary(t, got)
+}
+
 func TestURLOmitsTheQuestionMarkWithNoQuery(t *testing.T) {
 	if got, want := URL(bearerReq()), "https://api.example.com/v1/pets/42"; got != want {
 		t.Errorf("URL() = %q, want %q", got, want)

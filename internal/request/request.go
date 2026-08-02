@@ -248,6 +248,17 @@ func (r Request) QueryString(render Render) (string, error) {
 		}
 		b.WriteString(url.QueryEscape(p.Name))
 		b.WriteByte('=')
+
+		// A placeholder is text to read, not bytes to send, so encoding it
+		// would only turn <redacted> into %3Credacted%3E. The test is what was
+		// rendered, not whether the value is sensitive: this function is shared
+		// with the wire path (internal/curl resolves through it), and skipping
+		// the escape for a resolved credential would put unescaped bytes in the
+		// request URL. Same comparison word.credential makes.
+		if p.Value.IsSensitive() && (value == p.Value.String() || value == p.Value.Symbolic()) {
+			b.WriteString(value)
+			continue
+		}
 		b.WriteString(url.QueryEscape(value))
 	}
 
