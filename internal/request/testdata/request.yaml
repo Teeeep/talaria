@@ -1,0 +1,75 @@
+openapi: 3.0.3
+info:
+  title: Request Fixture
+  version: 1.0.0
+servers:
+  - url: https://api.example.com/v1
+  - url: https://backup.example.com/v1
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    queryKey:
+      type: apiKey
+      in: query
+      name: api_key
+    cookieKey:
+      type: apiKey
+      in: cookie
+      name: session_id
+paths:
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      summary: Fetch one pet
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: verbose
+          in: query
+          schema:
+            type: boolean
+        - name: X-Trace
+          in: header
+          schema:
+            type: string
+        - name: flavour
+          in: cookie
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ok
+  /pets:
+    get:
+      operationId: listPets
+      parameters:
+        - name: limit
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: ok
+    post:
+      operationId: createPet
+      security:
+        - bearerAuth: []
+      responses:
+        '201':
+          description: created
+  /secured:
+    get:
+      operationId: getSecured
+      security:
+        - bearerAuth: []
+          queryKey: []
+          cookieKey: []
+      responses:
+        '200':
+          description: ok

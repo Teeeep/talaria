@@ -1,0 +1,330 @@
+package request
+
+import (
+	"net/url"
+	"sort"
+	"strings"
+
+	"github.com/Teeeep/talaria/internal/clierr"
+	"github.com/Teeeep/talaria/internal/config"
+	"github.com/Teeeep/talaria/internal/operation"
+	"github.com/Teeeep/talaria/internal/spec"
+)
+
+// Parameter locations. Three of them are also credential locations and are
+// aliased from internal/config so the two packages cannot drift; `path` is the
+// one place a credential never goes, which is why config does not name it.
+const (
+	inPath   = "path"
+	inQuery  = config.InQuery
+	inHeader = config.InHeader
+	inCookie = config.InCookie
+)
+
+// Inputs is everything one call needs: the operation and the document it came
+// from, the resolved profile and credentials, and the raw `name=value` flag
+// strings exactly as the CLI received them. Parsing them here rather than in
+// cmd/ keeps the binding rules — and their error messages — testable without a
+// command tree.
+type Inputs struct {
+	Op      operation.Operation
+	Doc     *spec.Document
+	Profile *config.Profile
+	// Creds are the credentials config.Resolve produced for Op. They name
+	// credentials; they never carry one.
+	Creds []config.Credential
+	// BaseURL is --base-url. It beats the profile, which beats the spec.
+	BaseURL string
+	// Params are --param name=value for parameters the operation declares, in
+	// any location.
+	Params []string
+	// Query are --query name=value, for query parameters the spec may not
+	// declare.
+	Query []string
+	// Headers are --header name=value.
+	Headers []string
+}
+
+// Build binds inputs to an operation and returns the request to make.
+//
+// Every binding problem is collected before returning rather than reported one
+// at a time: an agent that gets "petId is required; --header malformed" fixes
+// both in one round trip, where a fail-fast builder would cost it two.
+func Build(in Inputs) (*Request, error) {
+	b := &binder{in: in}
+
+	req := &Request{
+		OperationID: in.Op.ID,
+		Method:      in.Op.Method,
+		BaseURL:     b.baseURL(),
+	}
+
+	bound := b.params()
+	req.Path = b.path(bound)
+
+	req.Query = append(b.located(bound, inQuery), b.pairs(in.Query, "--query")...)
+	req.Headers = b.headers(bound)
+	req.Cookies = b.located(bound, inCookie)
+
+	b.credentials(req)
+
+	if err := b.err(); err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// binder accumulates the problems found while binding so they can all be
+// reported together.
+type binder struct {
+	in       Inputs
+	problems []string
+	// unknown records that some --param named a parameter the operation does
+	// not declare, so the error can carry the declared names as alternatives.
+	unknown bool
+}
+
+func (b *binder) fail(format string, a ...any) {
+	b.problems = append(b.problems, clierr.Usage(format, a...).Message)
+}
+
+// err folds the collected problems into one usage error, naming the operation
+// so the message stands alone in a log.
+func (b *binder) err() error {
+	if len(b.problems) == 0 {
+		return nil
+	}
+
+	err := clierr.Usage("cannot build a request for %s: %s",
+		operationName(b.in.Op), strings.Join(b.problems, "; "))
+	if b.unknown {
+		err = err.WithAlternatives(declaredNames(b.in.Op)...)
+	}
+
+	return err
+}
+
+// baseURL resolves where the request goes: --base-url, then the profile, then
+// the spec's first server (DESIGN.md §4). A spec whose server URL is relative
+// — common for specs that expect a host to be supplied — counts as no server.
+func (b *binder) baseURL() string {
+	candidates := []struct{ source, raw string }{
+		{"--base-url", b.in.BaseURL},
+	}
+	if b.in.Profile != nil {
+		candidates = append(candidates, struct{ source, raw string }{
+			"profile " + b.in.Profile.Name, b.in.Profile.BaseURL})
+	}
+	candidates = append(candidates, struct{ source, raw string }{"the spec's servers[0].url", firstServer(b.in.Doc)})
+
+	for _, c := range candidates {
+		if c.raw == "" {
+			continue
+		}
+
+		parsed, err := url.Parse(c.raw)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			b.fail("base URL %q from %s is not an absolute http(s) URL", c.raw, c.source)
+			return ""
+		}
+
+		return strings.TrimSuffix(c.raw, "/")
+	}
+
+	b.fail("no base URL: the spec declares no server, so pass --base-url or set one in a profile")
+
+	return ""
+}
+
+// firstServer returns the document's first server URL, or "" when it has none.
+func firstServer(doc *spec.Document) string {
+	if doc == nil || doc.Model == nil || len(doc.Model.Servers) == 0 || doc.Model.Servers[0] == nil {
+		return ""
+	}
+
+	return doc.Model.Servers[0].URL
+}
+
+// params parses --param flags against the parameters the operation declares,
+// keyed by the declared name so path substitution and location routing both
+// read from one place.
+func (b *binder) params() map[string]string {
+	declared := map[string]operation.Param{}
+	for _, p := range b.in.Op.Params {
+		declared[p.Name] = p
+	}
+
+	bound := map[string]string{}
+	for _, raw := range b.in.Params {
+		name, value, ok := strings.Cut(raw, "=")
+		if !ok || name == "" {
+			b.fail("--param %q is not name=value", raw)
+			continue
+		}
+
+		if _, ok := declared[name]; !ok {
+			b.unknown = true
+			b.fail("%s declares no parameter %q", operationName(b.in.Op), name)
+			continue
+		}
+
+		bound[name] = value
+	}
+
+	// Reported after parsing so a missing parameter and a misspelt one surface
+	// together rather than one run apart.
+	for _, p := range b.in.Op.Params {
+		if _, ok := bound[p.Name]; p.Required && !ok {
+			b.fail("--param %s is required (%s parameter)", p.Name, p.In)
+		}
+	}
+
+	return bound
+}
+
+// path substitutes the bound path parameters into the operation's template.
+//
+// Values are escaped with url.PathEscape, so a value containing / or ? stays
+// inside its own segment instead of rewriting the request's target — the same
+// reason SQL uses placeholders rather than string concatenation.
+func (b *binder) path(bound map[string]string) string {
+	path := b.in.Op.Path
+	for _, p := range b.in.Op.Params {
+		if p.In != inPath {
+			continue
+		}
+
+		value, ok := bound[p.Name]
+		if !ok {
+			continue
+		}
+
+		path = strings.ReplaceAll(path, "{"+p.Name+"}", url.PathEscape(value))
+	}
+
+	// A leftover placeholder means the spec templated a segment it never
+	// declared a parameter for; without this the request would go to a literal
+	// "/pets/{petId}".
+	if strings.ContainsAny(path, "{}") {
+		b.fail("path %q has a placeholder the operation declares no parameter for", b.in.Op.Path)
+	}
+
+	return path
+}
+
+// located returns the bound parameters that belong in one location, in the
+// order the spec declares them so the result is stable across runs.
+func (b *binder) located(bound map[string]string, in string) []Pair {
+	var out []Pair
+	for _, p := range b.in.Op.Params {
+		if p.In != in {
+			continue
+		}
+		if value, ok := bound[p.Name]; ok {
+			out = append(out, Pair{Name: p.Name, Value: Literal(value)})
+		}
+	}
+
+	return out
+}
+
+// headers merges the three sources of request headers. The profile is the least
+// specific and only contributes names nothing else supplied, so `--header
+// X-Env=explicit` overrides a profile's X-Env instead of sending both.
+func (b *binder) headers(bound map[string]string) []Pair {
+	out := append(b.located(bound, inHeader), b.pairs(b.in.Headers, "--header")...)
+
+	if b.in.Profile == nil {
+		return out
+	}
+
+	set := map[string]bool{}
+	for _, p := range out {
+		set[strings.ToLower(p.Name)] = true
+	}
+
+	names := make([]string, 0, len(b.in.Profile.Headers))
+	for name := range b.in.Profile.Headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if !set[strings.ToLower(name)] {
+			out = append(out, Pair{Name: name, Value: Literal(b.in.Profile.Headers[name])})
+		}
+	}
+
+	return out
+}
+
+// pairs parses repeatable name=value flags. Only the first = separates, because
+// header and query values legitimately contain more.
+func (b *binder) pairs(raws []string, flag string) []Pair {
+	out := make([]Pair, 0, len(raws))
+	for _, raw := range raws {
+		name, value, ok := strings.Cut(raw, "=")
+		if !ok || name == "" {
+			b.fail("%s %q is not name=value", flag, raw)
+			continue
+		}
+
+		out = append(out, Pair{Name: name, Value: Literal(value)})
+	}
+
+	return out
+}
+
+// credentials puts each resolved credential where its scheme says it goes, as a
+// reference. This is the §5a boundary: what lands on the request is the name of
+// a credential and how to encode it, never the credential.
+func (b *binder) credentials(req *Request) {
+	for _, cred := range b.in.Creds {
+		pair := Pair{Name: cred.Name, Value: Secret(cred.Ref, encodingFor(cred.Kind))}
+
+		switch cred.In {
+		case inHeader:
+			req.Headers = append(req.Headers, pair)
+		case inQuery:
+			req.Query = append(req.Query, pair)
+		case inCookie:
+			req.Cookies = append(req.Cookies, pair)
+		default:
+			b.fail("scheme %q wants its credential in %q, which is not a place a request has",
+				cred.Scheme, cred.In)
+		}
+	}
+}
+
+func encodingFor(kind config.Kind) Encoding {
+	switch kind {
+	case config.KindBearer:
+		return EncodeBearer
+	case config.KindBasic:
+		return EncodeBasic
+	default:
+		return EncodeRaw
+	}
+}
+
+// declaredNames lists the parameters the operation accepts, for the
+// valid_alternatives an agent corrects itself from.
+func declaredNames(op operation.Operation) []string {
+	names := make([]string, 0, len(op.Params))
+	for _, p := range op.Params {
+		names = append(names, p.Name)
+	}
+
+	return names
+}
+
+// operationName is the operation's ID, falling back to method and path for a
+// spec that sets no operationId.
+func operationName(op operation.Operation) string {
+	if op.ID != "" {
+		return op.ID
+	}
+
+	return op.Method + " " + op.Path
+}
