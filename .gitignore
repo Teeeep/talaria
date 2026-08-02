@@ -1,6 +1,6 @@
 # Binaries
-/any-api
-/anyapi
+/talaria
+
 /dist/
 *.exe
 *.test

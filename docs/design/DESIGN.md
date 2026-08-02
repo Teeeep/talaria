@@ -1,154 +1,176 @@
-# apitest — Design Document
+# talaria — Design Document
 
-*Status: draft v0.2 · revised 2026-08-02 after [research pass](../research/2026-08-02-design-review.md) · pre-implementation*
+*Status: draft v0.3 · repositioned 2026-08-02 · pre-implementation*
 
-> Working name `apitest` throughout; **rename pending** — see §8. The v0.1 name candidates
-> were unresearched; §8 now carries collision evidence.
+> **Name resolved: `talaria`** — the winged sandals of Hermes. The tool is not the messenger;
+> the agent is. This is what it wears to move fast. Fixes `cmd/talaria`, the binary on `$PATH`,
+> `TALARIA_AUTH_*` env vars, and the `"schema": "talaria/v1"` output field.
 
-**Changes from v0.1:** Swagger 2.0 handling rebuilt around `openapi2conv` (libopenapi cannot
-do it); stdin ownership resolved (§5a); validator open question closed; Code Mode added to the
-landscape; Restish claims corrected; `search`/`uses` added to Phase 1; twin claims made honest;
-roadmap re-cut so the differentiated work ships first.
+**Changes from v0.2:** repositioned around a single idea — *an API client you can hand to an
+agent*. The credential firewall moves from a design principle to the product's reason to exist
+(§1, §2, §5a). Postman / Insomnia / Bruno enter the landscape as the actual incumbents (§2).
+`history` added, unifying "what did I call" with the twin's corpus (§4, §5, §7). Name settled.
+
+---
 
 ## 1. Vision
 
-A single Go binary that turns any OpenAPI/Swagger spec into three things:
+**Postman and Insomnia for agents.**
 
-1. **An explorable API client** — list, describe, and call operations, with curl under the hood.
-2. **A spec-driven tester** — validate real responses against the contract, smoke-test whole APIs.
+Point it at any API's OpenAPI/Swagger doc and an agent can explore, call, and test that API —
+**without ever being given your credentials.**
+
+That second clause is the product. Every existing API client — Postman, Insomnia, Bruno, curl
+itself — assumes the operator is a human who is entitled to see their own secrets. Hand an
+agent a Postman collection with an environment, or a `.bru` file, or a shell with
+`$STRIPE_KEY` exported, and the agent has your key. It is in the context window, in the
+transcript, in the logs, and on whatever server processed the request.
+
+This tool is the trust boundary. The agent operates on credential *names*; the binary resolves
+*values* at the last possible moment and never emits them. See §5a — it is the core of the
+design, not a hardening pass.
+
+Three capabilities, from one spec, in one binary:
+
+1. **An explorable API client** — list, describe, search, and call operations, curl underneath.
+2. **A spec-driven tester** — validate real responses against the contract; smoke-test whole APIs.
 3. **A digital twin** — a local server that mimics the real API for safe, fast, offline testing.
 
-Built **CLI-first for both humans and coding agents**. No MCP server, no context bloat:
-agents discover the API progressively (`list` → `describe` → `call`), paying token cost
-only for what they need. Every request is reproducible as a plain curl command.
+**One-line pitch:** *Postman for agents. Point it at any API doc; your agent works the API
+and never sees your credentials.*
 
-**One-line pitch:** *curl for OpenAPI — explore, test, and twin any API from its spec.
-One binary, agent-first, no MCP required.*
+### Why an agent needs a different client
+
+Postman's value to a human is persistence and organisation: saved requests, curated
+collections, shared workspaces. An agent needs none of that — it re-derives what it needs from
+the spec on every run. What an agent needs instead, and what no existing client provides:
+
+| Agent need | Why existing clients fail it |
+|---|---|
+| **Never see credentials** | Every client assumes a human operator who owns the secrets |
+| **Progressive discovery** | A collection or spec must be loaded whole; a 2MB `swagger.json` is a context bomb |
+| **No setup step** | Collections must be built and maintained before they are useful |
+| **Deterministic, parseable results** | GUI-first tools bolt on CLI runners as an afterthought |
+| **Safety rails in the tool, not the prompt** | Nothing stops a collection runner from issuing `DELETE /users` |
 
 ## 2. Why build this (landscape)
 
-The space splits into five camps; none occupies the intersection this tool targets.
+### The incumbents under this framing
 
-| Camp | Examples | What they do | What they lack |
-|---|---|---|---|
-| curl generators | curlgenerator, Swama | Spec → printed curl commands | No execution, validation, or testing |
-| Spec-aware CLI clients | **Restish** (closest competitor, Go) | Operations as CLI commands, auth/profiles, OAuth | **No response validation** (see below); own HTTP stack, not curl; no twin |
-| Spec exploration for LLMs | **phyllotaxis** (Rust) | Progressive-disclosure spec browsing: list, inspect, search, reverse lookup | Read-only — no execution, validation, testing, or mocking |
-| Spec-based testers | **Schemathesis**, Dredd | Property-based/contract testing in CI, JUnit output, exit codes | Heavyweight CI tools, not interactive exploration; Python/Node runtimes |
-| OpenAPI→MCP bridges | FastMCP, AWS openapi-mcp-server, Speakeasy, Stainless | Expose spec operations as MCP tools | Context bloat (see below); running server per API |
-| **Code execution / Code Mode** | Cloudflare Code Mode, Agentgateway, Anthropic's code-execution pattern | Generate a typed SDK on a filesystem; agent reads files on demand and writes code against it | Requires a code sandbox; no response-vs-spec validation; no twin; no artifact a human can paste into a terminal |
-| Mock servers | Prism, **Specmatic**, Microcks, **WireMock**, Mockoon | Mock server from spec; Specmatic and WireMock also record real traffic; WireMock is stateful | Standalone tools, no integrated exploration/testing CLI; no agent ergonomics |
+| Tool | What it is | Why it does not serve an agent |
+|---|---|---|
+| **Postman** | The category default. GUI-first, cloud workspaces, `newman` CLI runner | Collection-centric; agent sees environment secrets; newman is a separate npm package on its own release cadence |
+| **Insomnia** | GUI client with `inso` CLI, git-native storage | Same credential exposure; CLI is secondary to the GUI |
+| **Bruno** | **The one that matters.** Git-native, offline-only, collections as plain `.bru` files, no account, has a CLI runner. **Crossed 44,000 GitHub stars in May 2026**, growth accelerated by Postman's March 2026 free-plan cut | Closest in spirit — local, plain-text, scriptable — but still collection-centric, and its `.bru` environments hand secrets straight to whoever runs them |
+| **Hurl** | Plain-text `.hurl` files, assertions, git-native, CI-focused | A test runner, not an explorer; no spec awareness; secrets are plain in files or env |
+| **Apidog** | Commercial all-in-one; **its CLI already emits structured JSON with `agentHints.nextSteps`** | Someone is already aiming at agent-readable output — but the credential model is unchanged |
+
+**Two things separate this tool from all of them:**
+
+1. **Spec-centric, not collection-centric.** They make you build and maintain a collection,
+   which then drifts from the API. Here the OpenAPI doc *is* the collection. Nothing to curate,
+   nothing to drift, and it works against an API the agent has never seen before — no setup step.
+2. **The credential firewall.** They are built for a human who is entitled to the secrets.
+   This is built for an operator who is not.
+
+### The adjacent camps
+
+| Camp | Examples | What they lack |
+|---|---|---|
+| Spec-aware CLI clients | **Restish** (Go, 1,348★, active) | No response validation — `--rsh-validate` is opt-in and covers *outbound JSON request bodies only*; it explicitly "trusts explicit input and lets the server validate API semantics." No twin. No credential firewall. Its v2 is adding **MCP-ready extension points** — moving toward MCP as this moves away |
+| Spec exploration for LLMs | **phyllotaxis** (Rust) | Read-only: no execution, validation, testing, or mocking. Overlaps Phase 1 only |
+| Spec-based testers | **Schemathesis**, Dredd | CI tools, not interactive exploration; Python/Node runtimes |
+| OpenAPI→MCP bridges | FastMCP, AWS openapi-mcp-server, Speakeasy, Stainless | Context bloat (below); a running server per API |
+| **Code execution / Code Mode** | Cloudflare Code Mode, Agentgateway, Anthropic's code-execution pattern | The most serious architectural rival. Requires a code sandbox; no response-vs-spec validation; no twin; leaves no artifact a human can paste into a terminal |
+| Mock servers | Prism, **Specmatic**, Microcks, **WireMock**, Mockoon | Standalone; no integrated exploration/testing CLI; no agent ergonomics |
+| curl generators | curlgenerator, Swama | No execution, validation, or testing |
 
 ### The token problem is real and now mainstream
 
-This design's founding bet — that dumping an API into an agent's context is the wrong
-architecture — is no longer contrarian:
-
-- **Cloudflare's API has 2,500+ endpoints.** As an MCP server that is **1.17M+ tokens**;
-  their Code Mode (Feb 2026) exposes the same API in ~1,000 tokens via two tools.
-- **Anthropic's code-execution pattern** measured 150,000 → 2,000 tokens on one workflow,
-  a 98.7% reduction.
-- **Perplexity's CTO** announced an internal shift away from MCP over context waste and
-  auth friction.
+- **Cloudflare's API has 2,500+ endpoints.** As an MCP server that is **1.17M+ tokens**; their
+  Code Mode (Feb 2026) exposes the same API in ~1,000 tokens via two tools.
+- **Anthropic's code-execution pattern** measured 150,000 → 2,000 tokens on one workflow — 98.7%.
+- **Perplexity's CTO** announced an internal shift away from MCP over context waste and auth friction.
 
 **Counterweight, stated honestly:** MCP has crossed 8M server downloads and 97M monthly SDK
-downloads, with Google, OpenAI, and Microsoft shipping it in flagship products. "Not an MCP
-server, ever" (§9) is a product *stance*, not a prediction that MCP will lose.
-
-### The wedge
-
-The CLI-first agent ecosystem (pi, Claude Code skills) favours *CLI tools with README files* —
-progressive disclosure, composability, token efficiency. An agent facing an API today either
-reads a 2MB `swagger.json` into context, hand-writes curl and gets params wrong, or spins up an
-MCP server per API.
-
-The differentiation is **the integrated loop** — explore, test, and twin from one spec with one
-binary — which today requires Restish + Schemathesis + Prism + glue.
+downloads, with Google, OpenAI and Microsoft shipping it. "Not an MCP server, ever" (§9) is a
+product *stance*, not a prediction that MCP loses.
 
 ### Honest competitive assessment
 
-- **Restish is the closest competitor and it is moving.** 1,348 stars, actively developed, with
-  a v2 in flight. Its `--rsh-validate` flag validates **outbound JSON request bodies only, and
-  only when opted into**; it explicitly "trusts explicit input and lets the server validate API
-  semantics." So response-vs-spec validation is genuinely absent — but do not claim Restish has
-  no validation at all. Notably, Restish v2 is adding **MCP-ready extension points**: it is
-  moving *toward* MCP while this design moves away. That directional contrast is the cleanest
-  differentiation, more durable than any feature gap.
-- **phyllotaxis proves the exploration idea by independent invention** (Rust, small, read-only).
-  It overlaps Phase 1 and nothing beyond it. Two of its commands are worth adopting (§4).
-- **The twin's mechanism is not novel.** Specmatic already records real traffic through a proxy
-  and generates spec-validated mocks. WireMock has record & playback *and* stateful
-  create-then-fetch behaviour. Microcks has the most momentum among spec-driven open-source
-  mockers. Replay and statefulness are **table stakes**, not a moat — see §6 for what actually
-  differentiates.
-- **Code Mode is the most serious architectural rival**, backed by Cloudflare and Anthropic
-  rather than hobbyists. It solves the same token problem with a different answer. The honest
-  edge: Code Mode needs a code sandbox and leaves behind nothing a human can paste into a
-  terminal; this tool needs only a shell and emits a curl command every time. And Code Mode has
-  no equivalent of the twin.
+- **Bruno is the incumbent to beat on developer sentiment**, and it is winning that market on
+  git-nativeness and price, not on agent ergonomics. It is not trying to solve the credential
+  problem. That is the opening.
+- **Restish is the closest technical competitor** and it is actively developed. Do not claim it
+  has no validation; claim it has no *response* validation, no twin, and no credential firewall.
+- **phyllotaxis proves the exploration idea by independent invention** — read-only, small, and
+  worth reading before designing `describe` (§8).
+- **The twin's mechanism is not novel.** Specmatic already records real traffic into
+  spec-validated mocks; WireMock has record & playback plus stateful create-then-fetch.
+  Replay and statefulness are **table stakes** — see §6 for what actually differentiates.
+- **Code Mode is the most serious architectural rival**, backed by Cloudflare and Anthropic.
+  The honest edge: it needs a code sandbox and produces nothing a human can paste into a
+  terminal; this needs only a shell and emits a curl command every time.
 
 Primary motivation remains: a tool for my own workflow. Open source is upside.
 
 ## 3. Design principles
 
 0. **Secrets never reach the agent. Priority one, non-negotiable.**
-   The binary is the trust boundary: the agent operates entirely on credential *names*
-   (env vars, profile names); credential *values* are injected by the tool at the last
-   possible moment and never appear on stdout, stderr, in dry-runs, in emitted curl
-   commands, in error messages, or in recordings. See §5a for the full threat model.
-   Any feature that would print a secret is a bug, even if the user asked for it —
-   there is no `--show-secrets` flag.
+   This is §1 — the reason the tool exists — not a hardening measure. The binary is the trust
+   boundary: the agent operates entirely on credential *names* (env vars, profile names);
+   credential *values* are injected at the last possible moment and never appear on stdout,
+   stderr, in dry-runs, in emitted curl commands, in error messages, in history, or in
+   recordings. See §5a for the threat model. Any feature that would print a secret is a bug,
+   even if the user asked for it — **there is no `--show-secrets` flag.**
 
 1. **Agent-friendly = good CLI design, enforced strictly.**
    - Machine-readable output everywhere: `--output json` on every command.
      Default: pretty when stdout is a TTY, JSON when piped.
-   - Deterministic exit codes (see §4). Agents branch on these.
-   - Never prompt. Never page. No interactivity, ever. Dangerous behavior is gated
-     by flags set deliberately by a human, not confirmations.
+   - Deterministic exit codes (§4). Agents branch on these.
+   - Never prompt. Never page. No interactivity, ever. Dangerous behaviour is gated by flags
+     set deliberately by a human, not by confirmations an agent can answer itself.
    - Errors to stderr as structured JSON: what failed, why, valid alternatives.
-   - Versioned output schema (`"schema": "apitest/v1"` field) so agent prompts don't break.
+   - Versioned output schema (`"schema": "talaria/v1"`) so agent prompts don't break.
 
 2. **Progressive disclosure is the product.** `list` is one compact line per operation;
-   `describe` renders schemas in a terse readable form (Restish-style
-   `name*: (string) description`), never raw JSON Schema dumps. The whole point is that
-   neither human nor agent ever loads the raw spec into their head/context.
+   `describe` renders schemas in a terse readable form (`name*: (string) description`), never
+   raw JSON Schema dumps. Neither human nor agent ever loads the raw spec into context.
 
-3. **curl is the execution engine and the lingua franca.** Build argv slices via
-   `os/exec` (never shell strings — no quoting hell, no injection). `--dry-run` prints
-   the exact curl command. Every executed call returns its curl equivalent in the JSON
-   output: a portable, copy-pasteable reproduction for bug reports, docs, and scripts.
-   **Emitted curl commands always reference secrets symbolically** — e.g.
-   `-H "Authorization: Bearer $APITEST_AUTH_BEARER"` — so they remain runnable in a
-   shell where the env var is set, but never contain credential values (§5a).
-   Inherit curl's maturity for TLS, proxies, HTTP versions.
-   **Check curl's version, not just its presence, at startup:** `--write-out '%{json}'`
-   requires curl ≥ 7.70 and is a hard floor.
+3. **No collection to maintain.** The spec is the collection. There is no import step, no
+   curation, no drift. A spec URL and a credential name is the entire setup.
 
-4. **Safe by default.** Read-only (GET/HEAD/OPTIONS) unless `--allow-mutations`.
-   The sanctioned answer to "I need to test a DELETE" is: do it on the twin.
-   Recordings redact secrets by default.
+4. **curl is the execution engine and the lingua franca.** Build argv via `os/exec` (never
+   shell strings — no quoting hell, no injection). `--dry-run` prints the exact curl command.
+   Every executed call returns its curl equivalent: a portable reproduction for bug reports,
+   docs, and scripts. **Emitted curl always references secrets symbolically** — e.g.
+   `-H "Authorization: Bearer $TALARIA_AUTH_BEARER"` — runnable in a shell where the env var is
+   set, useless to exfiltrate (§5a). **Check curl's version, not just presence:**
+   `--write-out '%{json}'` requires curl ≥ 7.70 and is a hard floor.
 
-5. **Composability over features.** Plain JSON to stdout for jq; no built-in query
-   language in v1. Spec location via arg, `--spec`, or `APITEST_SPEC` env var so agents
-   don't repeat it every call. **The process owns its own stdin** (§5a) — `--body -`
-   works, and never competes with how secrets reach curl.
+5. **Safe by default.** Read-only (GET/HEAD/OPTIONS) unless `--allow-mutations`. The sanctioned
+   answer to "I need to test a DELETE" is: do it on the twin. Recordings redact by default.
 
-6. **The agent README is a first-class deliverable.** An operating manual written for
-   LLMs: the list→describe→dry-run→call workflow, exit code semantics, output shapes,
-   auth env vars. Ships as `AGENT.md` in the repo; doubles as a pi skill and a Claude
-   Code SKILL.md wrapping the same binary. Treat it with the same care as code.
+6. **Composability over features.** Plain JSON to stdout for jq; no built-in query language in
+   v1. Spec via arg, `--spec`, or env var. **The process owns its own stdin** (§5a) — `--body -`
+   works and never competes with how secrets reach curl.
+
+7. **The agent README is a first-class deliverable.** An operating manual written for LLMs: the
+   list→describe→dry-run→call workflow, exit codes, output shapes, and — most importantly — how
+   to name a credential you cannot see. Ships as `AGENT.md`; doubles as a pi skill and a Claude
+   Code skill wrapping the same binary. Treat it with the same care as code.
 
 ## 4. CLI surface
 
 ```
 # Discovery (cheap, no network beyond fetching the spec)
-apitest list [spec] [--tag t] [--output json|pretty|tsv]
-apitest describe [spec] <operationId> [--output json|pretty]
-apitest search [spec] <query> [--kind operation|schema|param]   # fuzzy find across the spec
-apitest uses [spec] <schemaName>                                # reverse lookup: which operations use it
+talaria list [spec] [--tag t] [--output json|pretty|tsv]
+talaria describe [spec] <operationId> [--output json|pretty]
+talaria search [spec] <query> [--kind operation|schema|param]   # fuzzy find across the spec
+talaria uses [spec] <schemaName>                                # reverse lookup: which operations use it
 
 # Calling
-apitest call [spec] <operationId>
+talaria call [spec] <operationId>
     --param id=42                 # path params
     --query verbose=true          # query params (repeatable)
     --header X-Foo=bar            # extra headers (repeatable)
@@ -159,42 +181,54 @@ apitest call [spec] <operationId>
     --allow-mutations             # required for POST/PUT/PATCH/DELETE
     --output json|pretty
 
+# History — what did I call, what came back
+talaria history [--operation id] [--since 1h] [--status 4xx] [--output json]
+talaria history show <n>           # full request/response, redacted
+talaria history replay <n>         # re-issue a past call
+
 # Smoke testing
-apitest run [spec] [--tag t] [--operation id ...]
+talaria run [spec] [--tag t] [--operation id ...]
     --base-url ... --profile ...
     --allow-mutations
     --report json|junit|pretty
     --fail-on-error               # nonzero exit if any HTTP >= 400
 
 # Digital twin (later phases)
-apitest twin serve [spec] --port 9000 [--corpus ./twin-data] [--stateful]
-apitest twin record [spec] --upstream https://api.real.com --port 9000 --corpus ./twin-data
-apitest twin fault <operationId> --status 429 --rate 0.1 [--header Retry-After=30]
+talaria twin serve [spec] --port 9000 [--corpus ./twin-data] [--stateful]
+talaria twin record [spec] --upstream https://api.real.com --port 9000 --corpus ./twin-data
+talaria twin fault <operationId> --status 429 --rate 0.1 [--header Retry-After=30]
 
 # Meta
-apitest auth check [spec] [--profile p]   # verify credentials are PRESENT for the spec's
-                                          # security schemes without printing values:
-                                          # {"scheme":"bearerAuth","source":"env:APITEST_AUTH_BEARER","present":true}
-apitest version
+talaria auth check [spec] [--profile p]   # are credentials PRESENT for the spec's security
+                                         # schemes? never prints values:
+                                         # {"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","present":true}
+talaria version
 ```
 
-`search` and `uses` are adopted from phyllotaxis's command set. They matter because an agent
-often knows a *domain concept* ("something about invoices") or a *data model* ("what touches
-the `Invoice` schema?") rather than an operationId, and `list` on a large spec is exactly the
-context dump this tool exists to avoid.
+**`search` and `uses`** are adopted from phyllotaxis. They matter because an agent usually knows
+a *domain concept* ("something about invoices") or a *data model* ("what touches `Invoice`?")
+rather than an operationId — and `list` on a large spec is the context dump this tool exists to
+avoid.
 
-Spec argument accepts a file path or URL (with local cache for URLs); falls back to
-`APITEST_SPEC`. Supports Swagger 2.0 and OpenAPI 3.0/3.1/3.2, JSON and YAML (§5).
+**`history` is new in v0.3**, and it is the one genuine feature the Postman framing adds. It
+answers "what have I already tried and what came back", which is the question an agent asks
+constantly and currently cannot. It costs little because **history and the twin's corpus are the
+same data** — every call already produces a redacted request/response pair. Local history is the
+seed; the recording proxy (Phase 5) is the industrial version. `history replay` also gives the
+useful half of request chaining without the scenario DSL (§8).
+
+Spec argument accepts a file path or URL (with local cache); falls back to an env var.
+Supports Swagger 2.0 and OpenAPI 3.0/3.1/3.2, JSON and YAML (§5).
 
 ### Output shape for `call` (sketch)
 
 ```json
 {
-  "schema": "apitest/v1",
+  "schema": "talaria/v1",
   "request": {
-    "curl": "curl -s -H \"Authorization: Bearer $APITEST_AUTH_BEARER\" 'https://…'",
+    "curl": "curl -s -H \"Authorization: Bearer $TALARIA_AUTH_BEARER\" 'https://…'",
     "method": "GET", "url": "…",
-    "headers": { "Authorization": "<redacted:env:APITEST_AUTH_BEARER>" }
+    "headers": { "Authorization": "<redacted:env:TALARIA_AUTH_BEARER>" }
   },
   "response": { "status": 200, "headers": {}, "body": {}, "timing_ms": 143 },
   "validation": { "status_documented": true, "body_valid": true, "errors": [] }
@@ -205,33 +239,37 @@ Spec argument accepts a file path or URL (with local cache for URLs); falls back
 
 | Code | Meaning |
 |---|---|
-| 0 | Success (note: HTTP 4xx/5xx is exit 0 for `call` — a 404 is a successful *observation* in exploration; use `--fail-on-error` to change) |
+| 0 | Success (HTTP 4xx/5xx is exit 0 for `call` — a 404 is a successful *observation*; use `--fail-on-error` to change) |
 | 1 | Request could not be completed (network, curl failure) |
 | 2 | Usage error (unknown operation, missing required param — stderr JSON lists valid options) |
 | 3 | Spec parse/load error |
 | 4 | Validation failure (response violates spec) — only with `--fail-on-error` / `run` |
+| 5 | Credential missing for a required security scheme (distinct from usage error so agents can act on it: *ask the human to set `$NAME`*) |
 
 ## 5. Architecture
 
 ```
-cmd/apitest/main.go        # cobra wiring
+cmd/talaria/main.go         # cobra wiring
 internal/spec/             # load (file/URL/cache), v2→v3 convert, normalize
 internal/operation/        # THE core model: id, method, path, params, body schema,
                            #   auth requirements, response contracts
-internal/curl/             # argv + config builder, executor (os/exec, --write-out json)
+internal/secret/           # SecretRef, resolution, redaction  ← the trust boundary
+internal/curl/             # argv + config-document builder, executor (os/exec)
 internal/validate/         # request & response vs schema  ← shared with twin
 internal/gen/              # example/schema-based data generation ← shared with twin
-internal/corpus/           # recordings: store, redact, index, generalize ← twin spine
+internal/corpus/           # history + recordings: store, redact, index, generalize
 internal/twin/             # http server: replay, fallback gen, state, faults
 internal/output/           # json / pretty / tsv renderers, versioned schemas
 internal/config/           # profiles, env vars, auth mapping
 ```
 
 Key boundary rules:
-- `operation`, `validate`, `gen` are consumed by **both** the curl executor path and the
-  twin server path. Nothing in them may import `curl` or `twin`.
-- `corpus` is defined early (even though implemented later) so recording hooks in
-  the executor don't require re-architecture.
+- `operation`, `validate`, `gen` are consumed by **both** the curl executor and the twin server.
+  Nothing in them may import `curl` or `twin`.
+- `secret` is imported by nearly everything but **resolves** values for exactly one caller:
+  the `curl` executor at exec time (§5a).
+- `corpus` backs both `history` and the twin, so it is defined in Phase 2 even though the
+  recording proxy lands in Phase 5.
 - Twin's serve side uses `net/http` directly — curl is only for outbound calls.
 
 ### Library choices
@@ -241,229 +279,226 @@ Key boundary rules:
 - **OpenAPI 3.x:** `pb33f/libopenapi` — a 3.2/3.1/3.0 + Overlays + Arazzo toolkit, actively
   developed, and what Restish migrated to.
 - **Swagger 2.0:** `getkin/kin-openapi`'s **`openapi2conv`**, used *only* to convert 2.0 → 3.x
-  at load time. **This is a correction to v0.1**, which assumed libopenapi could do the
-  conversion. It cannot: libopenapi's v2 model is explicitly unmaintained, slated for removal,
-  and its authors say "**DO NOT** take a dependency on it" and "we don't recommend using
-  it… it's a commercial product."
-  Accepting two OpenAPI dependencies is the cost of the "any API" promise — a large share of
-  real-world specs are still 2.0. The conversion runs once at load, so everything downstream
-  still sees exactly one model and the boundary rules above are unaffected.
-  **Phase 1 must verify conversion fidelity against real 2.0 specs**, not just synthetic ones.
-- **Schema & message validation:** `pb33f/libopenapi-validator`. **This closes v0.1's open
-  question.** It validates `http.Request` *and* `http.Response` against a 3.x spec and ships a
-  standalone OpenAPI router with auth callbacks and replayable bodies — which is most of what
-  the twin needs in Phase 5, from the same spec model the CLI already holds. Watch one
-  behaviour: it defaults to OpenAPI 3.1+ strict JSON Schema semantics, which can be stricter
-  than a 3.0 spec intends; verify against 3.0 specs early and configure down if needed.
-- **Execution:** system curl via `os/exec`. Not a Go HTTP client — the curl command *is*
-  a feature (transparency, reproducibility).
+  at load time. libopenapi cannot do this: its v2 model is unmaintained, slated for removal,
+  and its authors say "**DO NOT** take a dependency on it" and "we don't recommend using it…
+  it's a commercial product." Two OpenAPI dependencies is the cost of the "any API doc"
+  promise — much of the real world is still 2.0. Conversion runs once at load, so everything
+  downstream sees one model. **Phase 1 must verify conversion fidelity against real 2.0 specs.**
+- **Schema & message validation:** `pb33f/libopenapi-validator`. Validates `http.Request` *and*
+  `http.Response` against a 3.x spec and ships a standalone OpenAPI router with auth callbacks
+  and replayable bodies — most of what the twin needs, from the spec model the CLI already
+  holds. Watch one behaviour: it defaults to OpenAPI 3.1+ strict JSON Schema semantics, which
+  can be stricter than a 3.0 spec intends; verify against 3.0 specs early.
+- **Execution:** system curl via `os/exec`. Not a Go HTTP client — the curl command *is* a
+  feature (transparency, reproducibility).
 
 ### Auth
 
-Spec declares security schemes; credentials come from outside:
-- Env vars by convention: `APITEST_AUTH_BEARER`, `APITEST_AUTH_BASIC`,
-  `APITEST_AUTH_APIKEY_<SCHEME_NAME>`.
-- Profiles (`~/.config/apitest/config.yaml`, mode 0600): named sets of base-url + auth +
+The spec declares security schemes; credentials come from outside and are named, never shown:
+- Env vars by convention: `TALARIA_AUTH_BEARER`, `TALARIA_AUTH_BASIC`, `TALARIA_AUTH_APIKEY_<SCHEME>`.
+- Profiles (`~/.config/talaria/config.yaml`, mode 0600): named sets of base-url + auth +
   headers, selected with `--profile`. Secrets in profiles may reference env vars.
-- `apitest auth check` reports which schemes are satisfied and from which *source*
-  (never the value), so agents can diagnose auth setup blind.
-- v1 scope: bearer, basic, API key (header/query/cookie). OAuth flows: out of scope
-  (user supplies a token obtained elsewhere); revisit later.
+- `auth check` reports which schemes are satisfied and from which *source* — never the value —
+  so an agent can diagnose a broken auth setup blind and tell the human exactly what to set.
+- v1 scope: bearer, basic, API key (header/query/cookie). OAuth flows out of scope (bring your
+  own token); Restish shows the cost of doing them properly.
 
-## 5a. Secret handling — threat model
+## 5a. The credential firewall
 
-**Invariant: the agent (any consumer of stdout/stderr) never observes a credential
-value.** The setup is asymmetric by design: a human (or CI) places secrets in env vars
-or the profile file once; the agent only ever names them.
+**Invariant: no consumer of stdout or stderr ever observes a credential value.**
+
+The setup is asymmetric by design. A human (or CI) places secrets in env vars or a profile file
+once. The agent only ever names them. This is what makes it safe to point an agent at a
+production API doc.
 
 ### How secrets reach curl: the config document on curl's stdin
 
-**Primary mechanism: `curl -K -`.** curl reads a config document from its stdin when the
-filename is `-`. Secret-bearing headers, credentials, and the request body are written into
-that document; **nothing sensitive is ever an argv element.** This is the documented approach
-for keeping credentials out of the process list.
+**Primary mechanism: `curl -K -`.** curl reads a config document from stdin when the filename
+is `-`. Secret-bearing headers, credentials, and the request body go in that document;
+**nothing sensitive is ever an argv element.** This is the documented way to keep credentials
+out of the process list — `/proc/*/cmdline` is readable by any process on the host, including
+ones the agent spawns.
 
-This is a change from v0.1, which made a 0600 temp file primary. Stdin is strictly better:
-nothing touches disk, so there is no unpredictable-name requirement, no delete-after-exec
-cleanup, and no window in which another process can read the file.
+**Resolving stdin contention.** `--body -` (body from stdin) and `-K -` (config from stdin)
+appear to collide. They do not:
 
-**Resolving the stdin contention.** v0.1 promised both `--body -` (read the request body from
-stdin) and `-K -` (read curl's config from stdin) without noticing they collide. They do not
-have to:
+> **The Go process owns the real stdin. curl's stdin is always a fresh pipe that Go writes.**
 
-> **The Go process owns the real stdin. curl's stdin is always a pipe that Go writes.**
-
-`--body -` is read to EOF by the Go process from *its* stdin. curl is then spawned with a
-fresh pipe on *its* stdin, into which Go writes the config document — including the body as a
-`data` directive. One stdin consumer at each level; no contention.
-
-For large or binary bodies, where inlining into the config document is impractical, fall back
-to a 0600 temp file referenced as `data = "@/path"`, deleted immediately after exec. The temp
-file is the exception, not the rule.
+`--body -` is read to EOF by the Go process from *its* stdin. curl is then spawned with a new
+pipe on *its* stdin, carrying the config document — including the body as a `data` directive.
+One stdin consumer at each level. For large or binary bodies, fall back to a 0600 temp file
+referenced as `data = "@/path"`, deleted immediately after exec. The temp file is the exception.
 
 ### Leak channels and countermeasures
 
 | Leak channel | Countermeasure |
 |---|---|
-| Emitted/dry-run curl commands | Always symbolic: `-H "Authorization: Bearer $APITEST_AUTH_BEARER"`. Runnable where the env var exists; useless to exfiltrate. |
-| `request.headers` in JSON output | Sensitive headers rendered as `<redacted:env:NAME>`. Built-in list (`Authorization`, `Cookie`, `Proxy-Authorization`, `*api*key*`, `*token*`, `*secret*`) + user-extensible via config. Applied to pretty output too. |
-| curl process argv (`ps`, `/proc/*/cmdline` — visible to any process on the host, including agent-spawned ones) | Never pass secret-bearing headers as argv. They go in the config document on curl's stdin (above). |
-| Response headers/bodies (e.g. `Set-Cookie`, login endpoints returning `access_token`) | Redact `Set-Cookie` and configurable sensitive response-body JSON paths by default; document that auth-issuing endpoints should be called by humans, not agents. |
-| Error paths (curl stderr, validation errors quoting the request) | Errors are constructed from the redacted request representation, never the raw one. Test this explicitly — error paths are where redaction bugs live. |
-| Recordings / corpus | Redaction applied **at write time** (not read time): sensitive headers + configured body paths never touch disk. Un-redacted recording is not an option. |
-| Spec cache, verbose/debug logs | Debug output goes through the same redacted representation. No `--verbose` mode that bypasses it. |
-| Query-string API keys (some specs use `?api_key=`) | Same treatment: symbolic in emitted curl (`?api_key=$APITEST_AUTH_APIKEY_X`), `<redacted>` in output URL fields. Note: these still leak into server logs — warn once on stderr. |
+| Emitted/dry-run curl commands | Always symbolic: `-H "Authorization: Bearer $TALARIA_AUTH_BEARER"`. Runnable where the env var exists; useless to exfiltrate |
+| `request.headers` in JSON output | Sensitive headers rendered `<redacted:env:NAME>`. Built-in list (`Authorization`, `Cookie`, `Proxy-Authorization`, `*api*key*`, `*token*`, `*secret*`) + user-extensible. Applies to pretty output too |
+| curl process argv (`ps`, `/proc/*/cmdline`) | Never argv. Config document on curl's stdin (above) |
+| Response headers/bodies (`Set-Cookie`, login endpoints returning `access_token`) | Redact `Set-Cookie` and configurable response-body JSON paths by default; document that auth-issuing endpoints are for humans, not agents |
+| **History** | Same redaction as output, applied at write time. History is a permanent artifact — it is the highest-risk surface in the tool |
+| Error paths (curl stderr, validation errors quoting the request) | Errors are built from the redacted representation, never the raw one. Test explicitly — error paths are where redaction bugs live |
+| Recordings / corpus | Redaction at **write** time, not read time. Un-redacted recording is not an option |
+| Spec cache, verbose/debug logs | Debug output goes through the same redacted representation. No `--verbose` that bypasses it |
+| Query-string API keys (`?api_key=`) | Symbolic in emitted curl, `<redacted>` in output URL fields. These still leak into *server* logs — warn once on stderr |
 
-**Architecture consequence:** there is exactly one component (`internal/curl` executor,
-at exec time) that ever holds resolved secret values, and it holds them only to write
-the config document. Everything else in the codebase — output, validation, corpus,
-errors — operates on a `Request` type whose secret fields are *structurally* references
-(`SecretRef{EnvVar: "..."}`), not strings. Leaking then requires deliberately resolving
-a ref, which is greppable and reviewable, rather than forgetting to scrub a string,
-which is not.
+**Architecture consequence.** Exactly one component (`internal/curl`, at exec time) ever holds
+resolved secret values, and only long enough to write the config document. Everything else —
+output, validation, history, corpus, errors — operates on a `Request` whose secret fields are
+*structurally* references (`SecretRef{EnvVar: "…"}`), not strings. Leaking then requires
+deliberately resolving a ref, which is greppable and reviewable. Forgetting to scrub a string
+is neither.
 
-**Twin synergy:** the twin needs **zero real credentials**. It enforces that *a*
-credential is present (auth realism) but accepts placeholder values, so the agent's
-entire develop-and-test loop runs secret-free; real credentials only exist in the
-final human/CI-gated run against staging or prod.
+**Twin synergy.** The twin needs **zero real credentials**. It enforces that *a* credential is
+present (auth realism) but accepts placeholders — so the agent's entire develop-and-test loop
+runs secret-free, and real credentials exist only in a final human- or CI-gated run.
 
-**Testing requirement:** a CI test suite greps every output mode (json, pretty, tsv,
-dry-run, errors, junit reports, corpus files, debug logs) for canary secret values
-injected via each auth mechanism. Redaction regressions fail the build.
+**Testing requirement.** A CI suite injects canary secrets through every auth mechanism and
+greps every output surface — json, pretty, tsv, dry-run, errors, junit reports, history store,
+corpus files, debug logs — for them. Redaction regressions fail the build. **This suite is
+Phase 2 work and gates every release thereafter.**
+
+### Threats explicitly not covered
+
+Honesty about the boundary's limits:
+- **A response body containing a secret** is returned to the agent, because the tool cannot know
+  a field is sensitive unless configured. Mitigated by default `Set-Cookie` redaction and
+  configurable body paths; not solved.
+- **An agent that can read env vars or the profile file directly** bypasses everything here.
+  This tool secures the *API-calling* path, not the machine. Running the agent without those
+  vars in its environment — and letting the binary read them from a file it alone opens — is
+  the deployment that fully realises the boundary.
+- **Server-side logs** may record query-string keys regardless of what this tool does.
 
 ### Test data for `run` mode
 
-Priority order: spec `example`/`examples` values → user fixture files
-(`--fixtures dir/`, matched by operationId) → schema-generated fake data (`gen`).
-Examples-first keeps requests realistic; generation is the fallback.
+Priority order: spec `example`/`examples` → user fixture files (`--fixtures dir/`, matched by
+operationId) → schema-generated data (`gen`). Examples-first keeps requests realistic.
 
 ## 6. The digital twin
 
 **Goal: mimic the real API, not just return schema-valid noise.**
 
-**What is table stakes and what is not.** Replay-from-recordings and stateful CRUD behaviour
-already exist in mature products — Specmatic records real traffic into spec-validated mocks;
-WireMock does record & playback plus stateful create-then-fetch. Building those buys parity,
-not advantage. Three things are genuinely differentiated:
+**What is table stakes and what is not.** Replay-from-recordings and stateful CRUD already exist
+in mature products — Specmatic records real traffic into spec-validated mocks; WireMock does
+record & playback plus stateful create-then-fetch. Building those buys parity, not advantage.
+Three things are genuinely differentiated:
 
 1. **Synthesis by generalization from the corpus** — synthesize user 99 by mutating recorded
-   users 42 and 57, yielding real field values, real enum usage, real nullability, instead of
+   users 42 and 57: real field values, real enum usage, real nullability, instead of
    `"string"`/`0` schema noise.
-2. **Deterministic fault injection driven by the same CLI that explores and tests** — no
-   second tool, no second config format, no glue.
-3. **Zero-credential operation** — the whole develop-and-test loop runs without a real secret
-   ever existing on the machine (§5a).
-
-Everything else in this section is the substrate those three need.
+2. **Deterministic fault injection from the same CLI that explores and tests** — no second
+   tool, no second config format, no glue.
+3. **Zero-credential operation** — the develop-and-test loop runs without a real secret ever
+   existing on the machine (§5a). This is the twin's tightest link to §1.
 
 | Dimension | Mechanism |
 |---|---|
-| **Data realism** | Recordings over generation. Replay recorded responses; *generalize* from them (see 1 above). |
-| **Behavioral realism (state)** | Infer CRUD lifecycles from REST conventions + spec (POST returns created object with id; path param matches id field). In-memory/bbolt store so create→get→delete sequences behave coherently. Recorded real sequences confirm inferred semantics. |
-| **Error realism** | Injectable faults: `twin fault getUser --status 429 --rate 0.1` or a `POST /_twin/faults` control endpoint the agent/test-harness can hit. Real error bodies harvested from recordings. Deterministic fault injection is where the twin is *better* than the real API. |
-| **Temporal realism** | Per-endpoint latency profiles extracted from recorded timings (already captured via curl `--write-out`). Optional rate-limit simulation. Nice-to-have tier. |
-| **Auth realism** | Enforce the spec's security schemes; reject missing/bad credentials with the same status codes observed in recordings. Accepts placeholder tokens — the twin requires **no real credentials**. |
+| **Data realism** | Recordings over generation; generalize from them (1 above) |
+| **Behavioral realism (state)** | Infer CRUD lifecycles from REST conventions + spec (POST returns created object with id; path param matches id field). In-memory/bbolt store so create→get→delete coheres. Recorded sequences confirm inferred semantics |
+| **Error realism** | Injectable faults via CLI or a `POST /_twin/faults` control endpoint. Real error bodies harvested from recordings. Deterministic faults are where the twin beats the real API |
+| **Temporal realism** | Per-endpoint latency profiles from recorded timings (already captured via curl `--write-out`). Optional rate-limit simulation. Nice-to-have |
+| **Auth realism** | Enforce the spec's security schemes; reject missing/bad credentials with the status codes seen in recordings. Accepts placeholder tokens |
 
-**Recording is the spine.** The spec provides structure; recorded traffic provides truth.
-Every twin feature consumes the same corpus: replay directly, synthesis generalizes from
-it, state inference validates against it, error/latency profiles are extracted from it.
+**Recording is the spine.** The spec provides structure; recorded traffic provides truth. Every
+twin feature consumes the same corpus — the same store that backs `history`. Day 1 is a
+spec-only static mock; explore the real API through the recording proxy and the twin gets
+progressively more real, automatically. *"Your twin gets better the more you use the real API."*
 
-This yields a natural maturity model: day 1 = spec-only static mock → explore the real
-API through the recording proxy → the twin gets progressively more real, automatically.
-*"Your twin gets better the more you use the real API."*
-
-**Request validation on the twin.** The twin validates incoming requests against the
-spec and returns precise schema errors — so it doubles as a client-side contract checker
-during development. `libopenapi-validator`'s router and request validator provide this
-directly (§5).
+**Request validation on the twin.** It validates incoming requests against the spec and returns
+precise schema errors, doubling as a client-side contract checker. `libopenapi-validator`'s
+router and request validator provide this directly.
 
 **The loop this unlocks** (identical commands, swap `--base-url`):
 
 ```
-apitest twin record spec.yaml --upstream https://api.real.com --corpus ./twin
-apitest call spec.yaml listUsers --base-url http://localhost:9000        # via proxy, recorded
-apitest twin serve spec.yaml --corpus ./twin --stateful
-apitest run spec.yaml --base-url http://localhost:9000 --allow-mutations # safe destructive testing
-apitest run spec.yaml --profile staging                                   # final verification, same commands
+talaria twin record spec.yaml --upstream https://api.real.com --corpus ./twin
+talaria call spec.yaml listUsers --base-url http://localhost:9000        # via proxy, recorded
+talaria twin serve spec.yaml --corpus ./twin --stateful
+talaria run spec.yaml --base-url http://localhost:9000 --allow-mutations # safe destructive testing
+talaria run spec.yaml --profile staging                                   # final verification
 ```
 
-Agent workflow: explore real API read-only (recording on) → build/test destructive flows
-against the twin, injecting faults to harden error handling → identical smoke run against
-staging. The agent never needs mutation rights on shared environments for 95% of its work.
+The agent explores the real API read-only with recording on, builds and tests destructive flows
+against the twin while injecting faults, then runs an identical smoke test against staging. It
+never needs mutation rights on a shared environment for 95% of its work.
 
 **Security requirement (non-negotiable, ships with the recording proxy):** recordings contain
 real data. Redact `Authorization`, `Cookie`, `Set-Cookie`, and `*key*`/`*token*` headers by
-default; support a redaction config (headers, body JSON paths) before any cassette is
-written. Document "don't commit unredacted corpora."
+default; support a redaction config before any cassette is written. Document "don't commit
+unredacted corpora."
 
 **Known-hard territory (be honest in docs):** state inference is heuristic and breaks on
-non-CRUD APIs, cross-resource side effects, server-computed fields. Ship it as
-explicitly best-effort with per-resource overrides, after the recording tiers prove out.
+non-CRUD APIs, cross-resource side effects, and server-computed fields. Ship it explicitly
+best-effort with per-resource overrides, after the recording tiers prove out.
 
 ## 7. Roadmap
 
-Each phase ships something independently useful. **Re-cut from v0.1**: the differentiated,
-low-competition work (explore → validate → smoke test) now ships in full before the twin,
-which is the hardest work and competes with mature funded products for the least marginal
-advantage.
+Each phase ships something independently useful. The differentiated, low-competition work
+ships before the twin, which is the hardest and competes with mature funded products for the
+least marginal advantage.
 
 | Phase | Deliverable | Notes |
 |---|---|---|
-| 1 | `list`, `describe`, `search`, `uses`, `call --dry-run` | Spec loading (3.x via libopenapi, 2.0 via `openapi2conv`), operation model, curl builder. Fully testable offline. Already useful as a spec→curl tool. **Verify 2.0 conversion against real specs here.** |
-| 2 | Real execution | JSON output, exit codes, `--base-url`, profiles, env-var auth, mutation gating, `AGENT.md` v1. **Full §5a secrets machinery ships here: `SecretRef` type, symbolic curl, redacted output, `-K -` config-on-stdin exec, stdin-ownership rule, `auth check`, canary CI tests.** Not retrofittable — it shapes the core `Request` type. |
-| 3 | Response validation | Status documented? Body matches schema? Content-type? `validation` block in output; exit code 4 semantics. Built on libopenapi-validator. |
-| 4 | `run` smoke mode | Tag/operation filters, examples→fixtures→gen data, JUnit/JSON reports. CI-ready. **End of the differentiated core — ship, use it, and let real usage decide whether the twin earns its keep.** |
-| 5 | Recording proxy + redaction | The corpus spine. `twin record`. Useful on its own even without a twin server. |
-| 6 | `twin serve`: replay + spec fallback + request validation | Prism parity, but corpus-fed. Router comes from libopenapi-validator. |
-| 7 | Stateful twin + data synthesis | CRUD inference, generalization from recordings — the actual differentiator (§6). |
-| 8 | Fault & latency injection | Control endpoint + CLI; latency profiles from corpus. |
+| 1 | `list`, `describe`, `search`, `uses`, `call --dry-run` | Spec loading (3.x via libopenapi, 2.0 via `openapi2conv`), operation model, curl builder. Fully offline-testable. Already useful as a spec→curl tool. **Verify 2.0 conversion against real specs here** |
+| 2 | Real execution + **the credential firewall** + `history` | JSON output, exit codes, `--base-url`, profiles, env-var auth, mutation gating, `AGENT.md` v1. **All of §5a ships here:** `SecretRef`, symbolic curl, redacted output, `-K -` config-on-stdin, stdin-ownership rule, `auth check`, exit code 5, canary CI suite. Plus the corpus store behind `history`. **Not retrofittable — it shapes the core `Request` type.** This phase is the product |
+| 3 | Response validation | Status documented? Body matches schema? Content-type? `validation` block; exit code 4. Built on libopenapi-validator |
+| 4 | `run` smoke mode | Tag/operation filters, examples→fixtures→gen data, JUnit/JSON reports. CI-ready. **End of the differentiated core — ship it, use it, and let real usage decide whether the twin earns its keep** |
+| 5 | Recording proxy + redaction | The corpus spine, industrial version. Useful alone |
+| 6 | `twin serve`: replay + spec fallback + request validation | Prism parity, corpus-fed. Router from libopenapi-validator |
+| 7 | Stateful twin + data synthesis | CRUD inference, generalization — the actual differentiator (§6) |
+| 8 | Fault & latency injection | Control endpoint + CLI; latency profiles from corpus |
 
 **Decision gate after Phase 4.** Phases 5–8 are roughly as much work as 1–4 and land in a
 crowded, well-funded market. Do not start them on faith; start them because using Phases 1–4
 made the absence of a twin painful.
 
-Distribution: single static binaries per platform (GitHub releases), `go install`,
-curl-able install script (agents can bootstrap the tool mid-session), Homebrew tap later.
-Packaging as a pi package and a Claude Code skill wrapping the same binary.
+Distribution: single static binaries per platform (GitHub releases), `go install`, a curl-able
+install script so agents can bootstrap the tool mid-session, Homebrew tap later. Packaged as a
+pi package and a Claude Code skill wrapping the same binary.
 
 ## 8. Open questions
 
-- **Name — the live decision.** `apitest` is a placeholder and undersells the twin.
-  `any-api` (the current repo name) is crowded: GitHub already carries an R package
-  (`jonthegeek/anyapi`), a Swift client (`jpmcglone/AnyAPI`), two Python wrapper libraries,
-  a zero-config REST server (`RoryCombe/anyapi`), and an `anyapi-io` organisation. The repo
-  name is claimable, but search discoverability is poor. Because this ships as a Go binary via
-  GitHub releases / `go install` / Homebrew, the namespaces that actually matter are **the
-  Homebrew formula, the GitHub repo, and the binary name on `$PATH`** — npm and crates.io are
-  noise. Candidates and collision evidence are tracked in the research doc; decide before
-  Phase 1 so `cmd/<name>` and the `"schema": "<name>/v1"` field are right the first time.
-- **Default output.** Locked: pretty-on-TTY, JSON-when-piped — revisit if agents get
-  confused by TTY detection in odd sandboxes (`--output` always wins).
-- ~~**kin-openapi vs libopenapi.**~~ **Resolved (§5):** libopenapi for 3.x + libopenapi-validator,
-  kin-openapi's `openapi2conv` for the 2.0→3.x hop only.
+- ~~**Name.**~~ **Resolved: `talaria`** — Hermes's winged sandals. It names the *equipment*,
+  not the messenger, which is the right relationship: the agent is the messenger, this is what
+  it wears. Homebrew formula free; the only GitHub collision is `talariadb/talaria` (230★,
+  quiet, a time-series store). Rejected after collision checks: `hermes` (NousResearch's
+  hermes-agent, 224k★, same space — fatal), `iris` (kataras/iris, 25.5k★ Go web framework —
+  fatal for a Go binary), `missive`, `legate`, `tambo`, `envoi`. Runners-up worth recording in
+  case of a future pivot: `nuncio` (2★, cleanest namespace), `mochila` (the Pony Express
+  mailbag, swapped horse-to-horse in under two minutes), `angareion` (the Persian relay
+  Herodotus described in the passage that became "neither snow nor rain…").
+- **Request chaining.** Out of scope for v1, but the Postman framing makes its absence
+  conspicuous — chaining is the main reason people build collections. `history replay` (§4)
+  covers the common case without a scenario DSL. Revisit only if real usage demands it;
+  Schemathesis does this via OpenAPI `links` if a reference is needed.
+- **History retention and location.** Where does it live (`~/.local/state/talaria/`? per-project
+  `.talaria/`?), how much is kept, and is it opt-out? It is the highest-risk artifact in the
+  tool (§5a) and needs a deliberate answer, not a default.
 - **libopenapi-validator strictness on 3.0 specs.** It defaults to 3.1+ strict JSON Schema
-  behaviour. Confirm in Phase 3 whether that produces false validation failures against
-  real 3.0 specs, and whether it can be configured down per-document.
-- **Request chaining / scenarios.** Explicitly out of scope for v1; the twin reduces the
-  need. Revisit if real usage demands it. (Note: Schemathesis does this via OpenAPI `links`.)
-- **OAuth flows.** Out of scope v1 (bring your own token). Restish shows the cost of
-  doing this properly.
-- **`describe` compact schema format.** Design the terse rendering early — it's the
-  agent-facing UX centerpiece. Prototype against big real specs (GitHub, Stripe).
-  phyllotaxis is prior art worth reading before designing this.
+  behaviour. Confirm in Phase 3 whether that yields false failures on real 3.0 specs and
+  whether it can be configured down per-document.
+- **Default output.** Locked: pretty-on-TTY, JSON-when-piped — revisit if agents get confused
+  by TTY detection in odd sandboxes (`--output` always wins).
+- **`describe` compact schema format.** The agent-facing UX centrepiece; design it early and
+  prototype against big real specs (GitHub, Stripe). phyllotaxis is prior art worth reading.
 - **Body-in-config encoding.** The config document needs correct escaping for arbitrary JSON
-  bodies (`data = "..."` with backslash escapes). Decide the exact cutover point to the
-  0600 temp-file fallback (size? binary content-type?) in Phase 2.
-- **Twin state overrides.** Config format for correcting bad CRUD inference
-  (per-resource: id field, collection path, relations).
+  bodies (`data = "…"` with backslash escapes). Decide the cutover to the temp-file fallback
+  (size? binary content-type?) in Phase 2.
+- **Twin state overrides.** Config format for correcting bad CRUD inference (per-resource id
+  field, collection path, relations).
 
 ## 9. Non-goals
 
+- **Not a secrets manager.** It reads credentials from env vars and a profile file; it does not
+  store, rotate, or broker them. Point it at whatever you already use.
+- **Not a collection manager.** No saved requests, no workspaces, no sharing. The spec is the
+  collection (§3.3). This is the deliberate break from Postman.
 - Not a general HTTP client (that's curl/HTTPie/Restish).
-- Not property-based fuzzing (that's Schemathesis; potential future `fuzz` command,
-  but don't dilute v1).
-- Not an MCP server. Ever. The absence is the point — see §2 for the honest framing
-  of that stance.
+- Not property-based fuzzing (that's Schemathesis; a future `fuzz` command is possible, but
+  don't dilute v1).
+- **Not an MCP server. Ever.** The absence is the point — see §2 for the honest framing.
 - Not a Code Mode / SDK generator. Different bet, different tradeoffs (§2).
 - No GraphQL, no gRPC. OpenAPI/Swagger REST only.
 - No interactive TUI mode in v1.
