@@ -652,6 +652,26 @@ unable to print itself means leaking requires a deliberate, greppable call — "
 scrub a string is neither." This lands before the `Request` type on purpose: §7 says the
 credential firewall is "not retrofittable — it shapes the core `Request` type."
 
+**Divergence from the plan.**
+
+`encoding/json` HTML-escapes `<` and `>`, and it applies that to whatever `MarshalJSON` returns —
+a `MarshalJSON` implementation cannot opt out from the inside. So the ref reaches the wire as
+`"<redacted:env:NAME>"` and decodes back to `<redacted:env:NAME>`. The guarantee is
+unaffected (the *value* is absent either way) but **Task 24's canary suite must grep decoded
+output, or accept both spellings**, or it will miss nothing today and mis-assert later.
+
+`Set-Cookie` is in the built-in sensitive list. The plan's item 4 names only the request-header
+row of the §5a table; the response-header row names `Set-Cookie`, and a `cookie` pattern matching
+exactly does not catch it. Patterns are globs over the lower-cased name compiled once to anchored
+regexps, with everything but `*` quoted, so a user-supplied pattern cannot be a regexp injection.
+
+A nil `*Redactor` matches the built-in list rather than nothing, so a struct field nobody
+initialised still redacts — an opt-in firewall is one a misconfiguration switches off.
+
+`Resolve` classifies a missing variable as `clierr.CredentialMissing` (exit 5) itself rather than
+returning a bare error for a caller to classify, since §4's whole reason for code 5 is that the
+agent learns *which* variable to ask a human to set.
+
 ---
 
 ### Task 13: `internal/config` — profiles and env-var auth mapping
