@@ -60,7 +60,9 @@ talaria call getPet --param petId=42 --query verbose=true --header 'X-Trace: abc
   `--header Content-Type`, else from the operation's declared media type.
 - Every binding problem is reported at once. Fix them in one edit, not one per run.
 - `--base-url` overrides the spec's server. `--profile` selects a named profile from the user's
-  config file.
+  config file. Only `http` and `https` are accepted, from either source — a spec's own
+  `servers[0].url` is untrusted input, so a `file://` or `gopher://` base is a usage error
+  (exit 2) rather than a request.
 - Every request is bounded: 10s to connect, 30s in total, `--timeout <seconds>` to change the
   total. An API that stops answering exits 1 with curl's status 28 in the message — talaria
   never hangs waiting for one.
