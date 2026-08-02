@@ -51,6 +51,9 @@ func newRootCmd() *cobra.Command {
 		return clierr.Usage("%s", err)
 	})
 
+	// The Args counterpart of SetFlagErrorFunc lives per-command, in usageArgs;
+	// cobra has no tree-wide hook for it.
+
 	// Validated once for the whole tree, so an unusable --output fails before a
 	// command does any work — including on commands that ignore the format.
 	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
@@ -59,8 +62,22 @@ func newRootCmd() *cobra.Command {
 	}
 
 	root.AddCommand(newVersionCmd())
+	root.AddCommand(newListCmd())
 
 	return root
+}
+
+// usageArgs wraps a positional-argument validator so a wrong argument count
+// exits 2 like every other bad invocation. Cobra returns a bare error here, and
+// SetFlagErrorFunc does not cover it, so without this the caller would see the
+// unclassified-failure code 1.
+func usageArgs(validate cobra.PositionalArgs) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if err := validate(cmd, args); err != nil {
+			return clierr.Usage("%w", err)
+		}
+		return nil
+	}
 }
 
 // resolveFormat resolves --output for cmd against the TTY-ness of its stdout.

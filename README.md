@@ -3,8 +3,9 @@
 *Postman for agents. Point it at any API doc; your agent works the API and never sees
 your credentials.*
 
-> **Status: early implementation.** The command tree is scaffolded and only `talaria version`
-> works so far. The [design document](docs/design/DESIGN.md) is the source of truth.
+> **Status: early implementation.** `talaria version` and `talaria list` work so far; the rest
+> of the command tree is scaffolded. The [design document](docs/design/DESIGN.md) is the source
+> of truth.
 
 Every API client — Postman, Insomnia, Bruno, curl itself — assumes the operator is a human who
 is entitled to see their own secrets. Hand an agent a Postman collection with an environment, a
@@ -46,6 +47,22 @@ from whichever of these is set first:
 Swagger 2.0 is converted to OpenAPI 3.x at load time, so every command sees one shape. Remote
 specs are cached under `$XDG_CACHE_HOME/talaria/specs` (falling back to `~/.cache/talaria/specs`)
 and fetched once per URL, not once per call. Cache files are written `0600` in a `0700` directory.
+
+## Listing operations
+
+```sh
+talaria list https://petstore3.swagger.io/api/v3/openapi.json
+talaria list ./openapi.yaml --tag pets
+```
+
+One line per operation — method, path, operationId and a truncated summary — because the whole
+point is that nobody pipes a 2 MB `swagger.json` into a context window. `--tag` filters to a
+single tag; a tag nothing carries prints an empty list and exits 0, since "nothing has that tag"
+is an answer rather than a failure.
+
+Operations the spec never named get a synthesised operationId derived from method and path
+(`GET /pets/{petId}` → `getPetsByPetId`). It is stable across loads and as callable as an
+authored one.
 
 ## Output
 
