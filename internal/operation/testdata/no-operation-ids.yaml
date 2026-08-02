@@ -1,0 +1,109 @@
+# A spec written the way most real ones are: operationId is mostly absent, so
+# every endpoint here has to be reachable by a synthesised id. It also contains
+# the two collision shapes that matter — two paths that generalise to the same
+# id (/pets/{id} and /pets/by-id), and an author-written id that a later
+# synthesis would otherwise stomp on (/widgets vs /widgets/{id}).
+openapi: 3.0.3
+info:
+  title: Idless
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /pets:
+    get:
+      summary: List pets
+      tags:
+        - pets
+      responses:
+        "200":
+          description: OK
+    post:
+      summary: Create a pet
+      tags:
+        - pets
+      responses:
+        "201":
+          description: Created
+  /pets/{id}:
+    get:
+      summary: Get one pet
+      tags:
+        - pets
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+    delete:
+      summary: Delete one pet
+      tags:
+        - pets
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: No content
+  /pets/by-id:
+    get:
+      summary: Look a pet up by id
+      tags:
+        - pets
+      responses:
+        "200":
+          description: OK
+  /store/order-items/{orderItemId}:
+    get:
+      summary: Get one order item
+      tags:
+        - store
+      parameters:
+        - name: orderItemId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health probe
+      tags:
+        - ops
+      responses:
+        "200":
+          description: OK
+  /widgets:
+    get:
+      # Deliberately the id GET /widgets/{id} would synthesise.
+      operationId: getWidgetsById
+      summary: List widgets
+      tags:
+        - widgets
+      responses:
+        "200":
+          description: OK
+  /widgets/{id}:
+    get:
+      summary: Get one widget
+      tags:
+        - widgets
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
