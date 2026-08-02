@@ -5,15 +5,19 @@ Findings: [REVIEW_FINDINGS.md](REVIEW_FINDINGS.md) — do not edit that file.
 
 ## Scope
 
-This plan replaces the Phase 1–4 build plan, which is complete (tasks 1–33 all `done`). It
-covers **only the 11 CRIT findings** from the review of `ralph/design` vs `main`. The 7 WARN and
-2 INFO findings are deliberately **not** planned: they are recorded for a human and do not block
+This plan replaces the previous review-fix plan, whose 9 tasks are all landed. It covers **only
+the 9 CRIT findings** (1–9) from the current review of `ralph/design` vs `main`. The 16 WARN and
+10 INFO findings are deliberately **not** planned: they are recorded for a human and do not block
 the PR. Do not create work for them, and do not "fix them while you are in the file" — an
 unrequested change in a reviewed diff costs another review cycle.
 
-Still out of scope, unchanged from the build plan: Phases 5–8 (`internal/twin`, the recording
-proxy, `talaria twin …`), distribution and packaging, request chaining, and everything in
-DESIGN.md §9 Non-goals.
+Still out of scope, unchanged: Phases 5–8 (`internal/twin`, the recording proxy, `talaria twin …`),
+distribution and packaging, request chaining, and everything in DESIGN.md §9 Non-goals.
+
+Six of the nine findings are credential leaks (1, 2, 3, 4, 5, and the capture-directory half of
+6), which is the surface DESIGN.md §5a calls the product. In every one of them the existing canary
+suite passed while the secret escaped, so each of those tasks ends with a canary case rather than
+only a unit assertion.
 
 ## Commands (from `.ralph/stack.json` — do not invent others)
 
@@ -24,9 +28,9 @@ DESIGN.md §9 Non-goals.
 | Build | `go build ./...` |
 | Lint | `test -z "$(gofmt -l .)" && go vet ./...` |
 
-Run the build and lint before every commit. `golangci-lint` is **not** installed. The tracked
-tree passes `go build ./...`, `gofmt -l .`, `go vet ./...` and `go test -race ./...` today, so
-any failure after a task is that task's doing.
+Run the build and lint before every commit. `golangci-lint` is **not** installed. The tracked tree
+passes `go build ./...`, `gofmt -l .`, `go vet ./...` and `go test -race ./...` today, so any
+failure after a task is that task's doing.
 
 ## Rules for these tasks
 
@@ -39,322 +43,335 @@ any failure after a task is that task's doing.
 
 ## Task order
 
-Tasks 1–2 are the credential-firewall breaches (§5a) and come first. Tasks 3–4 are the curl
-execution contract. Tasks 5–7 are data integrity. Tasks 8–9 are the CLI/output contract. There
-are no dependencies between tasks; the order is by severity of consequence.
+Tasks 1–5 are the credential-firewall breaches (§5a) and come first. Task 6 is the curl execution
+contract. Task 7 is data integrity. Tasks 8–9 are the CLI/output contract. There are no
+dependencies between tasks; the order is by severity of consequence. Tasks 2 and 9 both come from
+finding #9 and are split by file — Task 2 owns the `binder.pairs` parser change, Task 9 owns the
+docs — so run Task 2 first if you run them in the same session.
 
 ---
 
-### Task 1: Redact credentials passed in the query string
+### Task 1: Stop curl reading `~/.curlrc` before the credential-bearing config
 
 **Fixes findings:** #1
 
+`argv` is `{"curl", "-K", "-"}`, so curl parses `$CURL_HOME/.curlrc` (else `$HOME/.curlrc`)
+*before* the `-K -` document carrying the resolved secret. A `trace-ascii` or `proxy` directive
+there captures the plaintext `Authorization` header. Writing one file under `$HOME` is a weaker
+capability than the env-var read §5a concedes, so this is inside the claimed boundary.
+
 **Files:**
-- `internal/request/build.go` (modify)
-- `internal/request/request.go` (modify)
+- `internal/curl/config.go` (modify)
 - `internal/curl/render.go` (modify)
 - `internal/canary/canary_test.go` (modify)
-- `internal/request/build_test.go` (modify)
 
 **Steps:**
-1. In `Build` (build.go:76), wrap the query pairs in `hide()` exactly as headers and cookies
-   already are:
-   `req.Query = hide(append(b.located(bound, inQuery), b.pairs(in.Query, "--query")...))`.
-   Query is the one credential location §5a names ("Query-string API keys (`?api_key=`)") that
-   the built-in name matcher was never applied to.
-2. In `urlWord` (render.go:139), branch on `q.Value.IsSensitive()` rather than
-   `q.Value.IsSecret()`, so a hidden literal renders `<redacted>` instead of being
-   percent-encoded into `%3Credacted%3E`. This path is display-only — `render` is `Symbolic` or
-   `String`, never a resolving renderer — so it is safe to skip `url.QueryEscape` there.
-3. In `Request.QueryString` (request.go:238), **do not** simply branch on `IsSensitive`: this
-   function is shared with the wire path (`req.URL(resolve)` at curl/config.go:71), and skipping
-   `url.QueryEscape` for a resolved credential would put unescaped bytes in the request URL.
-   Skip the escape only when the rendered text is a placeholder rather than a value — i.e. when
-   `p.Value.IsSensitive() && (value == p.Value.String() || value == p.Value.Symbolic())` —
-   mirroring the comparison `word.credential` (render.go:201) already makes. Comment why.
-4. Add a `--query` case to `TestAUserSuppliedHeaderIsRedactedLikeASpecCredential` in
-   `internal/canary/canary_test.go`: pass the canary as `--query api_key=<canary>` and assert it
-   appears on no surface the suite greps (json, pretty, tsv, dry-run, errors, history).
-5. Add a builder test asserting `--query api_key=x` produces a `Pair` whose `Value.IsSensitive()`
-   is true and whose `String()` is the placeholder, and a render test pinning the `?api_key=`
-   form of both `curl.Render` and `curl.URL`.
+1. In `BuildConfigWith` (config.go:103), change `argv` to `{"curl", "-q", "-K", "-"}`. Both the
+   early-return argv and the success argv come from this one variable, so the single edit covers
+   the `req == nil` and `doc.build` error paths too. `-q` must be the first parameter — curl
+   ignores it elsewhere.
+2. Add a comment at that line recording *why* `-q` is load-bearing: without it a writable
+   `.curlrc` reads the credential out of the `-K` document.
+3. Mirror the flag in the rendered curl (`internal/curl/render.go`) so the copy-pasteable
+   reproduction behaves the same as the call talaria made.
+4. Add a canary stage in `canary_test.go` that writes a `.curlrc` containing
+   `trace-ascii = <path under the harness temp dir>` into the harness `HOME` (already set at
+   canary_test.go:188), runs a call carrying the canary, and asserts the trace file does not
+   exist — and, if it does, that it does not contain the canary.
 
-**Verify:** `go test ./internal/request/... ./internal/curl/... ./internal/canary/...`
-- [ ] `talaria call spec.yaml getPub --query api_key=SECRET --output json --dry-run` shows
-      `<redacted>` (not `SECRET`, not `%3Credacted%3E`) in both the `curl` and `url` fields.
-- [ ] A real call writes no query credential into `$XDG_STATE_HOME/talaria/history.jsonl`.
-- [ ] The wire form is unchanged: the resolved value still reaches the server percent-encoded.
+**Verify:** `go test ./internal/curl/... ./internal/canary/...`
+- [ ] With a `.curlrc` containing `trace-ascii` planted in `HOME`, a call carrying the canary
+      writes no trace file and leaks nothing.
+- [ ] `BuildConfigWith` returns argv beginning `curl -q -K -` on the success path and on both
+      error paths.
 
 ---
 
-### Task 2: Restrict base URLs and curl to http and https
+### Task 2: Never echo a rejected flag's value, and reject malformed header names
 
-**Fixes findings:** #2
+**Fixes findings:** #2, #9 (the silent-corruption half)
+
+`b.fail("%s %q is not name=value", flag, raw)` puts the whole rejected argument into the exit-2
+JSON on stderr, so `--header "Authorization: Bearer $TOKEN"` — the form AGENT.md currently
+documents — prints the real token. The `--body` variant joins *every* body value into one
+message, and request bodies routinely carry `client_secret`/`password`. Separately,
+`--header 'X-Trace: abc=1'` is *accepted*, cut at the first `=`, and sends the malformed wire
+header `X-Trace: abc: 1`.
 
 **Files:**
 - `internal/request/build.go` (modify)
-- `internal/curl/config.go` (modify)
-- `cmd/talaria/history.go` (modify)
 - `internal/request/build_test.go` (modify)
-- `internal/curl/config_test.go` (modify)
+- `internal/canary/canary_test.go` (modify)
 
 **Steps:**
-1. In `binder.baseURL` (build.go:141), reject any scheme other than `http` and `https`, making
-   the check match the error message it already prints ("is not an absolute http(s) URL").
-   Compare case-insensitively. This applies to all three candidate sources — `--base-url`, the
-   profile, and `firstServer(b.in.Doc)` — because a spec's `servers[0].url` is untrusted input:
-   the product's premise is that an agent points talaria at any doc it found.
-2. In `document.build` (config.go), emit `proto = "=http,https"` and `proto-redir = "=http,https"`
-   as defence in depth, so a scheme that slips past step 1 or arrives via a redirect still cannot
-   make curl speak gopher, file, dict or smb.
-3. In `replayRequest` (history.go:494), apply the same scheme check to the URL rebuilt from the
-   stored entry, returning `clierr.Usage` naming the offending scheme.
-4. Test: a spec whose `servers[0].url` is `gopher://127.0.0.1:1234` fails to build with a usage
-   error; `--base-url file:///etc/passwd` likewise; `http` and `https` still build. Assert the
-   two `proto` directives are present in the built config document.
+1. In `binder.pairs` (build.go:311), report the position and the name half only, never the value:
+   `%s %d is not name=value` with the 1-based index, plus the text before the first `=` or `:`
+   when there is one. Elide the value entirely — do not include a truncated prefix of it.
+2. In the same function, reject a name containing `:`, whitespace, or any other character not
+   valid in an HTTP field name, with a message naming the offending *name* only. This closes
+   finding #9's silent corruption: `X-Trace: abc=1` becomes a clean exit 2 instead of a malformed
+   header. Accepting the curl-style `Name: value` form is deliberately **not** done here —
+   DESIGN.md §4 specifies `name=value`, and Task 9 fixes the docs to match.
+3. In the `--body` failure path (the flag declared at build.go:53), report the count and the
+   *kind* of each value (literal / `@file` / `-`), never the bytes.
+4. Update any existing test asserting the old message text.
+5. Add a canary stage: a malformed `--header` and a malformed `--body` each carrying the canary,
+   scanned across stdout, stderr, every `--output` format, the report and the history store.
 
-**Verify:** `go test ./internal/request/... ./internal/curl/... ./cmd/talaria/...`
-- [ ] `talaria call spec.yaml getPub --base-url gopher://127.0.0.1:18201 --dry-run` exits 2 with
-      a usage error instead of emitting a gopher command.
-- [ ] A spec declaring a `gopher://` server cannot deliver a payload to a raw TCP listener.
+**Verify:** `go test ./internal/request/... ./internal/canary/...`
+- [ ] `--header 'Authorization: Bearer <canary>'` exits 2 with the canary absent from every
+      output surface.
+- [ ] Repeated `--body` with two secret-bearing values reports two bodies by kind, no bytes.
+- [ ] `--header 'X-Trace: abc=1'` exits 2 rather than sending `X-Trace: abc: 1`.
 
 ---
 
-### Task 3: Emit correct curl for HEAD, and make the rendered body flag match the wire
+### Task 3: Reject credentials in a base URL's userinfo
 
-**Fixes findings:** #3, #8
+**Fixes findings:** #3
+
+`baseURL` validates scheme and host but keeps `parsed.User`, so `http://user:pass@host` from
+`--base-url`, a profile, **or a spec's `servers[0].url` (untrusted input)** reaches `request.url`,
+the emitted `request.curl` (render.go:146), and `history.jsonl` (entry.go:154) in cleartext — a
+permanent artifact with no way to get the value back out short of deleting the store.
 
 **Files:**
-- `internal/curl/config.go` (modify)
-- `internal/curl/render.go` (modify)
-- `internal/curl/config_test.go` (modify)
-- `internal/curl/render_test.go` (modify)
+- `internal/request/build.go` (modify)
+- `cmd/talaria/history.go` (modify)
+- `internal/request/build_test.go` (modify)
+- `internal/canary/canary_test.go` (modify)
 
 **Steps:**
-1. In `document.build` (config.go:77), when `req.Method == "HEAD"` emit the bare `head` flag
-   instead of `request = "HEAD"`. `-X HEAD` makes curl wait for a `Content-Length` body a
-   compliant server never sends, so the call hangs (or exits 18 against HTTP/1.0), and because
-   `HEAD` is in `safeMethods` a single HEAD operation makes `talaria run` never terminate.
-2. With `head`, curl writes the header block to the output file, which would land in the response
-   *body*. For `HEAD`, point the `output` directive at `os.DevNull` instead of
-   `capture.BodyPath`; `dump-header` still captures the headers, and the staged (empty) body file
-   keeps `readResponse` unchanged.
-3. In `Render` (render.go:35), render `HEAD` as `-I` rather than `-X HEAD`, so the emitted
-   command reproduces the call instead of hanging when pasted.
-4. In `bodyArgs` (render.go:115), use `--data-raw` instead of `--data-binary`, matching the
-   `data-raw` the config document deliberately uses (config.go:169 carries the reason: `data` and
-   `data-binary` read a leading `@` as a filename, and a body legitimately can start with one).
-   Without this, a `--body @file` whose contents start with `@` sends the literal text on the
-   wire while the emitted command reads a local file and exfiltrates it.
-5. Tests: a HEAD operation builds a config with `head` and no `request = "HEAD"`, renders `-I`,
-   and — as an executor test against a local server answering HEAD with `Content-Length` and no
-   body — completes rather than hanging. A render test with a body of `@/etc/hostname` pins
-   `--data-raw` and pins the two paths together.
+1. In `baseURL` (build.go:144), after the scheme/host check, reject `parsed.User != nil` via
+   `b.fail`, naming the source (`--base-url`, the profile, or the spec's `servers[0].url`) and
+   pointing at `TALARIA_AUTH_BASIC` as the supported path. Rejecting rather than stripping is the
+   right call: talaria already has a basic-auth path that keeps the value symbolic, and silently
+   dropping the userinfo would send an unauthenticated request the caller thinks is
+   authenticated. The message must not echo the userinfo — report the host only.
+2. Apply the same check in `replayRequest` (history.go:511), which re-parses a URL read off disk,
+   alongside the existing `IsHTTPScheme` guard and for the reason its comment already states.
+3. Add unit cases for all three sources plus the replay path.
+4. Add a canary stage passing `--base-url http://user:<canary>@host` and scanning every surface.
 
-**Verify:** `go test ./internal/curl/...`
-- [ ] `talaria call headspec.yaml headThing` against a server that answers HEAD returns promptly
-      with a status instead of exiting 124/18.
-- [ ] The emitted command for a body starting with `@` sends that text as data when pasted.
+**Verify:** `go test ./internal/request/... ./cmd/talaria/... ./internal/canary/...`
+- [ ] `--base-url 'http://admin:s3cr3t@127.0.0.1:8898'` exits 2, and `s3cr3t` appears in no
+      output and in no freshly-created `history.jsonl`.
+- [ ] A spec whose `servers[0].url` carries userinfo is rejected the same way.
 
 ---
 
-### Task 4: Bound the curl subprocess with connect and total timeouts
+### Task 4: Apply `redact.headers` to the displayed request and the emitted curl
 
 **Fixes findings:** #4
 
+`hide()` hard-codes `var builtin *secret.Redactor` (nil = built-ins only) and `cfg.Redact.Headers`
+only ever reaches `corpus.Redactors` (call.go:239). The result is inverted against DESIGN.md:339
+and README.md:209: the *history entry* stores `<redacted>` while stdout's `request.headers` and
+`request.curl` print the value in the clear — the permanent artifact is protected and the surface
+the agent reads is not. No test at any level covers `redact.headers`.
+
 **Files:**
-- `internal/curl/config.go` (modify)
-- `internal/curl/exec.go` (modify)
+- `internal/request/build.go` (modify)
 - `cmd/talaria/call.go` (modify)
 - `cmd/talaria/run.go` (modify)
-- `internal/curl/exec_test.go` (modify)
+- `internal/request/build_test.go` (modify)
+- `internal/canary/canary_test.go` (modify)
 
 **Steps:**
-1. Add an exported options type to `internal/curl` carrying `ConnectTimeout` and `MaxTime`
-   (`time.Duration`), with defaults (10s connect, 30s total). Thread it through `BuildConfig` and
-   `Execute` by adding an `ExecuteWith(req, opts)` / `BuildConfigWith(req, capture, opts)` pair
-   and keeping `Execute(req)` / `BuildConfig(req, capture)` as the default-options wrappers, so
-   existing call sites and tests keep compiling.
-2. In `document.build`, emit `connect-timeout` and `max-time` directives from those options.
-   curl enforces them itself and exits 28, which `runFailure` already classifies as a request
-   failure (exit 1), so the happy path needs no Go-side plumbing.
-3. In `Execute`, use `exec.CommandContext` with a context whose deadline is `MaxTime` plus a
-   small margin, and set `cmd.WaitDelay`, so a curl that ignores its own timeout is still killed
-   and reaped rather than leaving talaria blocked forever.
-4. Add a `--timeout` flag (seconds, total) to `call` and `run`, defaulting to the package
-   default, and pass it through. `run` is the reason this is CRIT: without a bound, the suite
-   stalls on operation *k* of *n* and emits no report at all, so an agent or CI gets nothing.
-5. Test against a local server that accepts the connection and never responds: `ExecuteWith` with
-   a short `MaxTime` returns a request-failure error within the timeout instead of blocking, and
-   the built document contains both directives.
+1. Add a `Redactor *secret.Redactor` field to `request.Inputs`, documented as the config file's
+   user-extensible display patterns layered over the non-configurable built-in floor.
+2. Change `hide()` (build.go:289) to take that `*secret.Redactor` and use it in place of the
+   local `var builtin`. A nil value must keep meaning built-ins only, so every existing caller and
+   test is unaffected — `secret.Redactor.IsSensitive` already has a nil receiver path.
+3. Thread it at every `request.Build` call site (`cmd/talaria/call.go`, `cmd/talaria/run.go`, and
+   any other) from `secret.NewRedactor(cfg.Redact.Headers...)`, the same construction
+   `newRedactors` uses at call.go:239.
+4. Confirm the query and cookie paths pick it up too — `hide` is shared by all three at
+   build.go:78-80, which is what README.md:209 promises.
+5. Add a canary stage that configures `redact.headers` with a glob and greps stdout, `--dry-run`
+   and pretty output for the value.
 
-**Verify:** `go test ./internal/curl/... ./cmd/talaria/...`
-- [ ] A call against a never-answering server fails with exit 1 inside the timeout.
-- [ ] `talaria run` over a spec containing such an operation still emits its report.
+**Verify:** `go test ./internal/request/... ./cmd/talaria/... ./internal/canary/...`
+- [ ] With `redact: {headers: ["x-session-*"]}`, `X-Session-Id` renders `<redacted>` in
+      `request.headers`, in `request.curl`, in pretty output and in `--dry-run`.
+- [ ] Built-in-only behaviour is unchanged when the config sets no extra patterns.
 
 ---
 
-### Task 5: Serialise history appends so trim cannot destroy entries
+### Task 5: Redact response bodies that are arrays or contain arrays
 
 **Fixes findings:** #5
 
+`decodeObject` rejects any body not starting with `{`, and `redactPath` only descends into
+`map[string]any`. A top-level JSON array and an array nested under an object — two very common
+shapes — are returned unchanged, so the built-in `access_token`/`refresh_token`/`id_token` paths
+and any configured `redact.body-paths` silently do nothing and, because §5a mandates redaction at
+write time, the value lands permanently in `history.jsonl`. `TestBodySkipsNonJSONBodies`
+currently **asserts the leak as correct behaviour**.
+
 **Files:**
-- `internal/corpus/store.go` (modify)
-- `internal/corpus/lock_unix.go` (create)
-- `internal/corpus/lock_other.go` (create)
-- `internal/corpus/store_test.go` (modify)
+- `internal/secret/response.go` (modify)
+- `internal/secret/response_test.go` (modify)
+- `internal/canary/canary_test.go` (modify)
 
 **Steps:**
-1. `Append` (store.go:104) does an atomic O_APPEND `write` and then `trim`, which reads the whole
-   file, filters, and replaces it. Nothing serialises the two, so any entry appended between
-   `trim`'s `os.ReadFile` (store.go:179) and its `Rename` (store.go:224) is silently dropped —
-   `Append` returned nil for it, so the "not recorded in history" warning never fires.
-2. Take an exclusive advisory lock for the whole of `Append` — write *and* trim — released with
-   `defer`. Lock a sibling `history.jsonl.lock` file rather than the store itself, so the lock
-   survives `replace`'s rename. Keep `Read` lock-free: `replace`'s temp+rename is already correct
-   for readers.
-3. Put the lock behind two small files so the package still builds everywhere:
-   `lock_unix.go` (`//go:build unix`) using `syscall.Flock` with `LOCK_EX`, and `lock_other.go`
-   (`//go:build !unix`) whose acquire is a no-op. Do not add a new module dependency.
-4. Regression test: seed a store to `maxPerSource-1` entries for one source, then run N
-   goroutines × M `Append`s, and assert every entry that returned nil is present afterwards.
-   Run it under `-race`. Below the cap the trim path returns early (store.go:203), so the test
-   must seed *over* the cap boundary to exercise the rewrite.
+1. Rename/repurpose `decodeObject` (response.go:155) to decode into `any`, accepting a leading
+   `[` as well as `{`. Keep both existing guards exactly as they are: `dec.UseNumber()` (so a
+   large id is not rewritten through float64) and the trailing-token `io.EOF` check (so a body
+   ending in junk is not re-encoded).
+2. Change `redactPath` (response.go:190) to take `any` and fan out across `[]any` at each
+   segment: applying `items.access_token` to every element of `items`, and a top-level
+   `access_token` to every element of a top-level array. Report `true` if any element matched.
+3. Update the encode side to round-trip a non-object root.
+4. Retarget `TestBodySkipsNonJSONBodies` (response_test.go:127): `[{"access_token":"x"}]` moves
+   out of the skip list into a new case asserting it *is* redacted; `"not json at all"` stays.
+5. Add both array shapes to the canary suite so the store is gated on them.
 
-**Verify:** `go test -race -count=3 ./internal/corpus/...`
-- [ ] The concurrency test loses zero entries where the pre-fix code lost ~60 of 80.
-- [ ] Two `talaria` processes appending to the same `history.jsonl` both keep their entries.
+**Verify:** `go test ./internal/secret/... ./internal/canary/...`
+- [ ] `[{"access_token":"TOPSECRET-ARR"}]` and `{"items":[{"access_token":"TOPSECRET-NEST"}]}`
+      are both redacted on stdout and in `history.jsonl`.
+- [ ] Object bodies, non-JSON bodies and large integer ids behave exactly as before.
 
 ---
 
-### Task 6: Send `run`'s generated body under the media type it was generated from
+### Task 6: Handle signals so a killed talaria does not orphan curl or leak the raw capture
 
 **Fixes findings:** #6
 
-**Files:**
-- `internal/gen/fixtures.go` (modify)
-- `cmd/talaria/run.go` (modify)
-- `internal/gen/fixtures_test.go` (modify)
-- `cmd/talaria/run_test.go` (modify)
-
-**Steps:**
-1. `bodySchema` (fixtures.go:223) deliberately picks the *JSON* media type to generate from, but
-   that choice is never communicated onward: `run` passes only the bytes and
-   `binder.contentType` (request/body.go:123) independently picks `rb.Content[0].ContentType`.
-   When JSON is not first they disagree — and on the Swagger 2.0 path every converted `formData`
-   operation sends a JSON body under `application/x-www-form-urlencoded`.
-2. Have `bodySchema` return the media type alongside the schema, and add a `ContentType` field to
-   `gen.Data` recording the media type the body was actually generated for. When the body came
-   from a fixture and the operation declares no content, use `application/json` — `compact`
-   already treats a fixture body as JSON.
-3. In `runner.execute` (run.go:329), when `data.Body` is non-nil and `data.ContentType` is
-   non-empty, add `Content-Type: <media type>` to the headers passed as `request.Inputs.Headers`
-   — unless a fixture header already set one. `binder.contentType` already lets a user-set header
-   win, so nothing else changes.
-4. Tests: a 3.0 spec declaring `application/xml` before `application/json` produces a request
-   with `Content-Type: application/json`; a converted Swagger 2.0 `formData` operation likewise;
-   a fixture-supplied `Content-Type` still wins.
-
-**Verify:** `go test ./internal/gen/... ./cmd/talaria/...`
-- [ ] The request `run` builds carries a `Content-Type` matching the bytes in its body.
-- [ ] A smoke run against a strict server no longer reports a spec bug that is talaria's.
-
----
-
-### Task 7: Preserve non-UTF-8 request bodies in the corpus, and refuse lossy replays
-
-**Fixes findings:** #7
-
-**Files:**
-- `internal/corpus/entry.go` (modify)
-- `cmd/talaria/history.go` (modify)
-- `internal/corpus/entry_test.go` (modify)
-- `cmd/talaria/history_test.go` (modify)
-
-**Steps:**
-1. `newBody` (entry.go:206) does `body.Data = string(data)` and the entry is marshalled with
-   `encoding/json`, which replaces every invalid byte with U+FFFD. `replayRequest`
-   (history.go:511) then does `Data: []byte(body.Data)` with no guard, so a 1024-byte binary body
-   replays as 2048 bytes, silently.
-2. Add an `Encoding string \`json:"encoding,omitempty"\`` field to `corpus.Body`. In `newBody`,
-   when `!utf8.Valid(data)` after truncation, store `base64.StdEncoding.EncodeToString(data)` in
-   `Data` and set `Encoding` to `"base64"`. Leave valid UTF-8 exactly as it is today, so existing
-   stores and their tests are unaffected and the common case stays readable.
-3. In `replayRequest`, decode `"base64"` back to bytes before building `request.Body`. Refuse any
-   `Encoding` value it does not recognise with a `clierr.Usage` error, the way it already refuses
-   `Truncated` — a store written by a newer talaria must not be replayed as literal text.
-4. Check every other reader of `Body.Data` (`history show`, and any display path) and render a
-   base64 body without pretending it is text.
-5. Tests: a body of `bytes(range(256))*4` round-trips byte-for-byte through
-   `Entry` → JSON → `replayRequest`; an unknown `encoding` is refused; a UTF-8 body's stored form
-   is unchanged from today.
-
-**Verify:** `go test ./internal/corpus/... ./cmd/talaria/...`
-- [ ] `talaria history replay N` sends exactly the bytes the original call sent.
-- [ ] The corpus the twin will read (DESIGN.md §5) holds the real bytes, not U+FFFD.
-
----
-
-### Task 8: Restore the CLI contract — usage exit code for unknown commands, JSON envelope for `version`
-
-**Fixes findings:** #9, #10
+Nothing installs a signal handler and all cleanup is `defer`-based, so an unhandled signal runs
+none of it. Confirmed: curl is reparented to `ppid=1` and the request **completes 8s after talaria
+is dead** (so Ctrl-C on an `--allow-mutations` POST does not cancel the write, and `recordCall`
+never runs, so the call is absent from history); and the capture directory survives holding the
+*raw, unredacted* response, along with the `talaria-body-*` request-body temp file
+(config.go:291).
 
 **Files:**
 - `cmd/talaria/root.go` (modify)
-- `cmd/talaria/version.go` (modify)
-- `cmd/talaria/exitcode_test.go` (modify)
-- `cmd/talaria/version_test.go` (modify)
+- `internal/curl/exec.go` (modify)
+- `internal/curl/exec_test.go` (modify)
 
 **Steps:**
-1. `talaria bogus` exits 1, because cobra's "unknown command" error is never classified and
-   `exitCode` treats an unclassified error as a request failure. DESIGN.md §4 assigns 2 to usage
-   errors, and exit 1 is the code AGENT.md tells an agent is transient and worth retrying — so a
-   typo sends the agent into a retry loop. Fix by setting `Args: usageArgs(cobra.NoArgs)` on the
-   root command: `cobra.NoArgs` produces exactly the `unknown command %q for %q` message, and
-   `usageArgs` already wraps it as `clierr.Usage`. Bare `talaria` still prints help and exits 0,
-   because `ValidateArgs` passes on an empty argument list and cobra then returns `flag.ErrHelp`.
-2. `version` (version.go:17) `fmt.Fprintf`s `talaria dev` unconditionally, ignoring `--output`.
-   DESIGN.md §3.1 and AGENT.md:183 both promise `--output json` on *every* command with the
-   `talaria/v1` envelope — and this is the one command an agent uses to check compatibility.
-   Route it through `resolveFormat(cmd)` + `output.New(format, cmd.OutOrStdout()).Render(...)`
-   with a payload of `{"version": version}`, exactly as `list` does. Keep the bare
-   `talaria <version>` string as the pretty rendering, and give the payload a `Table` so `tsv`
-   renders too.
-3. Tests: `talaria bogus` exits 2 and its stderr envelope carries `"code":2`; `talaria version
-   --output json` emits one object with `"schema":"talaria/v1"` and a `version` field;
-   `--output pretty` is unchanged from today.
+1. In `cmd/talaria/root.go`, wrap execution in
+   `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)` and thread that
+   context down to `curl.ExecuteWith`.
+2. In `exec.go:77`, derive the timeout context from the passed-in ctx instead of
+   `context.Background()`, so both cancellation sources kill curl through the existing
+   `CommandContext` and every `defer` (capture cleanup, config cleanup) runs normally.
+3. Set `cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}` with a `cmd.Cancel` that signals
+   `-pgid`, so anything curl spawned dies with it. This is unix-only — put it behind the same
+   build-tag split `internal/corpus` already uses for `lock`, with a no-op elsewhere, so the
+   non-unix build keeps compiling.
+4. For SIGKILL, which no handler can catch: sweep stale `talaria-call-*` and `talaria-body-*`
+   directories under `TMPDIR` at start-up, removing only those older than a conservative age and
+   only ones talaria itself named.
+5. Test that a cancelled context terminates curl and removes both the capture directory and the
+   `talaria-body-*` temp file.
 
-**Verify:** `go test ./cmd/talaria/...`
-- [ ] `talaria bogus` → exit 2. `talaria` with no arguments → help, exit 0.
-- [ ] Every command's stdout under `--output json` parses as the versioned envelope.
+**Verify:** `go test ./internal/curl/... ./cmd/talaria/...`
+- [ ] Cancelling the context mid-call kills curl rather than orphaning it, and leaves no
+      `talaria-call-*` or `talaria-body-*` behind.
+- [ ] The un-signalled path is unchanged: `go test -race ./...` stays green.
 
 ---
 
-### Task 9: Stop libopenapi writing structured logs to stdout
+### Task 7: Give history entries a stable id so `replay` cannot re-issue the wrong request
 
-**Fixes findings:** #11
+**Fixes findings:** #7
+
+The index is `len(entries) - position` (history.go:271), recomputed on every read, and
+`corpus.Entry` carries no stable identifier. `call`, `run` **and `replay` itself** all append, so
+every index in a previously-printed listing silently shifts. Confirmed: `history replay 2` then
+`history replay 1` replayed the *same* entry twice. Two replays in a row is ordinary agent
+behaviour, and the e2e suite cannot catch it because it replays index 1 exactly once.
 
 **Files:**
-- `internal/spec/load.go` (modify)
-- `internal/spec/load_test.go` (modify)
+- `internal/corpus/entry.go` (modify)
+- `internal/corpus/store.go` (modify)
+- `cmd/talaria/history.go` (modify)
+- `internal/corpus/store_test.go` (modify)
+- `AGENT.md` (modify)
 
 **Steps:**
-1. `libopenapi.NewDocument(data)` (load.go:49) leaves the document config nil, so `BuildV3Model`
-   falls back to a default configuration whose logger is a JSON `slog` handler writing to the
-   real `os.Stdout`. That bypasses `cmd.OutOrStdout()`, the `talaria/v1` envelope and every
-   redaction path — a spec with an unresolvable `$ref` puts two `{"time":…,"level":"ERROR"}`
-   documents on stdout and nothing else.
-2. Switch to `libopenapi.NewDocumentWithConfiguration(data, cfg)` where `cfg` is a
-   `datamodel.NewDocumentConfiguration()` with its `Logger` set to
-   `slog.New(slog.NewJSONHandler(io.Discard, nil))`. stdout belongs to the envelope; diagnostics
-   that must be kept go to stderr, not there.
-3. Leave `AllowFileReferences` and `AllowRemoteReferences` at their `false` defaults when passing
-   the configuration — that default is what stops a hostile spec's `$ref` reading local files or
-   fetching URLs, and constructing the config explicitly is exactly where it could be lost.
-4. Test: loading a spec with an unresolvable remote `$ref` writes nothing to the process's
-   stdout. Capture `os.Stdout` around the call (swap in an `os.Pipe`) so the assertion covers the
-   real file descriptor rather than a cobra writer, since that is the channel that leaked.
+1. Add a stable `ID string` to `corpus.Entry`, assigned at append time. Use the entry's
+   RFC3339Nano timestamp: it needs no counter state in the file, is already monotonic per process,
+   and survives the trim path — but make `Append` disambiguate a collision (two entries in the
+   same nanosecond) rather than emit a duplicate id.
+2. Tolerate entries already on disk with no id: an old store must keep listing and showing, so an
+   empty id renders as such rather than erroring the whole read.
+3. Have `history` list print the id alongside the positional index, in the JSON view and as a
+   column in the table/TSV rows.
+4. Have `show` and `replay` accept either: an id when the argument matches one, the positional
+   index otherwise. Keep the positional form working — it is documented — but resolve the id
+   first so an unambiguous id always wins.
+5. Document the id as the stable handle in `AGENT.md`'s history section, and say plainly that
+   positional indices shift on every write.
+6. Test the exact confirmed sequence: list, replay one entry, then replay a *different* id and
+   assert it replayed that one.
 
-**Verify:** `go test ./internal/spec/... ./cmd/talaria/...`
-- [ ] `talaria list refspec.yaml --output json 2>/dev/null` emits exactly one JSON document.
-- [ ] File and remote `$ref` resolution is still disabled.
+**Verify:** `go test ./internal/corpus/... ./cmd/talaria/...`
+- [ ] Two consecutive `history replay <id>` calls with different ids replay different requests.
+- [ ] A store written before this change still lists, shows and replays.
+
+---
+
+### Task 8: Make `talaria auth` and `talaria auth <typo>` exit 2
+
+**Fixes findings:** #8
+
+`newAuthCmd` (auth.go:30) sets no `Args`/`RunE`, so `talaria auth` and `talaria auth bogus` both
+exit 0 with cobra help on **stdout**. DESIGN.md §4 assigns 2 to usage errors with "stderr JSON
+lists valid options", AGENT.md:209 tells the agent code 2 covers "unknown command", and §3.1 makes
+deterministic exit codes the thing agents branch on. Commit f747586 installed `unknownCommand` on
+the root only.
+
+**Files:**
+- `cmd/talaria/root.go` (modify)
+- `cmd/talaria/auth.go` (modify)
+- `cmd/talaria/exitcode_test.go` (modify)
+
+**Steps:**
+1. Add a shared `groupCommand()` helper in `root.go` that sets `Args: unknownCommand` and
+   `RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() }`, mirroring what the
+   root does at root.go:35 and root.go:42, so any future command group inherits the behaviour.
+2. Apply it in `newAuthCmd`, and to any other parent-only command group registered on the root —
+   check `history` and anything else with subcommands but no `RunE`.
+3. Confirm help goes to stderr and the structured error is the usual exit-2 JSON envelope,
+   consistent with what `talaria bogus` already produces.
+4. Assert `talaria auth` → 2 and `talaria auth bogus` → 2 in `exitcode_test.go`.
+
+**Verify:** `go test ./cmd/talaria/...`
+- [ ] `talaria auth` and `talaria auth chekc` both exit 2 with a structured error on stderr.
+- [ ] `talaria auth check <spec>` is unaffected.
+
+---
+
+### Task 9: Correct the documented `--header` syntax and gate the docs on it
+
+**Fixes findings:** #9 (documentation half; the parser change is Task 2)
+
+DESIGN.md §4 specifies `--header X-Foo=bar` and the code implements it, but AGENT.md's headline
+`call` example is `--header 'X-Trace: abc'`, which exits 2 — and per finding #2 the resulting
+error echoes whatever secret the agent put there. §3.7 makes AGENT.md a first-class deliverable
+and this is the one line an LLM copies verbatim. `agentdoc_test.go` checks command names, exit
+codes and env vars but never flag argument syntax, so this drifted unpoliced.
+
+**Files:**
+- `AGENT.md` (modify)
+- `README.md` (modify)
+- `cmd/talaria/agentdoc_test.go` (modify)
+
+**Steps:**
+1. Fix `AGENT.md:54` (`--header 'X-Trace: abc'` → `--header X-Trace=abc`) and `AGENT.md:169`
+   (`--header 'X-Api-Key: sk-live-…'` → `--header X-Api-Key=sk-live-…`).
+2. Fix `README.md:274` (`--header "X-Api-Key: sk-live-…"`) the same way. README.md:251, :259 and
+   :421 mention `--header` without an argument and need no change — confirm before editing.
+3. Extend `agentdoc_test.go` to extract the fenced `talaria …` invocations from AGENT.md and
+   execute each against a fixture spec with `--dry-run`, asserting a non-usage exit. This is the
+   part that stops the next drift; without it the doc fix is a one-off.
+4. Skip or annotate any fenced invocation that legitimately cannot run under `--dry-run`, with the
+   reason stated inline rather than by silently narrowing the extraction.
+
+**Verify:** `go test ./cmd/talaria/...`
+- [ ] Every `talaria …` invocation in AGENT.md runs against the fixture spec without a usage
+      error.
+- [ ] No `--header 'Name: value'` form remains in AGENT.md or README.md.

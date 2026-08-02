@@ -1,80 +1,80 @@
 {
   "plan_file": "IMPLEMENTATION_PLAN.md",
   "spec_file": "docs/design/DESIGN.md",
-  "generated_at": "2026-08-02T20:15:00+00:00",
+  "generated_at": "2026-08-02T21:40:00+00:00",
   "total_tasks": 9,
   "tasks": [
     {
       "id": 1,
       "section": "1",
-      "title": "Redact credentials passed in the query string",
-      "line_start": 48,
+      "title": "Stop curl reading `~/.curlrc` before the credential-bearing config",
+      "line_start": 54,
       "line_end": 87,
-      "done": true
+      "done": false
     },
     {
       "id": 2,
       "section": "2",
-      "title": "Restrict base URLs and curl to http and https",
+      "title": "Never echo a rejected flag's value, and reject malformed header names",
       "line_start": 90,
-      "line_end": 120,
-      "done": true
+      "line_end": 126,
+      "done": false
     },
     {
       "id": 3,
       "section": "3",
-      "title": "Emit correct curl for HEAD, and make the rendered body flag match the wire",
-      "line_start": 123,
-      "line_end": 158,
-      "done": true
+      "title": "Reject credentials in a base URL's userinfo",
+      "line_start": 129,
+      "line_end": 160,
+      "done": false
     },
     {
       "id": 4,
       "section": "4",
-      "title": "Bound the curl subprocess with connect and total timeouts",
-      "line_start": 161,
-      "line_end": 194,
-      "done": true
+      "title": "Apply `redact.headers` to the displayed request and the emitted curl",
+      "line_start": 163,
+      "line_end": 198,
+      "done": false
     },
     {
       "id": 5,
       "section": "5",
-      "title": "Serialise history appends so trim cannot destroy entries",
-      "line_start": 197,
-      "line_end": 227,
-      "done": true
+      "title": "Redact response bodies that are arrays or contain arrays",
+      "line_start": 201,
+      "line_end": 234,
+      "done": false
     },
     {
       "id": 6,
       "section": "6",
-      "title": "Send `run`'s generated body under the media type it was generated from",
-      "line_start": 230,
-      "line_end": 261,
-      "done": true
+      "title": "Handle signals so a killed talaria does not orphan curl or leak the raw capture",
+      "line_start": 237,
+      "line_end": 274,
+      "done": false
     },
     {
       "id": 7,
       "section": "7",
-      "title": "Preserve non-UTF-8 request bodies in the corpus, and refuse lossy replays",
-      "line_start": 264,
-      "line_end": 295,
-      "done": true
+      "title": "Give history entries a stable id so `replay` cannot re-issue the wrong request",
+      "line_start": 277,
+      "line_end": 314,
+      "done": false
     },
     {
       "id": 8,
       "section": "8",
-      "title": "Restore the CLI contract — usage exit code for unknown commands, JSON envelope for `version`",
-      "line_start": 298,
-      "line_end": 330,
-      "done": true
+      "title": "Make `talaria auth` and `talaria auth <typo>` exit 2",
+      "line_start": 317,
+      "line_end": 345,
+      "done": false
     },
     {
       "id": 9,
       "section": "9",
-      "title": "Stop libopenapi writing structured logs to stdout",
-      "line_start": 333,
-      "line_end": 360,
-      "done": true
+      "title": "Correct the documented `--header` syntax and gate the docs on it",
+      "line_start": 348,
+      "line_end": 377,
+      "done": false
     }
   ]
 }
