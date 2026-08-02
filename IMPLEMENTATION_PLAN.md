@@ -383,6 +383,18 @@ codes and env vars but never flag argument syntax, so this drifted unpoliced.
    reason stated inline rather than by silently narrowing the extraction.
 
 **Verify:** `go test ./cmd/talaria/...`
-- [ ] Every `talaria …` invocation in AGENT.md runs against the fixture spec without a usage
+- [x] Every `talaria …` invocation in AGENT.md runs against the fixture spec without a usage
       error.
-- [ ] No `--header 'Name: value'` form remains in AGENT.md or README.md.
+- [x] No `--header 'Name: value'` form remains in AGENT.md or README.md.
+
+**Built as:** `TestAgentDocInvocationsAreAcceptedAsWritten` extracts every fenced `talaria …`
+line, splits it the way a shell would (quotes and trailing `#` comments included, so the
+extractor's own limits cannot be read as the doc's), substitutes `./openapi.yaml` for
+`testdata/call.yaml`, appends `--dry-run` to the commands that register it, and requires a
+non-usage exit. Two invocations cannot run: `run` has no `--dry-run` and its example points at a
+host that is not listening, and `history show <id>` names an entry an isolated history does not
+have. Both sit in a `notRunnable` map keyed by the doc's own line, so editing either line brings
+the reason back for review — per step 4, annotated rather than extracted around.
+`TestDocsWriteHeadersAsNameEqualsValue` covers the halves the runnable test cannot reach:
+AGENT.md:174 and README.md:288 are prose, outside any fence. README.md:263, :271 and :441 were
+confirmed to name `--header` with no argument and were left alone.

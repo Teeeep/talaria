@@ -51,7 +51,7 @@ Operations the spec did not name get a synthesised operationId (`GET /pets/{petI
 ## Calling
 
 ```sh
-talaria call getPet --param petId=42 --query verbose=true --header 'X-Trace: abc'
+talaria call getPet --param petId=42 --query verbose=true --header X-Trace=abc
 ```
 
 - `--param name=value` binds a parameter the operation declares, in any location. `--query` and
@@ -171,7 +171,7 @@ human — name the variable and stop:
 
 Never ask for the value, never suggest putting a literal token in a config file (talaria refuses
 them), and never try to read one out of the environment yourself. A credential you supply inline
-— `--header 'X-Api-Key: sk-live-…'` — is redacted by name in the output and in the emitted curl,
+— `--header X-Api-Key=sk-live-…` — is redacted by name in the output and in the emitted curl,
 so it is not copy-pasteable either.
 
 The emitted curl references variables symbolically:

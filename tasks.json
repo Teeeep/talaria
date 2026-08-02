@@ -74,7 +74,7 @@
       "title": "Correct the documented `--header` syntax and gate the docs on it",
       "line_start": 355,
       "line_end": 388,
-      "done": false
+      "done": true
     }
   ]
 }

@@ -285,7 +285,7 @@ in the query string is symbolic there too; a `basic` scheme renders as curl's `-
 `<redacted:env:NAME>` — that field is read, not run. The real value goes on the wire and
 appears in no output surface at all.
 
-A credential you supply yourself is treated the same way. `--header "X-Api-Key: sk-live-…"`,
+A credential you supply yourself is treated the same way. `--header X-Api-Key=sk-live-…`,
 a header from a profile, or a bound parameter whose name matches the redaction list all
 display as `<redacted>` in the request block *and* in the emitted curl, while still being sent
 verbatim. The name decides, not where the value came from — so the emitted command for a

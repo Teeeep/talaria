@@ -5,13 +5,16 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/config"
 	"github.com/Teeeep/talaria/internal/corpus"
 	"github.com/Teeeep/talaria/internal/spec"
@@ -24,6 +27,7 @@ import (
 // build rather than drifting.
 
 const agentDocPath = "../../AGENT.md"
+const readmePath = "../../README.md"
 const clierrPath = "../../internal/clierr/clierr.go"
 
 func TestAgentDocDocumentsEveryExitCode(t *testing.T) {
@@ -82,6 +86,168 @@ func TestAgentDocNamesOnlyRealEnvVars(t *testing.T) {
 
 		t.Errorf("AGENT.md names $%s, which talaria never reads", name)
 	}
+}
+
+// TestAgentDocInvocationsAreAcceptedAsWritten runs every command the doc shows
+// in a fenced block, exactly as written, and requires it not to be a usage
+// error. The tests above read command names, exit codes and variable names;
+// none of them read a flag's argument, which is how the headline `call` example
+// came to say `--header 'X-Trace: abc'` when the parser takes `X-Trace=abc`.
+// That line exits 2, and it is the one line a model copies verbatim.
+func TestAgentDocInvocationsAreAcceptedAsWritten(t *testing.T) {
+	fixture := filepath.Join("testdata", "call.yaml")
+
+	// The doc writes the spec as `./openapi.yaml`, and omits it entirely where it
+	// is showing that $TALARIA_SPEC replaces the argument. Both have to land on a
+	// real spec for the invocation to get as far as its flags.
+	t.Setenv(spec.EnvSpec, fixture)
+
+	for _, invocation := range fencedInvocations(t, readAgentDoc(t)) {
+		t.Run(invocation, func(t *testing.T) {
+			if reason := notRunnable[invocation]; reason != "" {
+				t.Skip(reason)
+			}
+
+			args := shellFields(t, invocation)[1:]
+			for i, arg := range args {
+				if arg == docSpecPath {
+					args[i] = fixture
+				}
+			}
+			// Appended rather than assumed: --dry-run is `call`'s flag, and adding
+			// it to `list` or `auth check` would itself be the usage error under
+			// test. Every command that has it is one that would otherwise send a
+			// request to the fixture's deliberately unroutable server.
+			if hasDryRun(newRootCmd(), args) && !slices.Contains(args, "--dry-run") {
+				args = append(args, "--dry-run")
+			}
+
+			var stdout, stderr strings.Builder
+			if code := run(args, &stdout, &stderr); code == int(clierr.CodeUsage) {
+				t.Errorf("AGENT.md shows `%s`, which exits 2: %s", invocation, stderr.String())
+			}
+		})
+	}
+}
+
+// docSpecPath is the placeholder path the doc uses for the user's own spec.
+const docSpecPath = "./openapi.yaml"
+
+// TestDocsWriteHeadersAsNameEqualsValue covers the prose that the test above
+// cannot execute. An inline `--header 'X-Api-Key: sk-live-…'` sits outside every
+// fenced block and is copied just as readily as one inside — and a header the
+// parser rejects is a header whose value reached an error message.
+func TestDocsWriteHeadersAsNameEqualsValue(t *testing.T) {
+	for _, path := range []string{agentDocPath, readmePath} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+
+		for _, match := range headerColonForm.FindAllString(string(body), -1) {
+			t.Errorf("%s writes `%s…`; talaria's --header takes name=value, and this exits 2",
+				path, strings.TrimSpace(match))
+		}
+	}
+}
+
+// headerColonForm matches a `--header` whose argument is written curl's way,
+// `Name: value`, quoted or not. `--header` with no argument after it — the way
+// both docs refer to the flag in passing — has no colon and does not match.
+var headerColonForm = regexp.MustCompile(`--header\s+['"]?[A-Za-z][A-Za-z0-9-]*\s*:`)
+
+// notRunnable holds the fenced invocations that cannot be executed here, keyed
+// by the line as the doc writes it so that editing the line brings the reason
+// back for review rather than silently disabling the check. Narrowing the
+// extraction instead would have hidden them.
+var notRunnable = map[string]string{
+	"talaria run ./openapi.yaml --tag pets --operation getPet --base-url http://localhost:9000": "" +
+		"`run` has no --dry-run — sending the requests is what it is for — and this example " +
+		"points at a host that is not listening",
+	"talaria history show 2026-08-02T21:40:11.183204Z": "" +
+		"names one recorded entry by id; the id is an illustration and the isolated history " +
+		"these tests run against is empty",
+}
+
+// fencedInvocations extracts the commands the doc shows in fenced blocks, which
+// unlike the inline code spans docInvocations reads are written to be run: they
+// carry real arguments rather than `<operationId>` placeholders.
+func fencedInvocations(t *testing.T, doc string) []string {
+	t.Helper()
+
+	var out []string
+	fenced := false
+	for _, line := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(line, "```") {
+			fenced = !fenced
+			continue
+		}
+		if fenced && strings.HasPrefix(line, "talaria ") {
+			out = append(out, strings.TrimSpace(line))
+		}
+	}
+
+	if len(out) == 0 {
+		t.Fatal("AGENT.md shows no runnable command in a fenced block")
+	}
+
+	return out
+}
+
+// hasDryRun reports whether the command args name accepts --dry-run. It resolves
+// the command rather than matching on its name so that a second command growing
+// the flag is covered without a change here.
+func hasDryRun(root *cobra.Command, args []string) bool {
+	cmd, _, err := root.Find(args)
+	return err == nil && cmd.Flags().Lookup("dry-run") != nil
+}
+
+// shellFields splits an invocation into arguments the way a shell would, so an
+// example is executed as the reader's shell would execute it. Splitting on
+// whitespace alone would turn `--header 'X-Trace: abc'` into two mangled
+// arguments, and would pass the doc's aligned trailing comments to cobra as
+// positional arguments — both failures of the extractor rather than of the doc.
+func shellFields(t *testing.T, invocation string) []string {
+	t.Helper()
+
+	var (
+		fields  []string
+		current strings.Builder
+		quote   rune
+		open    bool
+	)
+	for _, r := range invocation {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				current.WriteRune(r)
+			}
+		case r == '#' && current.Len() == 0 && !open:
+			// A `#` starting a word begins a comment; the rest of the line is not
+			// part of the command.
+			return fields
+		case r == '\'' || r == '"':
+			quote, open = r, true
+		case r == ' ' || r == '\t':
+			if current.Len() > 0 || open {
+				fields = append(fields, current.String())
+				current.Reset()
+				open = false
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if quote != 0 {
+		t.Fatalf("AGENT.md shows `%s`, which has an unterminated quote", invocation)
+	}
+	if current.Len() > 0 || open {
+		fields = append(fields, current.String())
+	}
+
+	return fields
 }
 
 func readAgentDoc(t *testing.T) string {
