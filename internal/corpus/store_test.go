@@ -1,0 +1,462 @@
+package corpus
+
+import (
+	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Teeeep/talaria/internal/curl"
+	"github.com/Teeeep/talaria/internal/request"
+	"github.com/Teeeep/talaria/internal/secret"
+)
+
+// canary is the credential every test in this file greps the store's bytes for.
+// DESIGN.md §5a calls the recording "a permanent artifact — the highest-risk
+// surface in the tool" and answers it with redaction at *write* time, so the
+// assertion that matters is not "the entry looks redacted" but "the value is
+// nowhere in the file".
+const canary = "history-CANARY-4d81f0"
+
+// canaryRequest is a request carrying the canary through every channel that
+// could put it on disk: a resolved-at-exec-time secret header, a literal
+// Authorization header the user typed themselves, a literal cookie, a secret in
+// the query string, and a body field the built-in redaction paths name.
+func canaryRequest(t *testing.T) *request.Request {
+	t.Helper()
+
+	t.Setenv("TALARIA_TOKEN", canary)
+
+	return &request.Request{
+		OperationID: "getPet",
+		Method:      "GET",
+		BaseURL:     "https://api.example.com",
+		Path:        "/pets/42",
+		Query: []request.Pair{
+			{Name: "api_key", Value: request.Secret(secret.Env("TALARIA_TOKEN"), request.EncodeRaw)},
+			{Name: "verbose", Value: request.Literal("true")},
+		},
+		Headers: []request.Pair{
+			{Name: "Authorization", Value: request.Secret(secret.Env("TALARIA_TOKEN"), request.EncodeBearer)},
+			{Name: "X-Api-Key", Value: request.Literal(canary)},
+			{Name: "Accept", Value: request.Literal("application/json")},
+		},
+		Cookies: []request.Pair{
+			{Name: "session", Value: request.Literal(canary)},
+		},
+		Body: &request.Body{
+			ContentType: "application/json",
+			Data:        []byte(`{"refresh_token":"` + canary + `","name":"fido"}`),
+		},
+	}
+}
+
+// canaryResponse is a response carrying the canary back off the wire, in the
+// two places §5a's leak-channel table names: Set-Cookie and a token field.
+func canaryResponse() *curl.Response {
+	return &curl.Response{
+		Status: 200,
+		Headers: http.Header{
+			"Set-Cookie":   {"session=" + canary},
+			"Content-Type": {"application/json"},
+		},
+		Body:     []byte(`{"access_token":"` + canary + `","id":42}`),
+		TimingMS: 137,
+	}
+}
+
+// newStore returns a recording store writing under a temporary directory, with
+// TALARIA_HISTORY cleared so a value in the developer's own environment cannot
+// silently turn every test in this file into a no-op.
+func newStore(t *testing.T) (*Store, string) {
+	t.Helper()
+
+	t.Setenv(EnvHistory, "")
+	dir := filepath.Join(t.TempDir(), "state")
+
+	return New(dir, true), filepath.Join(dir, "history.jsonl")
+}
+
+func TestAppendStoresWhatWasSentAndWhatCameBack(t *testing.T) {
+	store, _ := newStore(t)
+
+	before := time.Now().Add(-time.Second)
+	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("read %d entries, want 1", len(entries))
+	}
+
+	got := entries[0]
+	if got.Source != SourceCall {
+		t.Errorf("Source = %q, want %q", got.Source, SourceCall)
+	}
+	if got.OperationID != "getPet" {
+		t.Errorf("OperationID = %q, want getPet", got.OperationID)
+	}
+	if got.Method != "GET" {
+		t.Errorf("Method = %q, want GET", got.Method)
+	}
+	if !strings.HasPrefix(got.URL, "https://api.example.com/pets/42?") {
+		t.Errorf("URL = %q, want the bound path and query", got.URL)
+	}
+	if got.Timestamp.Before(before) || got.Timestamp.After(time.Now().Add(time.Second)) {
+		t.Errorf("Timestamp = %v, want roughly now", got.Timestamp)
+	}
+	if got.Request.Headers["Accept"] != "application/json" {
+		t.Errorf("request Accept = %q, want it kept", got.Request.Headers["Accept"])
+	}
+	if got.Request.Body == nil || !strings.Contains(got.Request.Body.Data, `"name":"fido"`) {
+		t.Errorf("request body = %+v, want the non-secret fields kept", got.Request.Body)
+	}
+	if got.Response == nil {
+		t.Fatal("Response is nil, want the observed response")
+	}
+	if got.Response.Status != 200 {
+		t.Errorf("Response.Status = %d, want 200", got.Response.Status)
+	}
+	if got.Response.TimingMS != 137 {
+		t.Errorf("Response.TimingMS = %d, want 137", got.Response.TimingMS)
+	}
+	if got.Response.Body == nil || !strings.Contains(got.Response.Body.Data, `"id":42`) {
+		t.Errorf("response body = %+v, want the non-secret fields kept", got.Response.Body)
+	}
+	if ct := got.Response.Headers["Content-Type"]; len(ct) != 1 || ct[0] != "application/json" {
+		t.Errorf("response Content-Type = %v, want it kept", ct)
+	}
+}
+
+func TestAppendWritesAnRFC3339Timestamp(t *testing.T) {
+	store, path := newStore(t)
+
+	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	var line map[string]any
+	if err := json.Unmarshal(firstLine(t, path), &line); err != nil {
+		t.Fatalf("the entry is not JSON: %v", err)
+	}
+
+	stamp, ok := line["timestamp"].(string)
+	if !ok {
+		t.Fatalf("timestamp = %v, want a string", line["timestamp"])
+	}
+	if _, err := time.Parse(time.RFC3339, stamp); err != nil {
+		t.Errorf("timestamp %q is not RFC3339: %v", stamp, err)
+	}
+}
+
+func TestAppendRedactsAtWriteTime(t *testing.T) {
+	store, path := newStore(t)
+
+	entry := NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})
+	if err := store.Append(entry); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the store: %v", err)
+	}
+	if strings.Contains(string(data), canary) {
+		t.Errorf("the canary is in the history file:\n%s", data)
+	}
+}
+
+func TestAppendRedactsCredentialsSuppliedAsLiterals(t *testing.T) {
+	store, _ := newStore(t)
+
+	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	got := entries[0]
+	// Typed into --header rather than resolved from a ref, so only name-based
+	// redaction catches it.
+	if v := got.Request.Headers["X-Api-Key"]; v != secret.Placeholder {
+		t.Errorf("X-Api-Key = %q, want %q", v, secret.Placeholder)
+	}
+	if v := got.Request.Cookies["session"]; v != secret.Placeholder {
+		t.Errorf("session cookie = %q, want %q", v, secret.Placeholder)
+	}
+	if v := got.Request.Headers["Authorization"]; !strings.Contains(v, "<redacted:env:TALARIA_TOKEN>") {
+		t.Errorf("Authorization = %q, want the ref's redacted form", v)
+	}
+	if v := got.Response.Headers["Set-Cookie"]; len(v) != 1 || v[0] != secret.Placeholder {
+		t.Errorf("Set-Cookie = %v, want it redacted", v)
+	}
+}
+
+func TestAppendCreatesA0600FileInA0700Directory(t *testing.T) {
+	store, path := newStore(t)
+
+	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	file, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	if mode := file.Mode().Perm(); mode != 0o600 {
+		t.Errorf("file mode = %04o, want 0600", mode)
+	}
+
+	dir, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if mode := dir.Mode().Perm(); mode != 0o700 {
+		t.Errorf("directory mode = %04o, want 0700", mode)
+	}
+}
+
+func TestAppendCapsEachSourceSeparately(t *testing.T) {
+	store, _ := newStore(t)
+
+	// One interactive call first: a run over a large spec must not be able to
+	// evict a session of `call` history, which a single global cap would allow.
+	if err := store.Append(Entry{Source: SourceCall, Method: "GET", URL: "https://api.example.com/pets/1"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	for i := 0; i < maxPerSource+1; i++ {
+		entry := Entry{Source: SourceRun, Method: "GET", URL: "https://api.example.com/pets/2"}
+		if err := store.Append(entry); err != nil {
+			t.Fatalf("Append run entry %d: %v", i, err)
+		}
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	counts := map[Source]int{}
+	for _, e := range entries {
+		counts[e.Source]++
+	}
+	if counts[SourceRun] != maxPerSource {
+		t.Errorf("kept %d run entries, want %d", counts[SourceRun], maxPerSource)
+	}
+	if counts[SourceCall] != 1 {
+		t.Errorf("kept %d call entries, want the one interactive call untouched", counts[SourceCall])
+	}
+}
+
+func TestAppendTrimsOldestFirst(t *testing.T) {
+	store, _ := newStore(t)
+
+	for i := 0; i < maxPerSource+2; i++ {
+		entry := Entry{Source: SourceRun, Method: "GET", URL: "https://api.example.com/pets/" + strconv.Itoa(i)}
+		if err := store.Append(entry); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) != maxPerSource {
+		t.Fatalf("kept %d entries, want %d", len(entries), maxPerSource)
+	}
+	if want := "https://api.example.com/pets/2"; entries[0].URL != want {
+		t.Errorf("oldest kept entry = %q, want %q", entries[0].URL, want)
+	}
+	if want := "https://api.example.com/pets/" + strconv.Itoa(maxPerSource+1); entries[len(entries)-1].URL != want {
+		t.Errorf("newest entry = %q, want %q", entries[len(entries)-1].URL, want)
+	}
+}
+
+func TestAppendTruncatesLargeBodies(t *testing.T) {
+	store, path := newStore(t)
+
+	big := strings.Repeat("x", MaxBody+512)
+	req := &request.Request{
+		Method:  "POST",
+		BaseURL: "https://api.example.com",
+		Path:    "/pets",
+		Body:    &request.Body{ContentType: "text/plain", Data: []byte(big)},
+	}
+	resp := &curl.Response{Status: 200, Body: []byte(big), TimingMS: 4}
+
+	if err := store.Append(NewEntry(SourceCall, req, resp, Redactors{})); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	for name, body := range map[string]*Body{
+		"request":  entries[0].Request.Body,
+		"response": entries[0].Response.Body,
+	} {
+		if body == nil {
+			t.Fatalf("%s body is nil", name)
+		}
+		if !body.Truncated {
+			t.Errorf("%s body Truncated = false, want true", name)
+		}
+		if len(body.Data) != MaxBody {
+			t.Errorf("%s body kept %d bytes, want %d", name, len(body.Data), MaxBody)
+		}
+	}
+
+	// A truncated body must not be able to truncate the *line*: the store is
+	// JSONL, and one unparseable line would take the rest of the file with it.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the store: %v", err)
+	}
+	for i, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		if !json.Valid([]byte(line)) {
+			t.Fatalf("line %d is not valid JSON", i)
+		}
+	}
+}
+
+func TestAppendIsANoOpWhenTheEnvVarTurnsHistoryOff(t *testing.T) {
+	store, path := newStore(t)
+	t.Setenv(EnvHistory, "off")
+
+	if store.Recording() {
+		t.Error("Recording() = true, want false with TALARIA_HISTORY=off")
+	}
+	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	assertNoFile(t, path)
+}
+
+func TestAppendIsANoOpWhenTheStoreIsDisabled(t *testing.T) {
+	t.Setenv(EnvHistory, "")
+	dir := filepath.Join(t.TempDir(), "state")
+	store := New(dir, false)
+
+	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	assertNoFile(t, filepath.Join(dir, "history.jsonl"))
+}
+
+func TestTheEnvVarBeatsAnEnabledSetting(t *testing.T) {
+	// The profile setting is the user's default; the variable is the operator's
+	// override, so it wins.
+	store, path := newStore(t)
+	t.Setenv(EnvHistory, "off")
+
+	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	assertNoFile(t, path)
+}
+
+func TestReadSkipsACorruptLine(t *testing.T) {
+	store, path := newStore(t)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	lines := `{"source":"call","method":"GET","url":"https://api.example.com/pets/1"}
+{"source":"call","method":"GET",
+{"source":"call","method":"GET","url":"https://api.example.com/pets/3"}
+`
+	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
+		t.Fatalf("writing the store: %v", err)
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("read %d entries, want the 2 readable ones", len(entries))
+	}
+	if entries[1].URL != "https://api.example.com/pets/3" {
+		t.Errorf("second entry = %q, want the line after the corrupt one", entries[1].URL)
+	}
+}
+
+func TestReadOfAStoreThatWasNeverWrittenIsEmpty(t *testing.T) {
+	store, _ := newStore(t)
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("read %d entries, want none", len(entries))
+	}
+}
+
+func TestPathFollowsXDGStateHome(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+
+	got, err := New("", true).Path()
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	if want := filepath.Join(dir, "talaria", "history.jsonl"); got != want {
+		t.Errorf("Path() = %q, want %q", got, want)
+	}
+}
+
+func TestPathFallsBackToTheHomeStateDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", home)
+
+	got, err := New("", true).Path()
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	if want := filepath.Join(home, ".local", "state", "talaria", "history.jsonl"); got != want {
+		t.Errorf("Path() = %q, want %q", got, want)
+	}
+}
+
+func assertNoFile(t *testing.T, path string) {
+	t.Helper()
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("%s exists, want recording to have created nothing", path)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+		t.Errorf("%s exists, want recording to have created nothing", filepath.Dir(path))
+	}
+}
+
+func firstLine(t *testing.T, path string) []byte {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the store: %v", err)
+	}
+
+	line, _, _ := strings.Cut(string(data), "\n")
+
+	return []byte(line)
+}
