@@ -487,6 +487,13 @@ func replayRequest(stderr io.Writer, entry corpus.Entry) (*request.Request, erro
 	if err != nil {
 		return nil, clierr.Usage("the recorded URL %q cannot be parsed: %v", entry.URL, err)
 	}
+	// The store is a file on disk, so its scheme is checked on the way out as
+	// well as on the way in: an edited entry must not be able to replay as a
+	// file read or a raw TCP write.
+	if !request.IsHTTPScheme(parsed.Scheme) {
+		return nil, clierr.Usage("the recorded URL %q has scheme %q; only http and https can be replayed",
+			entry.URL, parsed.Scheme)
+	}
 
 	req := &request.Request{
 		OperationID: entry.OperationID,

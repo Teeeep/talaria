@@ -88,6 +88,13 @@ func (d *document) build(req *request.Request, capture Capture) error {
 		return err
 	}
 
+	// Defence in depth behind request.IsHTTPScheme: curl speaks file, gopher,
+	// dict and smb, and a redirect chooses the scheme of the next hop without
+	// asking talaria. The leading `=` makes each list absolute rather than
+	// additive, so these two are the only protocols this process can use.
+	d.directive("proto", "=http,https")
+	d.directive("proto-redir", "=http,https")
+
 	// silent suppresses the progress meter, which would otherwise be interleaved
 	// with the write-out payload on stdout; show-error keeps real failures
 	// visible despite it.

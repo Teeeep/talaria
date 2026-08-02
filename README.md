@@ -181,6 +181,10 @@ profiles:
       bearerAuth: ${STAGING_TOKEN}
 ```
 
+A base URL must be `http` or `https`, whichever source it comes from — the flag, a profile, or
+the spec's `servers[0].url`. Anything else is a usage error, because curl also speaks `file`,
+`gopher` and `smb`, and a spec talaria was pointed at is untrusted input.
+
 A profile may also switch its own recording off with `history: {enabled: false}` — see
 [History](#history).
 

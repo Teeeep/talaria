@@ -18,7 +18,7 @@
       "title": "Restrict base URLs and curl to http and https",
       "line_start": 90,
       "line_end": 120,
-      "done": false
+      "done": true
     },
     {
       "id": 3,

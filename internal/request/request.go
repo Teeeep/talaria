@@ -193,6 +193,24 @@ func (b Body) MarshalJSON() ([]byte, error) {
 	}{b.ContentType, string(b.Data)})
 }
 
+// IsHTTPScheme reports whether scheme is one talaria will make a request with.
+//
+// curl also speaks file, gopher, dict, smb and a dozen others, so an unchecked
+// scheme turns "call this operation" into a local file read or a raw write to
+// an arbitrary TCP port. Every URL talaria assembles comes from untrusted input
+// — a spec's servers[0].url, a profile, a stored history entry — so the check
+// belongs at each of those boundaries, not only on the flag a user typed.
+//
+// Schemes are case-insensitive per RFC 3986 §3.1, so HTTPS:// is accepted.
+func IsHTTPScheme(scheme string) bool {
+	switch strings.ToLower(scheme) {
+	case "http", "https":
+		return true
+	}
+
+	return false
+}
+
 // Request is a fully bound HTTP request, still symbolic about credentials.
 //
 // BaseURL and Path are kept apart from Query because the query string cannot be

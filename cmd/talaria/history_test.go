@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/corpus"
 	"github.com/Teeeep/talaria/internal/spec"
 )
@@ -656,5 +657,41 @@ func TestHistoryDisabledInTheProfileRecordsNothing(t *testing.T) {
 	}
 	if entries := readHistory(t); len(entries) != 0 {
 		t.Errorf("history.enabled: false recorded %d entries", len(entries))
+	}
+}
+
+// A stored entry is a file an agent (or anything else with write access to the
+// history) can edit, so the scheme has to be checked again on the way back out
+// rather than trusted because it was checked on the way in.
+func TestReplayRejectsARecordedURLWhoseSchemeIsNotHTTP(t *testing.T) {
+	for _, raw := range []string{"gopher://127.0.0.1:1234/x", "file:///etc/passwd"} {
+		t.Run(raw, func(t *testing.T) {
+			entry := corpus.Entry{Source: corpus.SourceCall, Method: "GET", URL: raw}
+
+			_, err := replayRequest(io.Discard, entry)
+			if err == nil {
+				t.Fatalf("replayRequest(%q) succeeded, want a usage error", raw)
+			}
+			if code := clierr.From(err).Code; code != clierr.CodeUsage {
+				t.Fatalf("replayRequest(%q) error = %v (code %d), want usage (%d)",
+					raw, err, code, clierr.CodeUsage)
+			}
+			scheme, _, _ := strings.Cut(raw, ":")
+			if !strings.Contains(err.Error(), scheme) {
+				t.Errorf("error %v does not name the offending scheme %q", err, scheme)
+			}
+		})
+	}
+}
+
+func TestReplayAcceptsARecordedHTTPURL(t *testing.T) {
+	entry := corpus.Entry{Source: corpus.SourceCall, Method: "GET", URL: "https://api.example.com/pets/42"}
+
+	req, err := replayRequest(io.Discard, entry)
+	if err != nil {
+		t.Fatalf("replayRequest: %v", err)
+	}
+	if req.BaseURL != "https://api.example.com" {
+		t.Errorf("BaseURL = %q, want https://api.example.com", req.BaseURL)
 	}
 }

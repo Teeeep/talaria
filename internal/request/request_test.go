@@ -337,6 +337,67 @@ func TestBuildRejectsABaseURLThatIsNotAbsolute(t *testing.T) {
 	buildErr(t, in)
 }
 
+// A scheme other than http(s) is not merely unsupported: curl speaks gopher,
+// dict, smb and file, so an unchecked scheme turns a request into a file read
+// or a raw TCP write. Every source is untrusted here — the premise is that an
+// agent points talaria at whatever spec it found.
+func TestBuildRejectsABaseURLWhoseSchemeIsNotHTTP(t *testing.T) {
+	for _, raw := range []string{
+		"gopher://127.0.0.1:1234",
+		"file:///etc/passwd",
+		"dict://127.0.0.1:2628/d:talaria",
+		"smb://127.0.0.1/share",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			in := inputs(t, "listPets")
+			in.Params = []string{"limit=10"}
+			in.BaseURL = raw
+
+			if err := buildErr(t, in); !strings.Contains(err.Error(), "http(s)") {
+				t.Errorf("error %v does not say the scheme must be http(s)", err)
+			}
+		})
+	}
+}
+
+func TestBuildRejectsANonHTTPServerDeclaredByTheSpec(t *testing.T) {
+	in := inputs(t, "listPets")
+	in.Params = []string{"limit=10"}
+	in.Doc.Model.Servers[0].URL = "gopher://127.0.0.1:1234"
+
+	err := buildErr(t, in)
+	if !strings.Contains(err.Error(), "servers[0].url") {
+		t.Errorf("error %v does not name the spec as the source", err)
+	}
+}
+
+func TestBuildRejectsANonHTTPProfileBaseURL(t *testing.T) {
+	in := inputs(t, "listPets")
+	in.Params = []string{"limit=10"}
+	in.Profile = &config.Profile{Name: "staging", BaseURL: "file:///etc/passwd"}
+
+	err := buildErr(t, in)
+	if !strings.Contains(err.Error(), "staging") {
+		t.Errorf("error %v does not name the profile as the source", err)
+	}
+}
+
+// Schemes are case-insensitive per RFC 3986, so rejecting HTTPS:// would refuse
+// a URL that is valid everywhere else.
+func TestBuildAcceptsHTTPSchemesInAnyCase(t *testing.T) {
+	for _, raw := range []string{"http://api.example.com", "HTTPS://api.example.com", "HtTp://api.example.com"} {
+		t.Run(raw, func(t *testing.T) {
+			in := inputs(t, "listPets")
+			in.Params = []string{"limit=10"}
+			in.BaseURL = raw
+
+			if got := build(t, in).BaseURL; got != raw {
+				t.Errorf("BaseURL = %q, want %q unchanged", got, raw)
+			}
+		})
+	}
+}
+
 func TestBuildAppliesProfileHeaders(t *testing.T) {
 	in := inputs(t, "listPets")
 	in.Params = []string{"limit=10"}

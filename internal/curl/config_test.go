@@ -69,6 +69,21 @@ func TestBuildConfigEmitsTheRequestAsDirectives(t *testing.T) {
 	}
 }
 
+// Defence in depth behind the scheme check in request.Build: a URL that slips
+// past it, or a 302 pointing at file:///, still cannot make curl speak anything
+// but http(s). The `=` prefix makes each list absolute rather than additive.
+func TestBuildConfigConfinesCurlToHTTPSchemes(t *testing.T) {
+	req := &request.Request{Method: "GET", BaseURL: "https://api.example.com", Path: "/pets"}
+
+	config, _, _ := buildConfig(t, req, Capture{})
+
+	for _, line := range []string{`proto = "=http,https"`, `proto-redir = "=http,https"`} {
+		if !hasDirective(config, line) {
+			t.Errorf("config is missing directive %s\ngot:\n%s", line, config)
+		}
+	}
+}
+
 func TestBuildConfigResolvesCredentialsIntoTheDocumentButNotArgv(t *testing.T) {
 	t.Setenv("TALARIA_AUTH_BEARER", canary)
 

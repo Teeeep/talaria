@@ -142,7 +142,7 @@ func (b *binder) baseURL() string {
 		}
 
 		parsed, err := url.Parse(c.raw)
-		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		if err != nil || parsed.Host == "" || !IsHTTPScheme(parsed.Scheme) {
 			b.fail("base URL %q from %s is not an absolute http(s) URL", c.raw, c.source)
 			return ""
 		}
