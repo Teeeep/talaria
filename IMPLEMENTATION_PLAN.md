@@ -127,8 +127,11 @@ These blocked implementation and are resolved here. Change them only with a desi
 - Tests are colocated (`internal/spec/loader_test.go`), per Go convention and `.ralph/stack.json`.
 - Spec fixtures live in `testdata/` beside the package that reads them.
 - No package under `internal/operation`, `internal/validate`, or `internal/gen` may import
-  `internal/curl` or `internal/twin` (DESIGN.md §5 boundary rule). No task in this plan relaxes
-  it; if a task seems to require it, the dependency is pointing the wrong way.
+  `internal/curl`, `internal/corpus` or `internal/twin` (DESIGN.md §5 boundary rule; the design
+  names `curl` and `twin`, and Task 26 adds `corpus` for the same reason — these three are
+  consumed by the twin in Phase 6). No task in this plan relaxes it; if a task seems to require
+  it, the dependency is pointing the wrong way. **Task 32 asserts this mechanically against the
+  real import graph** — it is not an honour-system rule.
 - Secret values are `SecretRef` structs everywhere except inside `internal/curl` at exec time.
   If a task tempts you to put a resolved secret in a struct field typed `string`, stop — that is
   the bug class §5a exists to prevent.
@@ -341,7 +344,7 @@ Swagger 2.0 path (Task 5) and the cache (Task 6) slot in behind a single interfa
    **Do not use `gopkg.in/yaml.v2`** — it decodes mappings as `map[interface{}]interface{}`,
    which `json.Marshal` rejects outright. Detect YAML vs JSON by attempting `json.Unmarshal`
    first and falling back to YAML, rather than by file extension (URLs often have neither).
-4. Record on the wrapper that conversion happened, so `describe` can note it later if useful.
+5. Record on the wrapper that conversion happened, so `describe` can note it later if useful.
 
 **Verify:** `go test ./internal/spec/...`
 
@@ -616,10 +619,12 @@ credential firewall is "not retrofittable — it shapes the core `Request` type.
 **Test files:**
 - `internal/config/config_test.go` (create) — env conventions, profile loading, permissions
 - `internal/config/auth_test.go` (create) — spec security scheme → SecretRef mapping
+- `cmd/talaria/flags_test.go` (create) — `--profile` and `--base-url` are registered once, on the root
 
 **Implementation files:**
 - `internal/config/config.go` (create) — profile file loading and layering
 - `internal/config/auth.go` (create) — scheme-to-credential resolution
+- `cmd/talaria/root.go` (modify) — persistent `--profile` and `--base-url` flags
 
 **Red — write failing tests:**
 1. A `bearer` HTTP security scheme maps to `TALARIA_AUTH_BEARER`; `basic` to `TALARIA_AUTH_BASIC`;
@@ -635,6 +640,10 @@ credential firewall is "not retrofittable — it shapes the core `Request` type.
 6. A missing profile name exits 2 listing the profiles that do exist.
 7. API keys in `query` and `cookie` locations map as well as `header` — v1 scope is bearer,
    basic and API key in all three locations.
+8. `--profile` and `--base-url` are registered **once** as persistent flags on the root command,
+   so `call`, `run` and `auth check` all accept them. Assert by looking each flag up on a freshly
+   built child command, as Task 2 does for `--output`. No task registers either flag per-command;
+   three commands in §4 take them, and a second registration is a silent shadowing bug.
 
 **Green — minimal implementation:**
 1. `go get github.com/spf13/viper@v1.21.0`; read `~/.config/talaria/config.yaml` with the path
@@ -923,7 +932,7 @@ mitigation and being honest about the gap is the design's stated position.
 
 ### Task 21: `talaria auth check` and exit code 5
 
-**Depends on:** Tasks 3, 13
+**Depends on:** Tasks 3, 13, 19 (assertion 5 exercises the real `call` path)
 
 **Test files:**
 - `cmd/talaria/auth_test.go` (create) — presence reporting and exit codes
@@ -1044,7 +1053,11 @@ of request chaining without the scenario DSL" (§8).
 **Red — write failing tests:**
 1. For each auth mechanism (bearer, basic, API key in header, query and cookie), inject a unique
    canary value and assert it appears in **none** of: JSON output, pretty output, TSV output,
-   dry-run output, stderr error output, the history file, the spec cache, or debug output.
+   dry-run output, stderr error output, the history file, or the spec cache. §5a also names
+   "verbose/debug logs" as a surface, but **Phases 1–4 ship no debug or `--verbose` flag** — do
+   not invent one to test. Instead assert the absence: no registered command exposes a
+   `--verbose`/`--debug` flag. §5a's rule is "no `--verbose` that bypasses [redaction]", and
+   having none is the strongest form of compliance. Whoever adds one later inherits this test.
 2. Error paths specifically: force a failure at each of spec load, param binding, credential
    resolution, curl exec and response validation, then grep every emitted byte for the canary
    (§5a: "Test explicitly — error paths are where redaction bugs live").
@@ -1263,7 +1276,10 @@ operations whose generated data would be nonsense (real ids, valid foreign keys)
 3. Mutating operations are skipped without `--allow-mutations` and reported as skipped, not
    failed — a skipped DELETE is correct behaviour, not an error.
 4. `--report json` emits the envelope with a summary (total, passed, failed, skipped); `--report
-   pretty` emits a human summary line.
+   pretty` emits a human summary line. `--report` is `run`'s own flag and **wins over the
+   persistent `--output`** when both are set; with only `--output` set, `run` follows it. Assert
+   both orderings — §3.1 puts `--output` on every command (Task 2), so an agent will set it here
+   and must not get a different format than it asked for.
 5. Without `--fail-on-error`, a 500 from one operation still exits 0; with it, exit 4.
 6. Operations requiring an unsatisfied credential are reported as such and exit 5.
 7. Path params are filled from the priority chain (Task 29), and an operation whose required
@@ -1326,6 +1342,8 @@ after the canary suite rather than being bolted on later.
 
 **Test files:**
 - `internal/e2e/e2e_test.go` (create) — the full workflow against a local server
+- `internal/e2e/boundary_test.go` (create) — the §5 package-import rule, asserted on the real
+  import graph
 - `internal/e2e/testdata/e2e-api.yaml` (create) — 3.0 spec matching the test server's behaviour
 - `internal/e2e/testdata/e2e-api-2.0.json` (create) — the same API as Swagger 2.0, for assertion 5
 
@@ -1346,6 +1364,13 @@ after the canary suite rather than being bolted on later.
 4. Exit codes observed across the sequence cover 0, 2, 4 and 5 against the same spec and server.
 5. Swagger 2.0: repeat the core of the sequence against a converted 2.0 spec, proving conversion
    output flows through operation model, curl builder, executor and validator unchanged.
+6. **The §5 boundary rule holds in the built code, not only in prose.** Shell out to
+   `go list -deps <pkg>` and assert that the transitive dependencies of `internal/operation`,
+   `internal/validate` and `internal/gen` contain **none** of `internal/curl`, `internal/corpus`
+   or `internal/twin`. Transitive, not direct — an indirect edge violates the rule just as
+   completely and is far easier to add by accident. Every other test in this plan passes whether
+   or not this invariant holds, so nothing else can catch its breach; the cost lands in Phase 6,
+   when the twin has to consume these three packages and cannot.
 
 **Green — minimal implementation:**
 1. Table-driven sequence with `t.TempDir()` for history and cache so the suite is hermetic.
