@@ -476,9 +476,16 @@ pi package and a Claude Code skill wrapping the same binary.
 - **History retention and location.** Where does it live (`~/.local/state/talaria/`? per-project
   `.talaria/`?), how much is kept, and is it opt-out? It is the highest-risk artifact in the
   tool (§5a) and needs a deliberate answer, not a default.
-- **libopenapi-validator strictness on 3.0 specs.** It defaults to 3.1+ strict JSON Schema
+- **libopenapi-validator strictness on 3.0 specs.** ~~It defaults to 3.1+ strict JSON Schema
   behaviour. Confirm in Phase 3 whether that yields false failures on real 3.0 specs and
-  whether it can be configured down per-document.
+  whether it can be configured down per-document.~~ **Resolved, Phase 3 (v0.14.0):** no false
+  failures, and no per-document configuration needed. The library reads the document's own
+  OpenAPI version and, for 3.0, rewrites the draft-04-era constructs before compiling —
+  `nullable: true` becomes a `"null"` union, boolean `exclusiveMinimum`/`exclusiveMaximum`
+  become the numeric 2020-12 spelling, and singular `example` is ignored rather than rejected.
+  `internal/validate` therefore passes no strictness options. Pinned by an adversarial 3.0
+  fixture (`internal/validate/testdata/strict-3.0.yaml`) carrying all four constructs, so a
+  library upgrade that re-imposed 3.1 semantics would fail the suite.
 - **Default output.** Locked: pretty-on-TTY, JSON-when-piped — revisit if agents get confused
   by TTY detection in odd sandboxes (`--output` always wins).
 - **`describe` compact schema format.** The agent-facing UX centrepiece; design it early and

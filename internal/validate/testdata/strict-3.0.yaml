@@ -1,0 +1,56 @@
+# A deliberately adversarial OpenAPI 3.0 document. Every construct here is legal
+# 3.0 and illegal — or means something different — under the 3.1+ JSON Schema
+# semantics libopenapi-validator defaults to (DESIGN.md §8):
+#
+#   - `nullable: true`          — dropped in 3.1 in favour of `type: [x, "null"]`
+#   - boolean exclusiveMinimum  — draft-04 spelling; 2020-12 wants a number
+#   - boolean exclusiveMaximum  — same
+#   - singular `example`        — 3.1 uses `examples` as an array
+#
+# A validator that applies 3.1 semantics to this document rejects a body that
+# the spec's own author considers valid.
+openapi: 3.0.3
+info:
+  title: Strict Edges
+  version: "1.0.0"
+servers:
+  - url: https://api.strict.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: One widget
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Widget"
+components:
+  schemas:
+    Widget:
+      type: object
+      required: [id, label, score, tags]
+      properties:
+        id:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 100
+          exclusiveMaximum: true
+          example: 5
+        label:
+          type: string
+          nullable: true
+          example: widget-one
+        score:
+          type: number
+          nullable: true
+          minimum: 0
+          exclusiveMinimum: true
+        tags:
+          type: array
+          nullable: true
+          items:
+            type: string
+          example: [a, b]
