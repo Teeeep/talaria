@@ -62,8 +62,9 @@ func NewResponseRedactor(extraHeaders, extraPaths []string) *ResponseRedactor {
 // value goes, cookie name included, because `session=` in front of a token does
 // not make the token safe to print.
 //
-// The original map is left untouched: it is still what response validation
-// checks against, and only the copy is bound for an output surface.
+// The original map is left untouched — a redactor reports, it does not edit
+// what came off the wire — and only the copy travels onward. Everything
+// downstream of this point, response validation included, reads the copy.
 func (r *ResponseRedactor) Headers(h map[string][]string) map[string][]string {
 	if h == nil {
 		return nil

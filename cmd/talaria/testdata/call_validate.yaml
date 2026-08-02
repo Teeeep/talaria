@@ -1,0 +1,62 @@
+openapi: 3.0.3
+info:
+  title: Call Validation Fixture
+  version: 1.0.0
+servers:
+  # Unroutable, as in call.yaml: every test here passes --base-url.
+  - url: https://api.invalid/v1
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    Pet:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+# Document-level security, so the request carries the credential canary and the
+# leak assertions have something to catch.
+security:
+  - bearerAuth: []
+paths:
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      summary: Fetch one pet
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+        # Documented, and bodyless: a 404 here violates nothing, which is what
+        # lets --fail-on-error's HTTP meaning be tested on its own.
+        "404":
+          description: No such pet
+  /session:
+    get:
+      operationId: getSession
+      summary: A credential-issuing endpoint
+      responses:
+        "200":
+          description: A session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token]
+                properties:
+                  token:
+                    type: integer

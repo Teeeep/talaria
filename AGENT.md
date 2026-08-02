@@ -37,7 +37,7 @@ one, the argument is the operationId.
 | `talaria search [spec] <query> [--kind operation\|schema\|param]` | substring match across operations, schemas and params |
 | `talaria describe [spec] <operationId> [--depth n]` | one operation's params, request body and responses |
 | `talaria uses [spec] <schema>` | every operation that touches a component schema |
-| `talaria call [spec] <operationId>` | build and send one request; `--dry-run` builds only |
+| `talaria call [spec] <operationId>` | build and send one request; `--dry-run` builds only, `--fail-on-error` exits 4 on an HTTP or spec violation |
 | `talaria auth check [spec]` | which credentials the spec needs and whether they are set |
 | `talaria history [--operation id] [--since 1h] [--status 4xx] [--source call\|run\|replay]` | what has already been called |
 | `talaria history show <n>` | one recorded request/response in full |
@@ -64,6 +64,26 @@ talaria call getPet --param petId=42 --query verbose=true --header 'X-Trace: abc
 The response block carries status, headers, timing and body; a JSON body is embedded as JSON, so
 one parse gets you the fields. **An HTTP 4xx or 5xx exits 0** — it is a successful observation.
 Read `response.status`; do not infer failure from the exit code.
+
+### The validation block
+
+Every executed call also carries `validation`:
+
+```json
+"validation": { "status_documented": true, "content_type_documented": true, "body_valid": true, "errors": [] }
+```
+
+The three booleans answer independently, so an undocumented 500 is distinguishable from a
+documented 200 that came back with the wrong shape. Each schema failure is one entry in
+`errors`, with the JSONPath of the offending field.
+
+A violation is an observation too: it still exits 0. `--fail-on-error` is how you ask for the
+other behaviour — it exits **4** when the response is an HTTP error or violates the spec, and
+prints the same envelope either way. Use it when you are testing; leave it off when you are
+exploring. A dry run has no validation block, because nothing came back.
+
+Validation reads the *redacted* response, so a field redacted by configuration is checked as
+`<redacted>` and may report a violation the server did not commit.
 
 ### Mutations are gated
 
@@ -145,7 +165,7 @@ than guessing again.
 | 1 | The request could not be completed: network, TLS, curl itself | check the host and `--base-url`; retrying once is reasonable |
 | 2 | Usage error: unknown operation, missing parameter, bad flag, or a mutation without `--allow-mutations` | fix the invocation using `valid_alternatives` and the message |
 | 3 | The spec could not be read or parsed | check the path or URL; do not retry unchanged |
-| 4 | A response violated the spec | report the violation (no command emits this yet — response validation is not shipped) |
+| 4 | With `--fail-on-error`: the response was an HTTP error or violated the spec | read the `validation` block and `response.status` on stdout; report what failed |
 | 5 | A required credential is not set | tell a human which variable to export; do not retry until they have |
 
 ## History

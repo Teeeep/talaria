@@ -20,15 +20,17 @@ import (
 	"github.com/Teeeep/talaria/internal/request"
 	"github.com/Teeeep/talaria/internal/secret"
 	"github.com/Teeeep/talaria/internal/spec"
+	"github.com/Teeeep/talaria/internal/validate"
 )
 
 // callView is the payload from DESIGN.md §4's sketch. A dry run fills in
 // everything except the response and validation blocks, so an agent parses one
 // structure whether or not the request was sent.
 type callView struct {
-	DryRun   bool          `json:"dry_run"`
-	Request  requestView   `json:"request"`
-	Response *responseView `json:"response,omitempty"`
+	DryRun     bool             `json:"dry_run"`
+	Request    requestView      `json:"request"`
+	Response   *responseView    `json:"response,omitempty"`
+	Validation *validate.Result `json:"validation,omitempty"`
 }
 
 // requestView is what was, or would have been, sent. Curl is the symbolic
@@ -87,6 +89,7 @@ func newCallCmd() *cobra.Command {
 		body           []string
 		dryRun         bool
 		allowMutations bool
+		failOnError    bool
 	)
 
 	// Built here rather than per-run so the warning fires once for the whole
@@ -160,7 +163,9 @@ func newCallCmd() *cobra.Command {
 			if dryRun {
 				// Nothing is recorded: a dry run is a question about a request,
 				// not a request, and history answers "what have I already tried".
-				return renderer.Render(callPayload(req, nil, redactors.Response))
+				// Nothing is validated either — an empty validation block would
+				// read as "checked, and fine".
+				return renderer.Render(callPayload(req, nil, nil))
 			}
 
 			resp, execErr := curl.Execute(req)
@@ -172,7 +177,21 @@ func newCallCmd() *cobra.Command {
 				return execErr
 			}
 
-			return renderer.Render(callPayload(req, resp, redactors.Response))
+			view := redactResponse(resp, redactors.Response)
+			result := validateResponse(cmd.ErrOrStderr(), doc, req, view)
+
+			// Rendered before the exit code is decided: --fail-on-error changes
+			// what the process exits with, not what the caller gets to read. An
+			// agent that asked for the flag still gets the full observation on
+			// stdout to act on.
+			if err := renderer.Render(callPayload(req, view, result)); err != nil {
+				return err
+			}
+			if !failOnError {
+				return nil
+			}
+
+			return callFailure(view, result)
 		},
 	}
 
@@ -191,6 +210,8 @@ func newCallCmd() *cobra.Command {
 		"print the curl command and send nothing")
 	cmd.Flags().BoolVar(&allowMutations, "allow-mutations", false,
 		"permit a method other than GET, HEAD or OPTIONS")
+	cmd.Flags().BoolVar(&failOnError, "fail-on-error", false,
+		"exit 4 if the response is an HTTP error or violates the spec")
 
 	return cmd
 }
@@ -298,6 +319,83 @@ func warnQueryCredentials(stderr io.Writer, warner *secret.QueryKeyWarner, req *
 	}
 }
 
+// redactResponse turns what came off the wire into the display form everything
+// downstream reads. It is the only conversion from curl.Response to
+// responseView, so there is one place where a response stops being raw.
+func redactResponse(resp *curl.Response, redactor *secret.ResponseRedactor) *responseView {
+	return &responseView{
+		Status:   resp.Status,
+		Headers:  redactor.Headers(resp.Headers),
+		Body:     responseBody(redactor.Body(resp.Body)),
+		TimingMS: resp.TimingMS,
+	}
+}
+
+// validateResponse checks the response against the operation's declared
+// contract, on the *redacted* representation.
+//
+// That is §5a's rule for error paths: validation errors quote the content they
+// rejected, so a validator fed the raw body is a leak channel — the one place a
+// response secret would reappear after redaction removed it. The cost is that a
+// redacted field is validated as `<redacted>`, so redacting a field the schema
+// constrains produces a violation the server did not commit. That is the right
+// way round: a spurious error is visible and correctable, a leaked credential
+// is neither.
+//
+// A response that cannot be validated at all is a warning, not a failure. The
+// call reached the server and came back; whether talaria could then check it
+// against the spec is not a reason to change the exit code an agent branches on.
+func validateResponse(
+	stderr io.Writer,
+	doc *spec.Document,
+	req *request.Request,
+	view *responseView,
+) *validate.Result {
+	result, err := validate.Response(doc, validate.Input{
+		Method:  req.Method,
+		URL:     curl.URL(req),
+		Status:  view.Status,
+		Headers: http.Header(view.Headers),
+		Body:    view.Body,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: the response was not validated: %v\n", err)
+		return nil
+	}
+
+	return result
+}
+
+// callFailure is what --fail-on-error turns an observation into.
+//
+// Both cases exit 4 (§4). The HTTP status is reported first when both apply:
+// a 500 whose body does not match the spec's error schema is a server that is
+// down, not a server with a documentation problem.
+//
+// The message summarises rather than quotes. The errors themselves are already
+// on stdout, structured and per-field, which is the surface built for reading
+// them; repeating one here would only add a second place for content to escape.
+func callFailure(view *responseView, result *validate.Result) error {
+	if view.Status >= http.StatusBadRequest {
+		return clierr.Validation("the server returned %s", statusText(view.Status))
+	}
+	if result != nil && len(result.Errors) > 0 {
+		return clierr.Validation("the response violates the spec: %s",
+			pluralise(len(result.Errors), "validation error"))
+	}
+
+	return nil
+}
+
+// pluralise renders a count with its noun, adding the s English adds.
+func pluralise(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 // callPayload renders one call in both shapes from the same values, so the JSON
 // block and the printed command cannot disagree about what was sent. A nil resp
 // is a dry run: the request block is identical either way, which is what makes
@@ -307,7 +405,7 @@ func warnQueryCredentials(stderr io.Writer, warner *secret.QueryKeyWarner, req *
 // requestView holds Value.String() and curl.Render's symbolic form, never a
 // resolved credential. The only code that resolves one is internal/curl, at
 // exec time, and it hands back a Response rather than a Request (§5a).
-func callPayload(req *request.Request, resp *curl.Response, redactor *secret.ResponseRedactor) output.Payload {
+func callPayload(req *request.Request, resp *responseView, result *validate.Result) output.Payload {
 	view := callView{
 		DryRun: resp == nil,
 		Request: requestView{
@@ -330,32 +428,47 @@ func callPayload(req *request.Request, resp *curl.Response, redactor *secret.Res
 	}
 
 	if resp != nil {
-		// The response is redacted on its way into the view and nowhere else:
-		// curl.Response keeps what came off the wire, which is what response
-		// validation has to check against (§5a).
-		view.Response = &responseView{
-			Status:   resp.Status,
-			Headers:  redactor.Headers(resp.Headers),
-			Body:     responseBody(redactor.Body(resp.Body)),
-			TimingMS: resp.TimingMS,
-		}
+		view.Response = resp
+		view.Validation = result
 		// Status and timing only. The response headers are not summarised here
 		// because a Set-Cookie or an X-Auth-Token would land in a human's
 		// scrollback unasked; --output json is where the full response lives.
 		rows = append(rows, []string{statusLine(resp)})
+		// A count, not the messages: a human scanning a call wants to know
+		// whether to go look. The messages are in --output json, where they can
+		// be read whole rather than truncated into a table cell.
+		if result != nil {
+			rows = append(rows, []string{validationLine(result)})
+		}
 	}
 
 	return output.Payload{Data: view, Table: output.Table{Rows: rows}}
 }
 
 // statusLine is the pretty renderer's one-line summary of a response.
-func statusLine(resp *curl.Response) string {
-	line := strconv.Itoa(resp.Status)
-	if text := http.StatusText(resp.Status); text != "" {
+func statusLine(resp *responseView) string {
+	return fmt.Sprintf("%s in %dms", statusText(resp.Status), resp.TimingMS)
+}
+
+// statusText renders a status code with its reason phrase, for a code that has
+// one.
+func statusText(status int) string {
+	line := strconv.Itoa(status)
+	if text := http.StatusText(status); text != "" {
 		line += " " + text
 	}
 
-	return fmt.Sprintf("%s in %dms", line, resp.TimingMS)
+	return line
+}
+
+// validationLine is the pretty renderer's one-line summary of the validation
+// block.
+func validationLine(result *validate.Result) string {
+	if len(result.Errors) == 0 {
+		return "validation: ok"
+	}
+
+	return "validation: " + pluralise(len(result.Errors), "error")
 }
 
 // pairMap renders headers or cookies as the object §4's sketch shows. Values

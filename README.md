@@ -302,6 +302,32 @@ Two rules apply before anything is sent:
 An HTTP 4xx or 5xx is a successful observation and exits 0. Only a request that could not be
 completed at all — a refused connection, a TLS failure — is exit 1.
 
+## Validating what came back
+
+Every executed call carries a `validation` block alongside the response:
+
+```json
+"validation": { "status_documented": true, "content_type_documented": true, "body_valid": true, "errors": [] }
+```
+
+The three booleans answer independently, so "the server returned an undocumented 500" is
+distinguishable from "the documented 200 came back with the wrong shape" without parsing prose.
+A schema failure produces one entry in `errors` per failing field, carrying the JSONPath of the
+offending value, because the field is the actionable part. Pretty output adds a single line —
+`validation: ok`, or `validation: 2 errors` — and leaves the messages to `--output json`.
+
+A violation is an observation, like a 404: the call still exits 0. `--fail-on-error` asks for
+the other behaviour, exiting **4** when the response is an HTTP error or violates the spec. It
+changes the exit code and nothing else — the full envelope is still on stdout, which is where
+an agent goes to find out what actually failed. A dry run has no validation block; nothing came
+back to check.
+
+Validation runs on the **redacted** response, not on the raw one. Validation errors quote the
+content they rejected, so a validator fed the raw body would be the one place a secret
+reappeared after redaction removed it. The cost is that a redacted field is validated as
+`<redacted>`, so redacting a field the schema constrains reports a violation the server did not
+commit — a visible, correctable error, which is the better failure of the two.
+
 ## History
 
 Every call talaria makes is recorded, so an agent can answer "what have I already tried, and

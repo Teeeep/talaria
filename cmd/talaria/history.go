@@ -212,7 +212,9 @@ func newHistoryReplayCmd() *cobra.Command {
 				return execErr
 			}
 
-			return renderer.Render(callPayload(req, resp, redactors.Response))
+			// No validation block: replay reads a recorded request and needs no
+			// spec to send one, so there is no contract here to check against.
+			return renderer.Render(callPayload(req, redactResponse(resp, redactors.Response), nil))
 		},
 	}
 
