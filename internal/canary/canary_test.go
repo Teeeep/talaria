@@ -502,6 +502,101 @@ func TestErrorPathsDoNotLeakTheCredential(t *testing.T) {
 	}
 }
 
+// TestAMalformedFlagDoesNotEchoItsValue covers the error path where the
+// credential is in the *argv*: the user wrote curl's `Authorization: Bearer …`
+// form, or repeated --body, and talaria refuses the invocation.
+//
+// The canary rides in the rejected argument itself rather than in the
+// environment, which is what makes this stage different from every other one in
+// this suite — here the value talaria must not print is a value it was handed
+// directly, and the message that refuses it is the surface most likely to quote
+// it back. §5a puts error paths inside the firewall.
+//
+// There is no --report surface: `run` takes no --header, --query or --body, so
+// a malformed one cannot reach it. --output covers what the failing command
+// does render, and h.written() covers the history store.
+func TestAMalformedFlagDoesNotEchoItsValue(t *testing.T) {
+	cases := []struct {
+		name string
+		// args builds the flags carrying the canary, appended to a `call`.
+		args func(value string) []string
+		// wants are the substrings the refusal must carry, so a message that
+		// said nothing at all could not pass by leaking nothing.
+		wants []string
+	}{
+		{
+			name: "header in curl's colon form",
+			args: func(v string) []string {
+				return []string{"--header", "Authorization: Bearer " + v}
+			},
+			wants: []string{"--header 1", "Authorization"},
+		},
+		{
+			name: "header whose name half is not a field name",
+			args: func(v string) []string {
+				return []string{"--header", "X-Trace: " + v + "=1"}
+			},
+			wants: []string{"--header 1", "X-Trace"},
+		},
+		{
+			name: "query in the colon form",
+			args: func(v string) []string {
+				return []string{"--query", "api_key: " + v}
+			},
+			wants: []string{"--query 1", "api_key"},
+		},
+		{
+			name: "repeated body",
+			args: func(v string) []string {
+				return []string{
+					"--body", `{"client_secret":"` + v + `"}`,
+					"--body", "@/tmp/" + v + ".json",
+				}
+			},
+			wants: []string{"--body", "2 times", "literal", "@file"},
+		},
+	}
+
+	for _, tc := range cases {
+		for _, format := range canary.Formats() {
+			t.Run(tc.name+"/"+format, func(t *testing.T) {
+				t.Parallel()
+
+				value := canary.Value("argv")
+				h := newHarness(t, nil)
+				srv := newServer(t, `{"ok":true}`)
+
+				var runs []result
+				for _, extra := range [][]string{{"--dry-run"}, nil} {
+					args := append([]string{"call", specPath, "getPublic",
+						"--base-url", srv.URL, "--output", format}, tc.args(value)...)
+					res := h.run(append(args, extra...)...)
+					if res.code != 2 {
+						t.Errorf("talaria %s = %d, want 2; stderr: %s",
+							strings.Join(res.args, " "), res.code, res.stderr)
+					}
+					for _, want := range tc.wants {
+						if !strings.Contains(res.stderr, want) {
+							t.Errorf("the refusal does not mention %q:\n%s", want, res.stderr)
+						}
+					}
+					runs = append(runs, res)
+				}
+				// The history store is a surface whether or not the refused call
+				// reached it, so it is listed and scanned either way.
+				runs = append(runs, h.runOK("history", "--output", format))
+
+				var surfaces []canary.Surface
+				for _, res := range runs {
+					surfaces = append(surfaces, res.surfaces()...)
+				}
+
+				assertNoLeak(t, value, append(surfaces, h.written()...))
+			})
+		}
+	}
+}
+
 // TestACredentialResolutionFailureNamesNoValue covers the one error path where
 // the credential is in a *configuration file* rather than the environment: a
 // profile with a literal value is refused, and the refusal must not quote what

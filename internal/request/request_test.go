@@ -202,8 +202,10 @@ func TestBuildRejectsAMalformedHeaderFlag(t *testing.T) {
 
 	err := buildErr(t, in)
 
-	if !strings.Contains(err.Error(), "foo") {
-		t.Errorf("error does not quote the malformed flag: %v", err)
+	// The position, not the argument: an argument with no separator in it is
+	// indistinguishable from a bare credential, so nothing of it is echoed.
+	if !strings.Contains(err.Error(), "--header 1") {
+		t.Errorf("error does not locate the malformed flag: %v", err)
 	}
 }
 
@@ -211,8 +213,118 @@ func TestBuildRejectsAMalformedParamFlag(t *testing.T) {
 	in := inputs(t, "listPets")
 	in.Params = []string{"limit"}
 
-	if err := buildErr(t, in); !strings.Contains(err.Error(), "limit") {
-		t.Errorf("error does not quote the malformed flag: %v", err)
+	if err := buildErr(t, in); !strings.Contains(err.Error(), "--param 1") {
+		t.Errorf("error does not locate the malformed flag: %v", err)
+	}
+}
+
+// TestBuildNeverEchoesARejectedFlagsValue is the credential firewall on the
+// error path (DESIGN.md §5a): `--header "Authorization: Bearer $TOKEN"` is the
+// shape a user reaches for, the shell has already expanded it, and quoting the
+// argument back in an exit-2 message publishes the token.
+//
+// What the message may carry is the flag's position and, when the argument
+// holds a `=` or a `:`, the text before it — a name. Never a prefix of the
+// value: a truncated credential is still a leak.
+func TestBuildNeverEchoesARejectedFlagsValue(t *testing.T) {
+	tests := []struct {
+		name string
+		// apply puts the offending argument on the inputs.
+		apply func(in *Inputs, arg string)
+		// arg builds that argument around the canary.
+		arg func(value string) string
+		// wants are the substrings the message must carry.
+		wants []string
+	}{
+		{
+			name:  "header in curl's colon form",
+			apply: func(in *Inputs, arg string) { in.Headers = []string{arg} },
+			arg:   func(v string) string { return "Authorization: Bearer " + v },
+			wants: []string{"--header 1", "Authorization"},
+		},
+		{
+			name:  "header with no separator at all",
+			apply: func(in *Inputs, arg string) { in.Headers = []string{arg} },
+			arg:   func(v string) string { return v },
+			wants: []string{"--header 1"},
+		},
+		{
+			name:  "header whose name half is not a field name",
+			apply: func(in *Inputs, arg string) { in.Headers = []string{arg} },
+			arg:   func(v string) string { return "Authorization: Bearer " + v + "=1" },
+			wants: []string{"--header 1", "Authorization"},
+		},
+		{
+			name:  "header with an empty name",
+			apply: func(in *Inputs, arg string) { in.Headers = []string{arg} },
+			arg:   func(v string) string { return "=" + v },
+			wants: []string{"--header 1"},
+		},
+		{
+			name:  "query in the colon form",
+			apply: func(in *Inputs, arg string) { in.Query = []string{arg} },
+			arg:   func(v string) string { return "api_key: " + v },
+			wants: []string{"--query 1", "api_key"},
+		},
+		{
+			name:  "param in the colon form",
+			apply: func(in *Inputs, arg string) { in.Params = []string{arg} },
+			arg:   func(v string) string { return "limit: " + v },
+			wants: []string{"--param 1", "limit"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			in := inputs(t, "listPets")
+			tc.apply(&in, tc.arg(canary))
+
+			err := buildErr(t, in)
+
+			for _, want := range tc.wants {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+			assertNoCanary(t, err.Error())
+			// Not even the first few characters of it.
+			if strings.Contains(err.Error(), canary[:8]) {
+				t.Errorf("error %q carries a prefix of the rejected value", err)
+			}
+		})
+	}
+}
+
+// TestBuildRejectsAHeaderNameThatIsNotAFieldName closes the silent corruption
+// the other half of the colon form causes: `--header 'X-Trace: abc=1'` parses,
+// cuts at the `=`, and puts the malformed `X-Trace: abc: 1` on the wire. A clean
+// exit 2 is the only honest answer, since DESIGN.md §4 specifies name=value.
+func TestBuildRejectsAHeaderNameThatIsNotAFieldName(t *testing.T) {
+	for _, arg := range []string{"X-Trace: abc=1", "X Trace=1", "X-Trace\t=1", "X(Trace)=1"} {
+		t.Run(arg, func(t *testing.T) {
+			in := inputs(t, "listPets")
+			in.Params = []string{"limit=10"}
+			in.Headers = []string{arg}
+
+			if err := buildErr(t, in); !strings.Contains(err.Error(), "--header 1") {
+				t.Errorf("error does not locate the malformed header: %v", err)
+			}
+		})
+	}
+}
+
+// TestBuildAcceptsAQueryNameAFieldNameWouldReject keeps the header rule where
+// it belongs. A query parameter is not an HTTP field: `filter[status]` and
+// `page.size` are ordinary names an API declares, and the renderer escapes them.
+func TestBuildAcceptsAQueryNameAFieldNameWouldReject(t *testing.T) {
+	in := inputs(t, "listPets")
+	in.Params = []string{"limit=10"}
+	in.Query = []string{"filter[status]=open", "page.size=10"}
+
+	req := build(t, in)
+
+	if got := find(t, req.Query, "filter[status]").String(); got != "open" {
+		t.Errorf("filter[status] = %q, want %q", got, "open")
 	}
 }
 
@@ -243,7 +355,7 @@ func TestBuildCollectsEveryBindingErrorAtOnce(t *testing.T) {
 
 	err := buildErr(t, in)
 
-	for _, want := range []string{"nosuchparam", "petId", "malformed"} {
+	for _, want := range []string{"nosuchparam", "petId", "--header 1"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q; all binding errors report together", err, want)
 		}
@@ -646,4 +758,14 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// assertNoCanary fails when a rendered surface carries the credential the tests
+// inject.
+func assertNoCanary(t *testing.T, rendered string) {
+	t.Helper()
+
+	if strings.Contains(rendered, canary) {
+		t.Errorf("the canary reached a rendered surface:\n%s", rendered)
+	}
 }

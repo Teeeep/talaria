@@ -188,8 +188,34 @@ func TestBodyFlagGivenTwiceIsUsageError(t *testing.T) {
 	in := bodyInputs(t)
 	in.Body = []string{`{"a":1}`, "@body.json"}
 
-	if msg := bodyUsageErr(t, in); !strings.Contains(msg, "--body") {
-		t.Errorf("error = %q, want it to name --body", msg)
+	msg := bodyUsageErr(t, in)
+	// The count and the kind of each value locate the mistake; the bytes are
+	// what a request body carries a client_secret in.
+	for _, want := range []string{"--body", "2 times", "literal", "@file"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error = %q, want it to mention %q", msg, want)
+		}
+	}
+}
+
+// TestARepeatedBodyFlagEchoesNoBytes is the credential firewall on the body's
+// error path (DESIGN.md §5a): request bodies routinely carry client_secret and
+// password, so a message that joined the rejected values would publish them.
+func TestARepeatedBodyFlagEchoesNoBytes(t *testing.T) {
+	const secret = "s3cr3t-canary-value"
+
+	in := bodyInputs(t)
+	in.Body = []string{`{"client_secret":"` + secret + `"}`, "@/tmp/" + secret + ".json", "-"}
+
+	msg := bodyUsageErr(t, in)
+
+	if strings.Contains(msg, secret) {
+		t.Errorf("the rejected body reached the error message:\n%s", msg)
+	}
+	for _, want := range []string{"3 times", "literal", "@file", "stdin"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error = %q, want it to mention %q", msg, want)
+		}
 	}
 }
 

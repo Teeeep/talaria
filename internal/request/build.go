@@ -1,6 +1,7 @@
 package request
 
 import (
+	"fmt"
 	"io"
 	"net/url"
 	"sort"
@@ -77,7 +78,7 @@ func Build(in Inputs) (*Request, error) {
 	// names query-string API keys (`?api_key=`) as a credential location, and a
 	// value's origin — spec, profile, --param or --query — does not change what
 	// the name says it is.
-	req.Query = hide(append(b.located(bound, inQuery), b.pairs(in.Query, "--query")...))
+	req.Query = hide(append(b.located(bound, inQuery), b.pairs(in.Query, "--query", nil)...))
 	req.Headers = hide(b.headers(bound))
 	req.Cookies = hide(b.located(bound, inCookie))
 	// After the headers, because the body's content type defers to a
@@ -174,10 +175,12 @@ func (b *binder) params() map[string]string {
 	}
 
 	bound := map[string]string{}
-	for _, raw := range b.in.Params {
+	for i, raw := range b.in.Params {
 		name, value, ok := strings.Cut(raw, "=")
 		if !ok || name == "" {
-			b.fail("--param %q is not name=value", raw)
+			// Reported like every other rejected name=value flag: by position,
+			// with the value elided. A --param can be a query-string API key.
+			b.fail("--param %d is not name=value%s", i+1, elided(raw))
 			continue
 		}
 
@@ -251,7 +254,7 @@ func (b *binder) located(bound map[string]string, in string) []Pair {
 // specific and only contributes names nothing else supplied, so `--header
 // X-Env=explicit` overrides a profile's X-Env instead of sending both.
 func (b *binder) headers(bound map[string]string) []Pair {
-	out := append(b.located(bound, inHeader), b.pairs(b.in.Headers, "--header")...)
+	out := append(b.located(bound, inHeader), b.pairs(b.in.Headers, "--header", httpFieldName)...)
 
 	if b.in.Profile == nil {
 		return out
@@ -303,12 +306,25 @@ func hide(pairs []Pair) []Pair {
 
 // pairs parses repeatable name=value flags. Only the first = separates, because
 // header and query values legitimately contain more.
-func (b *binder) pairs(raws []string, flag string) []Pair {
+//
+// A rejected argument is reported by position and never by content. The shell
+// expanded it before talaria saw it, so `--header "Authorization: Bearer
+// $TOKEN"` — the form a user reaches for — holds the real token, and quoting it
+// back would publish the credential in the exit-2 message on stderr. §5a puts
+// error paths inside the firewall, not outside it.
+//
+// rule, when non-nil, is the extra constraint this flag holds its names to.
+func (b *binder) pairs(raws []string, flag string, rule *nameRule) []Pair {
 	out := make([]Pair, 0, len(raws))
-	for _, raw := range raws {
+	for i, raw := range raws {
 		name, value, ok := strings.Cut(raw, "=")
 		if !ok || name == "" {
-			b.fail("%s %q is not name=value", flag, raw)
+			b.fail("%s %d is not name=value%s", flag, i+1, elided(raw))
+			continue
+		}
+
+		if rule != nil && !rule.ok(name) {
+			b.fail("%s %d %s%s", flag, i+1, rule.want, elided(name))
 			continue
 		}
 
@@ -316,6 +332,57 @@ func (b *binder) pairs(raws []string, flag string) []Pair {
 	}
 
 	return out
+}
+
+// nameRule constrains what the name half of a name=value flag may be. Only
+// --header has one: a header name goes on the wire as an HTTP field name, while
+// a query parameter name is an ordinary string an API is free to spell
+// `filter[status]`.
+type nameRule struct {
+	// ok reports whether the name is usable.
+	ok func(string) bool
+	// want completes "--header 2 …" when it is not.
+	want string
+}
+
+// httpFieldName holds --header names to what a header name can actually be.
+var httpFieldName = &nameRule{ok: isFieldName, want: "is not a valid HTTP header name"}
+
+// fieldNameChars is the token character set an HTTP field name is drawn from
+// (RFC 9110 §5.1, via §5.6.2).
+const fieldNameChars = "!#$%&'*+-.^_`|~" +
+	"0123456789" +
+	"ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
+	"abcdefghijklmnopqrstuvwxyz"
+
+// isFieldName reports whether name can be sent as a header name.
+//
+// The character that fails this in practice is the colon, from curl's `Name:
+// value` form: `--header 'X-Trace: abc=1'` parses as the name "X-Trace: abc",
+// which curl's config document renders as the malformed wire header
+// `X-Trace: abc: 1`. Refusing it is the difference between a request the user
+// did not write and a clean exit 2.
+func isFieldName(name string) bool {
+	for _, r := range name {
+		if !strings.ContainsRune(fieldNameChars, r) {
+			return false
+		}
+	}
+
+	return name != ""
+}
+
+// elided describes a rejected argument without echoing what may be a
+// credential: the text before its first `=` or `:`, which is a name, and
+// nothing at all when it holds neither separator — an argument with no
+// separator in it is indistinguishable from a bare token. Not even a truncated
+// prefix of the value: part of a credential is still part of a credential.
+func elided(raw string) string {
+	if cut := strings.IndexAny(raw, "=:"); cut > 0 {
+		return fmt.Sprintf(" (it starts %q; the rest is not echoed)", raw[:cut])
+	}
+
+	return " (its text is not echoed)"
 }
 
 // credentials puts each resolved credential where its scheme says it goes, as a

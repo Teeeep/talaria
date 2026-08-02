@@ -49,9 +49,19 @@ func (b *binder) bodyData() ([]byte, bool) {
 	// A repeated --body is a mistake worth naming rather than resolving by
 	// last-one-wins: the two values are usually a literal and a file, and
 	// silently dropping one of them sends a request the user did not write.
+	//
+	// What it is named by is the count and the kind of each value, never the
+	// values themselves. A request body is where a client_secret or a password
+	// travels, so joining them into an error message would put credentials on
+	// stderr — the §5a firewall covers error paths too.
 	if len(b.in.Body) > 1 {
+		kinds := make([]string, 0, len(b.in.Body))
+		for _, raw := range b.in.Body {
+			kinds = append(kinds, bodyKind(raw))
+		}
+
 		b.fail("--body was given %d times (%s); a request has one body",
-			len(b.in.Body), strings.Join(b.in.Body, ", "))
+			len(b.in.Body), strings.Join(kinds, ", "))
 		return nil, false
 	}
 
@@ -63,6 +73,21 @@ func (b *binder) bodyData() ([]byte, bool) {
 		return b.fileBody(strings.TrimPrefix(raw, fileFlagPrefix))
 	default:
 		return []byte(raw), true
+	}
+}
+
+// bodyKind names which of the three sources a --body value is, so a message can
+// tell the user which of their bodies is which without quoting any of them.
+// A file's path is elided along with the bytes: it is chosen by the same
+// command line and can name the secret it holds.
+func bodyKind(raw string) string {
+	switch {
+	case raw == stdinFlag:
+		return "stdin"
+	case strings.HasPrefix(raw, fileFlagPrefix):
+		return "@file"
+	default:
+		return "literal"
 	}
 }
 
