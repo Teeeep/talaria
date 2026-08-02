@@ -266,7 +266,7 @@
       "title": "CI workflow running the test suite",
       "line_start": 1585,
       "line_end": 1626,
-      "done": false
+      "done": true
     }
   ]
 }

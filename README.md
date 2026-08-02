@@ -475,6 +475,12 @@ secret, raw, percent-encoded and base64. It is the check that gates a release, s
 there is a redaction regression, not a flaky test. Run it alone with
 `go test ./internal/canary/...`.
 
+CI runs the build, the lint and the whole suite on every push to `main` and every pull request
+([.github/workflows/ci.yml](.github/workflows/ci.yml)), which is what makes the leak suite a
+gate rather than something to remember. The workflow runs the commands recorded in
+`.ralph/stack.json` and nothing else; `internal/ci` fails if the two drift apart or if the
+pinned Go version stops matching `go.mod`.
+
 ## Driving talaria from an agent
 
 [AGENT.md](AGENT.md) is the operating manual for the LLM on the other end: the
