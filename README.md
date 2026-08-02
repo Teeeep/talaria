@@ -3,8 +3,8 @@
 *Postman for agents. Point it at any API doc; your agent works the API and never sees
 your credentials.*
 
-> **Status: pre-implementation.** No code yet. The
-> [design document](docs/design/DESIGN.md) is the source of truth.
+> **Status: early implementation.** The command tree is scaffolded and only `talaria version`
+> works so far. The [design document](docs/design/DESIGN.md) is the source of truth.
 
 Every API client — Postman, Insomnia, Bruno, curl itself — assumes the operator is a human who
 is entitled to see their own secrets. Hand an agent a Postman collection with an environment, a
@@ -33,6 +33,24 @@ as a runnable curl command.
 - **Safe by default.** Read-only unless `--allow-mutations`. The sanctioned way to test a
   `DELETE` is against the twin.
 - **Not an MCP server.** Ever. The absence is the point.
+
+## Building
+
+Requires Go 1.26+ and curl 7.70+ (curl is the execution engine; `--write-out '%{json}'` is
+required).
+
+```sh
+go build -o talaria ./cmd/talaria
+./talaria version
+```
+
+The version string defaults to `dev` and is stamped at release time:
+
+```sh
+go build -ldflags "-X main.version=v0.1.0" -o talaria ./cmd/talaria
+```
+
+Run the tests with `go test ./...`.
 
 ## The name
 
