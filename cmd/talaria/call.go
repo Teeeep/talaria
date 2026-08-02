@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/Teeeep/talaria/internal/operation"
 	"github.com/Teeeep/talaria/internal/output"
 	"github.com/Teeeep/talaria/internal/request"
+	"github.com/Teeeep/talaria/internal/secret"
 	"github.com/Teeeep/talaria/internal/spec"
 )
 
@@ -86,6 +88,11 @@ func newCallCmd() *cobra.Command {
 		allowMutations bool
 	)
 
+	// Built here rather than per-run so the warning fires once for the whole
+	// command tree, which — since main calls run exactly once — is once per
+	// process (§5a). Tests get a fresh tree, and so a fresh warner, per case.
+	warner := secret.NewQueryKeyWarner()
+
 	cmd := &cobra.Command{
 		Use:   "call [spec] <operationId>",
 		Short: "Build a request for one operation and show the curl that runs it",
@@ -124,14 +131,28 @@ func newCallCmd() *cobra.Command {
 					operationName(op), op.Method)
 			}
 
-			req, err := buildRequest(cmd, op, doc, params, queries, headers, body)
+			// Read whether or not --profile was given: the redaction lists are a
+			// security setting, and one that only takes effect when you happen to
+			// be using a profile is one that silently does not.
+			cfg, err := config.Load("")
 			if err != nil {
 				return err
 			}
 
+			req, err := buildRequest(cmd, cfg, op, doc, params, queries, headers, body)
+			if err != nil {
+				return err
+			}
+
+			// Before the dry-run branch: the exposure is a property of the
+			// request's shape, and an emitted curl is a command the caller may
+			// well run.
+			warnQueryCredentials(cmd.ErrOrStderr(), warner, req)
+
 			renderer := output.New(format, cmd.OutOrStdout())
+			redactor := secret.NewResponseRedactor(cfg.Redact.Headers, cfg.Redact.BodyPaths)
 			if dryRun {
-				return renderer.Render(callPayload(req, nil))
+				return renderer.Render(callPayload(req, nil, redactor))
 			}
 
 			resp, err := curl.Execute(req)
@@ -139,7 +160,7 @@ func newCallCmd() *cobra.Command {
 				return err
 			}
 
-			return renderer.Render(callPayload(req, resp))
+			return renderer.Render(callPayload(req, resp, redactor))
 		},
 	}
 
@@ -166,11 +187,12 @@ func newCallCmd() *cobra.Command {
 // the flags to the operation.
 func buildRequest(
 	cmd *cobra.Command,
+	cfg *config.Config,
 	op operation.Operation,
 	doc *spec.Document,
 	params, queries, headers, body []string,
 ) (*request.Request, error) {
-	prof, err := loadProfile(cmd)
+	prof, err := selectProfile(cmd, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -202,11 +224,9 @@ func buildRequest(
 	})
 }
 
-// loadProfile reads the profile named by --profile, or returns nil when none
-// was given. The config file is opened only when it is asked for, so an
-// invocation with no profile never reads — or refuses to read — the user's
-// configuration at all.
-func loadProfile(cmd *cobra.Command) (*config.Profile, error) {
+// selectProfile picks the profile named by --profile out of an already-loaded
+// config, or returns nil when no name was given.
+func selectProfile(cmd *cobra.Command, cfg *config.Config) (*config.Profile, error) {
 	name, err := cmd.Flags().GetString("profile")
 	if err != nil {
 		return nil, clierr.Usage("%w", err)
@@ -215,12 +235,20 @@ func loadProfile(cmd *cobra.Command) (*config.Profile, error) {
 		return nil, nil
 	}
 
-	cfg, err := config.Load("")
-	if err != nil {
-		return nil, err
-	}
-
 	return cfg.Profile(name)
+}
+
+// warnQueryCredentials fires the one-time query-string warning if this request
+// carries a credential in its URL. One warning covers the request: a scheme
+// that puts two keys in the query string is a curiosity, and the point is made
+// by the first.
+func warnQueryCredentials(stderr io.Writer, warner *secret.QueryKeyWarner, req *request.Request) {
+	for _, p := range req.Query {
+		if p.Value.IsSecret() {
+			warner.Warn(stderr, p.Name, p.Value.Ref())
+			return
+		}
+	}
 }
 
 // callPayload renders one call in both shapes from the same values, so the JSON
@@ -232,7 +260,7 @@ func loadProfile(cmd *cobra.Command) (*config.Profile, error) {
 // requestView holds Value.String() and curl.Render's symbolic form, never a
 // resolved credential. The only code that resolves one is internal/curl, at
 // exec time, and it hands back a Response rather than a Request (§5a).
-func callPayload(req *request.Request, resp *curl.Response) output.Payload {
+func callPayload(req *request.Request, resp *curl.Response, redactor *secret.ResponseRedactor) output.Payload {
 	view := callView{
 		DryRun: resp == nil,
 		Request: requestView{
@@ -255,10 +283,13 @@ func callPayload(req *request.Request, resp *curl.Response) output.Payload {
 	}
 
 	if resp != nil {
+		// The response is redacted on its way into the view and nowhere else:
+		// curl.Response keeps what came off the wire, which is what response
+		// validation has to check against (§5a).
 		view.Response = &responseView{
 			Status:   resp.Status,
-			Headers:  resp.Headers,
-			Body:     responseBody(resp.Body),
+			Headers:  redactor.Headers(resp.Headers),
+			Body:     responseBody(redactor.Body(resp.Body)),
 			TimingMS: resp.TimingMS,
 		}
 		// Status and timing only. The response headers are not summarised here

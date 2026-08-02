@@ -28,10 +28,27 @@ const FileMode os.FileMode = 0o600
 // which is what a missing file loads as.
 type Config struct {
 	Profiles map[string]*Profile `yaml:"profiles"`
+	// Redact extends the credential firewall's built-in lists. It is file-wide
+	// rather than per-profile: which fields of an API's responses are secret is
+	// a property of the API, not of which environment you point at.
+	Redact Redact `yaml:"redact"`
 
 	// path is where this config was read from, so an error about a profile can
 	// name the file to edit.
 	path string
+}
+
+// Redact is the user's extension of the built-in redaction lists (§5a). Both
+// lists only ever add: nothing here can stop talaria redacting an Authorization
+// header, because a firewall a config file can switch off is not one.
+type Redact struct {
+	// Headers are extra header-name globs, e.g. x-session-*. They apply to
+	// request and response headers alike.
+	Headers []string `yaml:"headers"`
+	// BodyPaths are dotted JSON paths into a *response* body, e.g. data.token.
+	// They are how a login endpoint's `access_token` stays out of an agent's
+	// context; §5a is explicit that talaria cannot infer them.
+	BodyPaths []string `yaml:"body-paths"`
 }
 
 // Profile is one named environment: where to send requests, what to send with

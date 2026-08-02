@@ -188,6 +188,24 @@ must be mode `0600` or stricter; anything looser exits 2 telling you to `chmod`.
 are an error rather than silence, so a mistyped `baseurl:` does not quietly send the request
 somewhere else.
 
+The same file extends the redaction lists. Both keys only ever *add* — nothing in a config file
+can stop talaria redacting an `Authorization` header:
+
+```yaml
+redact:
+  headers:
+    - x-session-*
+  body-paths:
+    - data.token
+```
+
+`headers` are globs over the header name, applied to request and response headers alike, on top
+of the built-in list (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`,
+`*api*key*`, `*token*`, `*secret*`). `body-paths` are dotted JSON paths into a *response* body,
+on top of the built-in `access_token`, `refresh_token` and `id_token`. `call` reads this file
+whether or not you passed `--profile`, because a security setting that only takes effect when
+you happen to be using a profile is one that silently does not.
+
 Presence is checked without reading the value, which is what `talaria auth check` will report
 when it lands: which schemes have a credential, and which variable to set for the ones that do
 not.
@@ -227,6 +245,18 @@ Alongside it, `response` carries the status, headers, timing and body; a JSON bo
 as JSON rather than as a quoted string, so an agent parses the envelope once instead of twice.
 Pretty output prints the request line, the curl, and `200 OK in 143ms` — response headers stay
 in `--output json`, since a `Set-Cookie` does not belong in someone's scrollback unasked.
+
+What comes back is redacted too, within the limits of what a tool can know. Response headers go
+through the same name matcher as request headers, so `Set-Cookie` reads `<redacted>` by default;
+response *bodies* are redacted only at the JSON paths you configure, plus the OAuth2 token
+fields (`access_token`, `refresh_token`, `id_token`). A body in which nothing matched is
+returned byte for byte, so what you read is what the server sent. This is a mitigation, not a
+solution: talaria cannot tell a secret field from an ordinary one by looking at it, so an
+auth-issuing endpoint is for a human, not for an agent.
+
+One thing redaction cannot reach: an API key that belongs in the *query string* travels in the
+URL, and URLs are written to server access logs. talaria warns once on stderr when an operation
+sends one — naming the parameter and the environment variable, never the value.
 
 Two rules apply before anything is sent:
 
