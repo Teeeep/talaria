@@ -898,6 +898,24 @@ read — the user's configuration.
 
 **Verify:** `go test ./internal/curl/...`
 
+**Deviation, recorded during implementation:** this section specified `data` as the body
+directive. `data` is wrong in both positions, verified against curl 8.14.1 during the build:
+
+- `data = "@/path"` **strips newlines and carriage returns** out of the file, so a
+  pretty-printed JSON body or any signed payload arrives corrupted. The temp-file path emits
+  `data-binary = "@/path"` instead, which sends the file's bytes verbatim.
+- Inline, both `data` and `data-binary` read a value beginning with `@` as a *filename*, and a
+  request body legitimately can begin with `@`. The inline path emits `data-raw`, which never
+  interprets `@` and, unlike the file form, strips nothing.
+
+The escape order in point 4 was confirmed correct as written. `internal/curl/config_test.go`
+pins both choices by running the built document through the real `curl` binary against an
+`httptest.Server` and asserting a byte-identical round trip of a body containing embedded
+quotes, backslashes, tabs, newlines, a carriage return, multi-byte UTF-8 and a trailing `@`.
+
+Also added beyond the section: a non-UTF-8 body is detected by `utf8.Valid` *and* an explicit
+NUL scan, since a NUL byte truncates a quoted directive value rather than failing loudly.
+
 **Why:** §5a's primary mechanism, and docs/research §8 confirms stdin is strictly better than a
 temp file: no file on disk, no delete-after-exec race, no window for another process to read it.
 This is the single place in the program where a resolved secret exists.

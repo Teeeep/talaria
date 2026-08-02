@@ -71,7 +71,7 @@ func (v Value) String() string {
 		return v.literal
 	}
 
-	return v.prefix() + v.ref.String()
+	return v.Prefix() + v.ref.String()
 }
 
 // GoString keeps %#v — the verb reached for when debugging, i.e. exactly when a
@@ -94,11 +94,15 @@ func (v Value) Symbolic() string {
 		return v.String()
 	}
 
-	return v.prefix() + v.ref.Symbolic()
+	return v.Prefix() + v.ref.Symbolic()
 }
 
-// prefix is the literal text that precedes the credential in the field.
-func (v Value) prefix() string {
+// Prefix is the literal text that precedes the credential in the field, e.g.
+// "Bearer " for a token. It is exported because internal/curl builds the
+// resolved field text at exec time and would otherwise have to re-derive the
+// prefix from the scheme — the duplication §5a's single-crossing rule exists to
+// avoid.
+func (v Value) Prefix() string {
 	switch v.enc {
 	case EncodeBearer:
 		return "Bearer "
