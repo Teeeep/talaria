@@ -84,6 +84,42 @@ func TestBuildConfigConfinesCurlToHTTPSchemes(t *testing.T) {
 	}
 }
 
+func TestBuildConfigUsesTheHeadFlagForHEAD(t *testing.T) {
+	dir := t.TempDir()
+	capture := Capture{
+		BodyPath:   filepath.Join(dir, "body"),
+		HeaderPath: filepath.Join(dir, "headers"),
+	}
+
+	config, _, _ := buildConfig(t, &request.Request{
+		Method:  http.MethodHead,
+		BaseURL: "https://api.example.com",
+		Path:    "/pets",
+	}, capture)
+
+	// `-X HEAD` leaves curl waiting for a Content-Length body a compliant server
+	// never sends, and HEAD is a safe method, so one such operation would stall
+	// a whole `run`.
+	if !hasDirective(config, "head") {
+		t.Errorf("config is missing the head flag\ngot:\n%s", config)
+	}
+	if hasDirective(config, `request = "HEAD"`) {
+		t.Errorf("config still emits -X HEAD\ngot:\n%s", config)
+	}
+
+	// With head, curl writes the header block to the output file. Pointed at the
+	// body capture, that reports the headers as the response body.
+	if !hasDirective(config, `output = "`+os.DevNull+`"`) {
+		t.Errorf("config does not divert head's output to %s\ngot:\n%s", os.DevNull, config)
+	}
+	if hasDirective(config, `output = "`+capture.BodyPath+`"`) {
+		t.Errorf("config sends head's header block to the body capture\ngot:\n%s", config)
+	}
+	if !hasDirective(config, `dump-header = "`+capture.HeaderPath+`"`) {
+		t.Errorf("config no longer captures the headers\ngot:\n%s", config)
+	}
+}
+
 func TestBuildConfigResolvesCredentialsIntoTheDocumentButNotArgv(t *testing.T) {
 	t.Setenv("TALARIA_AUTH_BEARER", canary)
 

@@ -30,9 +30,15 @@ func Render(req *request.Request) string {
 	}
 
 	args := []string{"curl", "-s"}
+	switch {
+	// -I rather than -X HEAD, matching the config document: pasted, -X HEAD waits
+	// for a body the server never sends, so the reproduction would hang where the
+	// call it reproduces did not.
+	case strings.EqualFold(req.Method, http.MethodHead):
+		args = append(args, "-I")
 	// GET is curl's default and naming it adds noise; anything else is worth
 	// seeing, and for a mutation it is the most important token in the line.
-	if req.Method != "" && !strings.EqualFold(req.Method, http.MethodGet) {
+	case req.Method != "" && !strings.EqualFold(req.Method, http.MethodGet):
 		args = append(args, "-X", req.Method)
 	}
 
@@ -100,8 +106,11 @@ func cookieWord(req *request.Request) *word {
 }
 
 // bodyArgs renders the request body and the content type that describes it.
-// --data-binary rather than --data because --data strips newlines, which
-// changes the bytes a signed or whitespace-sensitive payload sends.
+// --data-raw rather than --data or --data-binary, matching the config document
+// for the same reason (config.go's body): those two read a value starting with
+// @ as a filename, so the emitted command would read a local file and send it
+// to the API where the call sent the text. --data also strips newlines, which
+// changes the bytes a signed or whitespace-sensitive payload carries.
 func bodyArgs(req *request.Request) []string {
 	if req.Body == nil {
 		return nil
@@ -112,7 +121,7 @@ func bodyArgs(req *request.Request) []string {
 		args = append(args, "-H", (&word{}).literal("Content-Type: "+req.Body.ContentType).String())
 	}
 
-	return append(args, "--data-binary", (&word{}).literal(string(req.Body.Data)).String())
+	return append(args, "--data-raw", (&word{}).literal(string(req.Body.Data)).String())
 }
 
 func hasHeader(req *request.Request, name string) bool {

@@ -123,6 +123,54 @@ func TestExecuteKeepsBodyAndMetadataOnSeparateChannels(t *testing.T) {
 	}
 }
 
+func TestExecuteCompletesAHEADRequest(t *testing.T) {
+	requireCurl(t)
+
+	// A compliant server answers HEAD with the Content-Length the GET would have
+	// carried and no body at all. `-X HEAD` makes curl wait for those bytes
+	// forever (or exit 18 when the connection closes); `--head` is what makes
+	// this return. There is no max-time yet, so the deadline lives here rather
+	// than letting a regression hang the suite.
+	server := serve(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "42")
+		w.Header().Set("X-Request-Id", "req-42")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := getFrom(server.URL)
+	req.Method = http.MethodHead
+
+	type outcome struct {
+		resp *Response
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		resp, err := Execute(req)
+		done <- outcome{resp, err}
+	}()
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("Execute() error = %v", got.err)
+		}
+		if got.resp.Status != http.StatusOK {
+			t.Errorf("Status = %d, want 200", got.resp.Status)
+		}
+		if id := got.resp.Headers.Get("X-Request-Id"); id != "req-42" {
+			t.Errorf("Headers[X-Request-Id] = %q, want %q", id, "req-42")
+		}
+		// The header block goes to the dump, not to the body: a HEAD response has
+		// no body, and reporting the headers as one would be a fabricated body.
+		if len(got.resp.Body) != 0 {
+			t.Errorf("Body = %q, want empty for a HEAD response", got.resp.Body)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Execute() on HEAD did not return in 10s — curl is waiting for a body the server never sends")
+	}
+}
+
 func TestExecuteReportsAConnectionFailureAsRequestFailed(t *testing.T) {
 	requireCurl(t)
 

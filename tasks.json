@@ -26,7 +26,7 @@
       "title": "Emit correct curl for HEAD, and make the rendered body flag match the wire",
       "line_start": 123,
       "line_end": 158,
-      "done": false
+      "done": true
     },
     {
       "id": 4,

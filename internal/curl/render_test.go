@@ -1,6 +1,7 @@
 package curl
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -202,11 +203,52 @@ func TestRenderNamesTheMethodAndBodyForAMutation(t *testing.T) {
 	for _, want := range []string{
 		"-X POST",
 		`-H 'Content-Type: application/json'`,
-		`--data-binary '{"name":"Rex"}'`,
+		`--data-raw '{"name":"Rex"}'`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Render() = %s\nwant it to contain %s", got, want)
 		}
+	}
+}
+
+func TestRenderUsesDashIForHEAD(t *testing.T) {
+	req := &request.Request{
+		Method:  http.MethodHead,
+		BaseURL: "https://api.example.com",
+		Path:    "/pets",
+	}
+
+	got := Render(req)
+
+	// -I, not -X HEAD: the emitted command has to reproduce the call, and pasted
+	// `-X HEAD` waits for a body the server never sends.
+	if !strings.Contains(got, "curl -s -I ") {
+		t.Errorf("Render() = %s\nwant it to contain `curl -s -I `", got)
+	}
+	if strings.Contains(got, "-X HEAD") {
+		t.Errorf("Render() = %s\nwant no -X HEAD in it", got)
+	}
+}
+
+// TestRenderSendsALeadingAtBodyAsText pins the emitted command to the config
+// document: config.go uses data-raw because `data` and `data-binary` read a
+// leading @ as a filename. Rendered as --data-binary, the reproduction command
+// reads a local file and sends it to the API instead of the body talaria sent.
+func TestRenderSendsALeadingAtBodyAsText(t *testing.T) {
+	req := &request.Request{
+		Method:  http.MethodPost,
+		BaseURL: "https://api.example.com",
+		Path:    "/pets",
+		Body:    &request.Body{ContentType: "text/plain", Data: []byte("@/etc/hostname")},
+	}
+
+	got := Render(req)
+
+	if !strings.Contains(got, `--data-raw '@/etc/hostname'`) {
+		t.Errorf("Render() = %s\nwant it to contain --data-raw '@/etc/hostname'", got)
+	}
+	if strings.Contains(got, "--data-binary") {
+		t.Errorf("Render() = %s\nwant no --data-binary: it would read the local file", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package curl
 
 import (
+	"net/http"
 	"os"
 	"strings"
 	"unicode/utf8"
@@ -74,7 +75,16 @@ func (d *document) build(req *request.Request, capture Capture) error {
 	}
 	d.directive("url", url)
 
-	if req.Method != "" {
+	// head rather than `request = "HEAD"`: -X HEAD leaves curl waiting for a body
+	// of Content-Length bytes that a compliant server never sends, so the call
+	// hangs (or exits 18 when the connection closes first). HEAD is a safe method
+	// that `run` includes without --allow-mutations, so one such operation would
+	// stall an entire report.
+	head := strings.EqualFold(req.Method, http.MethodHead)
+	switch {
+	case head:
+		d.flag("head")
+	case req.Method != "":
 		d.directive("request", req.Method)
 	}
 
@@ -105,7 +115,15 @@ func (d *document) build(req *request.Request, capture Capture) error {
 	d.directive("write-out", "%{json}")
 
 	if capture.BodyPath != "" {
-		d.directive("output", capture.BodyPath)
+		// head makes curl write the header block to the output file, which at
+		// capture.BodyPath would be reported as the response body. dump-header
+		// still captures the headers, and the staged empty body file keeps
+		// readResponse reading a real path.
+		path := capture.BodyPath
+		if head {
+			path = os.DevNull
+		}
+		d.directive("output", path)
 	}
 	if capture.HeaderPath != "" {
 		d.directive("dump-header", capture.HeaderPath)
