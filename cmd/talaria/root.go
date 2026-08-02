@@ -76,6 +76,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newUsesCmd())
 	root.AddCommand(newCallCmd())
 	root.AddCommand(newAuthCmd())
+	root.AddCommand(newHistoryCmd())
 
 	return root
 }

@@ -186,3 +186,31 @@ func TestEmptyPathUsesTheDefaultLocation(t *testing.T) {
 		t.Fatalf("Profile(staging) from the default location: %v", err)
 	}
 }
+
+// TestHistoryEnabledDefaultsToOn covers the three ways a profile can say
+// nothing about recording. History is on by default, and only an explicit
+// `false` switches it off.
+func TestHistoryEnabledDefaultsToOn(t *testing.T) {
+	off := false
+	on := true
+
+	cases := []struct {
+		name    string
+		profile *Profile
+		want    bool
+	}{
+		{"no profile selected", nil, true},
+		{"profile without a history block", &Profile{}, true},
+		{"history block without enabled", &Profile{History: &History{}}, true},
+		{"enabled: true", &Profile{History: &History{Enabled: &on}}, true},
+		{"enabled: false", &Profile{History: &History{Enabled: &off}}, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.profile.HistoryEnabled(); got != tc.want {
+				t.Errorf("HistoryEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

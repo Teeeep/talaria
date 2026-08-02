@@ -65,6 +65,32 @@ type Profile struct {
 	// reference such as ${STAGING_TOKEN}. It holds references, never values:
 	// see Resolve.
 	Auth map[string]string `yaml:"auth"`
+	// History is this profile's half of the recording opt-out. It is per-profile
+	// rather than file-wide because "record what I do here" is a property of the
+	// environment: a production profile is exactly the one you might not want a
+	// permanent artifact of.
+	History *History `yaml:"history"`
+}
+
+// History is the profile's recording setting. It is a pointer on Profile, and
+// its Enabled is a pointer here, so that "not mentioned" is distinguishable
+// from "set to false" — the default is on, and only an explicit `false` turns
+// it off. TALARIA_HISTORY=off overrides this either way (internal/corpus).
+type History struct {
+	Enabled *bool `yaml:"enabled"`
+}
+
+// HistoryEnabled reports whether calls under this profile should be recorded.
+//
+// The nil receiver is the common case — no --profile was given — and it records,
+// because history is on by default. This lives here rather than in
+// internal/corpus so that package keeps its independence from the config file.
+func (p *Profile) HistoryEnabled() bool {
+	if p == nil || p.History == nil || p.History.Enabled == nil {
+		return true
+	}
+
+	return *p.History.Enabled
 }
 
 // DefaultPath is where the profile file lives: $XDG_CONFIG_HOME/talaria/config.yaml,

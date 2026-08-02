@@ -13,6 +13,7 @@ import (
 
 	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/config"
+	"github.com/Teeeep/talaria/internal/corpus"
 	"github.com/Teeeep/talaria/internal/curl"
 	"github.com/Teeeep/talaria/internal/operation"
 	"github.com/Teeeep/talaria/internal/output"
@@ -149,18 +150,29 @@ func newCallCmd() *cobra.Command {
 			// well run.
 			warnQueryCredentials(cmd.ErrOrStderr(), warner, req)
 
-			renderer := output.New(format, cmd.OutOrStdout())
-			redactor := secret.NewResponseRedactor(cfg.Redact.Headers, cfg.Redact.BodyPaths)
-			if dryRun {
-				return renderer.Render(callPayload(req, nil, redactor))
-			}
-
-			resp, err := curl.Execute(req)
+			store, err := openHistory(cmd, cfg)
 			if err != nil {
 				return err
 			}
 
-			return renderer.Render(callPayload(req, resp, redactor))
+			renderer := output.New(format, cmd.OutOrStdout())
+			redactors := newRedactors(cfg)
+			if dryRun {
+				// Nothing is recorded: a dry run is a question about a request,
+				// not a request, and history answers "what have I already tried".
+				return renderer.Render(callPayload(req, nil, redactors.Response))
+			}
+
+			resp, execErr := curl.Execute(req)
+			// Recorded either way. A request that never completed is still
+			// something that was tried, and the entry says so by having no
+			// response block at all.
+			recordCall(cmd.ErrOrStderr(), store, corpus.SourceCall, req, resp, redactors)
+			if execErr != nil {
+				return execErr
+			}
+
+			return renderer.Render(callPayload(req, resp, redactors.Response))
 		},
 	}
 
@@ -181,6 +193,41 @@ func newCallCmd() *cobra.Command {
 		"permit a method other than GET, HEAD or OPTIONS")
 
 	return cmd
+}
+
+// newRedactors builds the pair of firewalls an entry passes through on its way
+// to disk, extended with whatever the config file added. Request and response
+// share the header list: a name worth hiding on the way back is worth hiding on
+// the way out.
+func newRedactors(cfg *config.Config) corpus.Redactors {
+	return corpus.Redactors{
+		Request:  secret.NewRedactor(cfg.Redact.Headers...),
+		Response: secret.NewResponseRedactor(cfg.Redact.Headers, cfg.Redact.BodyPaths),
+	}
+}
+
+// recordCall writes one entry, reporting a failure to write as a warning and
+// nothing more.
+//
+// A call that reached the server and came back succeeded; whether talaria then
+// managed to write the fact down is not a reason to change the exit code an
+// agent branches on. The warning still goes to stderr, because history silently
+// not recording is how a user discovers weeks later that it never was.
+func recordCall(
+	stderr io.Writer,
+	store *corpus.Store,
+	source corpus.Source,
+	req *request.Request,
+	resp *curl.Response,
+	red corpus.Redactors,
+) {
+	if !store.Recording() {
+		return
+	}
+
+	if err := store.Append(corpus.NewEntry(source, req, resp, red)); err != nil {
+		fmt.Fprintf(stderr, "warning: the call was not recorded in history: %v\n", err)
+	}
 }
 
 // buildRequest resolves the profile and the operation's credentials, then binds

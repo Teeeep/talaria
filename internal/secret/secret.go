@@ -14,6 +14,7 @@ package secret
 import (
 	"encoding/json"
 	"os"
+	"strings"
 
 	"github.com/Teeeep/talaria/internal/clierr"
 )
@@ -41,6 +42,31 @@ func Env(name string) SecretRef { return SecretRef{Source: SourceEnv, Name: name
 // value receiver is deliberate: fmt then uses it for a SecretRef, a *SecretRef,
 // and a SecretRef held as a field of some larger struct printed with %v.
 func (r SecretRef) String() string { return "<redacted:" + r.Location() + ">" }
+
+// ParseRef reads back the display form String produces, reporting whether s was
+// one. It exists for `history replay`: a stored entry carries
+// `<redacted:env:NAME>` where a credential stood, and replaying it means
+// resolving that name from the environment again — the value was never written
+// down, so re-deriving the *reference* is the only route back to a runnable
+// request.
+//
+// The round trip lives here, next to String, because the format is this
+// package's to change.
+func ParseRef(s string) (SecretRef, bool) {
+	const openTag, closeTag = "<redacted:", ">"
+
+	if !strings.HasPrefix(s, openTag) || !strings.HasSuffix(s, closeTag) {
+		return SecretRef{}, false
+	}
+
+	location := s[len(openTag) : len(s)-len(closeTag)]
+	source, name, ok := strings.Cut(location, ":")
+	if !ok || source == "" || name == "" {
+		return SecretRef{}, false
+	}
+
+	return SecretRef{Source: source, Name: name}, true
+}
 
 // Location is where the value will be read from and under which name, `env:NAME`.
 // It is what `auth check` reports as a credential's source (§4), without the

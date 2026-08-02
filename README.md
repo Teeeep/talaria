@@ -4,8 +4,8 @@
 your credentials.*
 
 > **Status: early implementation.** `talaria version`, `talaria list`, `talaria describe`,
-> `talaria search`, `talaria uses`, `talaria call` and `talaria auth check` work so far;
-> the rest of the command tree is scaffolded.
+> `talaria search`, `talaria uses`, `talaria call`, `talaria auth check` and
+> `talaria history` work so far; the rest of the command tree is scaffolded.
 > The [design document](docs/design/DESIGN.md) is the source of truth.
 
 Every API client — Postman, Insomnia, Bruno, curl itself — assumes the operator is a human who
@@ -181,6 +181,9 @@ profiles:
       bearerAuth: ${STAGING_TOKEN}
 ```
 
+A profile may also switch its own recording off with `history: {enabled: false}` — see
+[History](#history).
+
 A profile's `auth` entries may only *reference* an environment variable — `${VAR}` or `$VAR`.
 A literal token in the file is refused, because a credential talaria can read from a config file
 is a credential it would have to carry. The file names credentials and internal hosts, so it
@@ -292,6 +295,56 @@ Two rules apply before anything is sent:
 
 An HTTP 4xx or 5xx is a successful observation and exits 0. Only a request that could not be
 completed at all — a refused connection, a TLS failure — is exit 1.
+
+## History
+
+Every call talaria makes is recorded, so an agent can answer "what have I already tried, and
+what came back" without asking again:
+
+```sh
+talaria history
+talaria history --operation getPet --since 1h --status 4xx
+talaria history show 3
+talaria history replay 3
+```
+
+`history` lists the store newest first: index, time, source, method, path, status, operation.
+`--operation` filters by operationId, `--since` takes a duration (`30m`, `1h`, `168h`),
+`--status` takes an exact code (`404`) or a class (`4xx`), and `--source` takes `call`, `run`
+or `replay` — so a smoke run over a large spec does not bury the calls you made by hand. The
+index is an entry's position in the whole store, not in the filtered list, so it stays the
+number `show` and `replay` take.
+
+`history show <n>` prints one entry in full; `history replay <n>` sends it again and records
+the result as a new entry, leaving the original alone. Replay resolves credentials from the
+environment exactly as the original call did — history holds their *names*, so there is nothing
+in the file to read back. It is gated the same way `call` is: replaying a `POST` needs
+`--allow-mutations`. A header whose value was a literal talaria redacted by name cannot be
+reproduced, and replay says so on stderr rather than pretending it sent one.
+
+Entries are written **redacted, at write time**. The store is the highest-risk artifact talaria
+produces, so un-redacted recording is not an option and there is no flag for it. It lives at
+`$XDG_STATE_HOME/talaria/history.jsonl` (falling back to `~/.local/state/talaria/`), directory
+`0700` and file `0600`, one JSON entry per line, keeping the most recent 1000 entries *per
+source* and truncating bodies at 64 KiB with an explicit `"truncated": true`.
+
+Recording is off for a profile that says so, and off everywhere when the environment says so:
+
+```yaml
+profiles:
+  prod:
+    history:
+      enabled: false
+```
+
+```sh
+TALARIA_HISTORY=off talaria call ./openapi.yaml getPet --param petId=42
+```
+
+`TALARIA_HISTORY` wins over the profile: the config file is what a user configured, the
+variable is what someone auditing a machine sets. Either way nothing is written — no entry, no
+file, no directory. A dry run is never recorded; a request that failed to complete is, with no
+response block, because it is still something that was tried.
 
 ## Output
 

@@ -296,3 +296,36 @@ func assertNoCanary(t *testing.T, s string) {
 		t.Errorf("output leaked the secret value: %s", s)
 	}
 }
+
+// TestParseRefRoundTripsTheDisplayForm is the property `history replay` depends
+// on: a ref that was printed into a stored entry has to come back as the same
+// ref, because the value it names was never written down.
+func TestParseRefRoundTripsTheDisplayForm(t *testing.T) {
+	want := Env("TALARIA_AUTH_BEARER")
+
+	got, ok := ParseRef(want.String())
+	if !ok {
+		t.Fatalf("ParseRef(%q) reported no ref", want.String())
+	}
+	if got != want {
+		t.Errorf("ParseRef(%q) = %+v, want %+v", want.String(), got, want)
+	}
+}
+
+func TestParseRefRejectsAnythingElse(t *testing.T) {
+	// Placeholder is the important one: a name-redacted literal names no
+	// variable, so replaying it is impossible and must not be guessed at.
+	for _, s := range []string{
+		Placeholder,
+		"",
+		"Bearer <redacted:env:NAME>",
+		"<redacted:env:>",
+		"<redacted:NAME>",
+		"<redacted:env:NAME",
+		"plain-value",
+	} {
+		if ref, ok := ParseRef(s); ok {
+			t.Errorf("ParseRef(%q) = %+v, want no ref", s, ref)
+		}
+	}
+}
