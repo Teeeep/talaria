@@ -62,7 +62,9 @@ talaria call getPet --param petId=42 --query verbose=true --header 'X-Trace: abc
 - `--base-url` overrides the spec's server. `--profile` selects a named profile from the user's
   config file. Only `http` and `https` are accepted, from either source — a spec's own
   `servers[0].url` is untrusted input, so a `file://` or `gopher://` base is a usage error
-  (exit 2) rather than a request.
+  (exit 2) rather than a request. So is a base URL carrying credentials —
+  `http://user:password@host` — because a base URL is copied whole into the emitted `curl` and
+  into history; set `TALARIA_AUTH_BASIC=user:password` instead.
 - Every request is bounded: 10s to connect, 30s in total, `--timeout <seconds>` to change the
   total. An API that stops answering exits 1 with curl's status 28 in the message — talaria
   never hangs waiting for one.

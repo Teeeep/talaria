@@ -501,13 +501,21 @@ func parseStatusFilter(value string) (*statusFilter, error) {
 // at exec time, exactly as it was on the original call. Nothing in this function
 // reads a credential, because there is none in the store to read (§5a).
 func replayRequest(stderr io.Writer, entry corpus.Entry) (*request.Request, error) {
+	// The store is a file on disk, so what it holds is checked on the way out as
+	// well as on the way in: an edited entry must not be able to replay as a
+	// file read or a raw TCP write, nor to smuggle a credential into a URL that
+	// every later surface prints whole. Both checks come before the parse error
+	// below, which quotes the URL it could not read.
+	if host, ok := request.Userinfo(entry.URL); ok {
+		return nil, clierr.Usage(
+			"the recorded URL for %s carries a credential in its userinfo, so it will not be replayed; "+
+				"re-run the call with %s=user:password set instead", host, config.EnvBasic)
+	}
+
 	parsed, err := url.Parse(entry.URL)
 	if err != nil {
 		return nil, clierr.Usage("the recorded URL %q cannot be parsed: %v", entry.URL, err)
 	}
-	// The store is a file on disk, so its scheme is checked on the way out as
-	// well as on the way in: an edited entry must not be able to replay as a
-	// file read or a raw TCP write.
 	if !request.IsHTTPScheme(parsed.Scheme) {
 		return nil, clierr.Usage("the recorded URL %q has scheme %q; only http and https can be replayed",
 			entry.URL, parsed.Scheme)

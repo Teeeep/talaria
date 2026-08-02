@@ -494,6 +494,65 @@ func TestBuildRejectsANonHTTPProfileBaseURL(t *testing.T) {
 	}
 }
 
+// Userinfo is the one credential position a URL has no symbolic form for:
+// `http://user:pass@host` would land verbatim in request.url, in the emitted
+// curl and in history.jsonl, which is permanent. §5a makes that a rejection
+// rather than a redaction — talaria already has a basic-auth path that keeps the
+// value symbolic, and silently stripping the userinfo would send an
+// unauthenticated request the caller believes is authenticated. Every source is
+// untrusted, the spec's servers[0].url most of all.
+func TestBuildRejectsCredentialsInABaseURL(t *testing.T) {
+	const user, password = "admin", "s3cr3t"
+	raw := "http://" + user + ":" + password + "@127.0.0.1:8898"
+
+	tests := []struct {
+		name   string
+		apply  func(*Inputs)
+		source string
+	}{
+		{"flag", func(in *Inputs) { in.BaseURL = raw }, "--base-url"},
+		{"profile", func(in *Inputs) { in.Profile = &config.Profile{Name: "staging", BaseURL: raw} }, "staging"},
+		{"spec server", func(in *Inputs) { in.Doc.Model.Servers[0].URL = raw }, "servers[0].url"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := inputs(t, "listPets")
+			in.Params = []string{"limit=10"}
+			tt.apply(&in)
+
+			err := buildErr(t, in)
+			if strings.Contains(err.Error(), password) || strings.Contains(err.Error(), user) {
+				t.Errorf("the refusal echoes the userinfo it refused: %v", err)
+			}
+			if !strings.Contains(err.Error(), tt.source) {
+				t.Errorf("error %v does not name %s as the source", err, tt.source)
+			}
+			if !strings.Contains(err.Error(), "127.0.0.1:8898") {
+				t.Errorf("error %v does not name the host it refused", err)
+			}
+			if !strings.Contains(err.Error(), config.EnvBasic) {
+				t.Errorf("error %v does not point at %s as the supported path", err, config.EnvBasic)
+			}
+		})
+	}
+}
+
+// A URL too malformed for url.Parse still must not have its userinfo quoted
+// back: the parse error carries the whole string, so the userinfo check has to
+// come first and work on the text.
+func TestBuildRejectsCredentialsInAnUnparseableBaseURL(t *testing.T) {
+	const password = "s3cr3t"
+
+	in := inputs(t, "listPets")
+	in.Params = []string{"limit=10"}
+	in.BaseURL = "http://admin:" + password + "@127.0.0.1:88 98"
+
+	if err := buildErr(t, in); strings.Contains(err.Error(), password) {
+		t.Errorf("the refusal echoes the userinfo it refused: %v", err)
+	}
+}
+
 // Schemes are case-insensitive per RFC 3986, so rejecting HTTPS:// would refuse
 // a URL that is valid everywhere else.
 func TestBuildAcceptsHTTPSchemesInAnyCase(t *testing.T) {

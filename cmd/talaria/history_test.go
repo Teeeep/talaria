@@ -686,6 +686,32 @@ func TestReplayRejectsARecordedURLWhoseSchemeIsNotHTTP(t *testing.T) {
 	}
 }
 
+// Userinfo is the credential position a URL carries in cleartext, so a stored
+// entry someone edited to hold one must be refused on the way back out for the
+// same reason its scheme is — and the refusal must not quote what it refused.
+func TestReplayRejectsARecordedURLCarryingCredentials(t *testing.T) {
+	const user, password = "admin", "s3cr3t"
+	entry := corpus.Entry{
+		Source: corpus.SourceCall,
+		Method: "GET",
+		URL:    "http://" + user + ":" + password + "@127.0.0.1:8898/pets",
+	}
+
+	_, err := replayRequest(io.Discard, entry)
+	if err == nil {
+		t.Fatal("replayRequest accepted a recorded URL with userinfo, want a usage error")
+	}
+	if code := clierr.From(err).Code; code != clierr.CodeUsage {
+		t.Fatalf("replayRequest error = %v (code %d), want usage (%d)", err, code, clierr.CodeUsage)
+	}
+	if strings.Contains(err.Error(), password) || strings.Contains(err.Error(), user) {
+		t.Errorf("the refusal echoes the userinfo it refused: %v", err)
+	}
+	if !strings.Contains(err.Error(), "127.0.0.1:8898") {
+		t.Errorf("error %v does not name the host it refused", err)
+	}
+}
+
 // binaryBody is every byte value four times over: what a protobuf or an image
 // upload is made of, and what a JSON string cannot hold.
 func binaryBody() []byte {

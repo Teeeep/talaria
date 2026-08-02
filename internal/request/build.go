@@ -142,6 +142,15 @@ func (b *binder) baseURL() string {
 			continue
 		}
 
+		// Before the parse, so a URL that fails to parse cannot have its
+		// userinfo quoted back by the message below.
+		if host, ok := Userinfo(c.raw); ok {
+			b.fail("base URL from %s carries a credential in its userinfo (user:password@%s); "+
+				"remove it and set %s=user:password instead, which keeps the value out of the "+
+				"request, the emitted curl and the history", c.source, host, config.EnvBasic)
+			return ""
+		}
+
 		parsed, err := url.Parse(c.raw)
 		if err != nil || parsed.Host == "" || !IsHTTPScheme(parsed.Scheme) {
 			b.fail("base URL %q from %s is not an absolute http(s) URL", c.raw, c.source)

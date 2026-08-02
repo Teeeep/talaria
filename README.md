@@ -185,6 +185,12 @@ A base URL must be `http` or `https`, whichever source it comes from — the fla
 the spec's `servers[0].url`. Anything else is a usage error, because curl also speaks `file`,
 `gopher` and `smb`, and a spec talaria was pointed at is untrusted input.
 
+It must also carry no credentials in its userinfo: `http://user:password@host` is a usage error
+from every source, including a stored history entry on the way to a replay. A base URL is copied
+whole into the request, the emitted `curl` and `history.jsonl`, so a password written there would
+be one talaria stores in cleartext forever. Use `TALARIA_AUTH_BASIC=user:password` instead, which
+stays a reference everywhere but on the wire.
+
 A profile may also switch its own recording off with `history: {enabled: false}` — see
 [History](#history).
 

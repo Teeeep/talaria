@@ -597,6 +597,52 @@ func TestAMalformedFlagDoesNotEchoItsValue(t *testing.T) {
 	}
 }
 
+// TestABaseURLCredentialIsRefusedWithoutEchoingIt covers the credential
+// position a URL has no symbolic form for: `--base-url http://user:pass@host`.
+//
+// Accepting it would write the value into request.url, the emitted curl and
+// history.jsonl in cleartext, so talaria refuses it and points at
+// TALARIA_AUTH_BASIC. That makes the refusal an error surface holding a
+// credential it was handed directly — the case §5a calls out — so it must name
+// the host and nothing else.
+func TestABaseURLCredentialIsRefusedWithoutEchoingIt(t *testing.T) {
+	for _, format := range canary.Formats() {
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+
+			value := canary.Value("userinfo")
+			h := newHarness(t, nil)
+			srv := newServer(t, `{"ok":true}`)
+			base := "http://canaryuser:" + value + "@" + strings.TrimPrefix(srv.URL, "http://")
+
+			var runs []result
+			for _, extra := range [][]string{{"--dry-run"}, nil} {
+				args := append([]string{"call", specPath, "getPublic",
+					"--base-url", base, "--output", format}, extra...)
+				res := h.run(args...)
+				if res.code != 2 {
+					t.Errorf("talaria %s = %d, want 2; stderr: %s",
+						strings.Join(res.args, " "), res.code, res.stderr)
+				}
+				if !strings.Contains(res.stderr, "TALARIA_AUTH_BASIC") {
+					t.Errorf("the refusal does not point at the supported path:\n%s", res.stderr)
+				}
+				runs = append(runs, res)
+			}
+			// The history store is a surface whether or not the refused call
+			// reached it, so it is listed and scanned either way.
+			runs = append(runs, h.runOK("history", "--output", format))
+
+			var surfaces []canary.Surface
+			for _, res := range runs {
+				surfaces = append(surfaces, res.surfaces()...)
+			}
+
+			assertNoLeak(t, value, append(surfaces, h.written()...))
+		})
+	}
+}
+
 // TestACredentialResolutionFailureNamesNoValue covers the one error path where
 // the credential is in a *configuration file* rather than the environment: a
 // profile with a literal value is refused, and the refusal must not quote what

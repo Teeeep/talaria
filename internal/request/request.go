@@ -211,6 +211,41 @@ func IsHTTPScheme(scheme string) bool {
 	return false
 }
 
+// Userinfo reports whether raw carries a `user:password@` before its host, and
+// returns the host it precedes so a refusal can name where the URL pointed
+// without quoting what it carried.
+//
+// Userinfo is the one credential position a URL has no symbolic form for: a
+// base URL is copied whole into request.url, into the emitted curl and into the
+// history store, all of which are read back later, so a credential written
+// there is a credential in cleartext forever (§5a). Every source is untrusted —
+// a flag, a profile, a spec's servers[0].url, a stored entry — so the check
+// belongs at each of those boundaries.
+//
+// It reads the text rather than url.Parse's User field so that a URL too
+// malformed to parse is covered too: the parse error quotes the whole string,
+// and a check that ran after it would have nothing left to protect. Only a URL
+// with an authority can have userinfo, hence the `://` requirement; anything
+// else is left to IsHTTPScheme to refuse.
+func Userinfo(raw string) (host string, present bool) {
+	_, authority, ok := strings.Cut(raw, "://")
+	if !ok {
+		return "", false
+	}
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
+	}
+
+	// Last, not first: a userinfo may itself contain an escaped separator, and
+	// the host is always what follows the final one.
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		return "", false
+	}
+
+	return authority[at+1:], true
+}
+
 // Request is a fully bound HTTP request, still symbolic about credentials.
 //
 // BaseURL and Path are kept apart from Query because the query string cannot be
