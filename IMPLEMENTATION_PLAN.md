@@ -544,6 +544,14 @@ makes the binary useful. Its compactness is the whole point — it exists so nob
 how to build a call, and a raw JSON Schema dump here would reintroduce the context bomb the
 tool exists to prevent. The cycle guard is not optional — real specs self-reference constantly.
 
+**As built — one deviation.** `oneOf` and `anyOf` list their branch types as planned
+(`(oneOf: object|string)`), but `allOf` branches are *merged* into one field list instead.
+`allOf` means every branch applies at once, so the fields a caller has to supply are the union;
+listing branch types for it would render the extremely common inheritance idiom as the useless
+`(allOf: object|object)`, defeating the purpose of the command. The merge reuses the same cycle
+guard and depth limit, so it cannot run away. Also added beyond the plan: a `--depth` flag,
+which is what makes the max depth "configurable" from outside the package.
+
 ---
 
 ### Task 11: `talaria search` and `talaria uses`

@@ -3,8 +3,8 @@
 *Postman for agents. Point it at any API doc; your agent works the API and never sees
 your credentials.*
 
-> **Status: early implementation.** `talaria version` and `talaria list` work so far; the rest
-> of the command tree is scaffolded. The [design document](docs/design/DESIGN.md) is the source
+> **Status: early implementation.** `talaria version`, `talaria list` and `talaria describe`
+> work so far; the rest of the command tree is scaffolded. The [design document](docs/design/DESIGN.md) is the source
 > of truth.
 
 Every API client — Postman, Insomnia, Bruno, curl itself — assumes the operator is a human who
@@ -63,6 +63,50 @@ is an answer rather than a failure.
 Operations the spec never named get a synthesised operationId derived from method and path
 (`GET /pets/{petId}` → `getPetsByPetId`). It is stable across loads and as callable as an
 authored one.
+
+## Describing one operation
+
+```sh
+talaria describe ./openapi.yaml getPet
+talaria describe getPet --spec ./openapi.yaml --depth 2
+```
+
+The next step after `list`: the parameters, request body and declared responses of a single
+operation. With one positional argument, that argument is the operationId and the spec comes
+from `--spec` or `$TALARIA_SPEC`; with two, the spec comes first.
+
+Schemas render one field per line in the form `name*: (type) description`, where `*` marks a
+required field:
+
+```
+GET /pets/{petId}  getPet
+Get one pet
+
+Params:
+  petId*: (string) [path] The pet's identifier
+  verbose: (boolean) [query] Include the pet's history
+
+Responses:
+  200 The pet
+    application/json:
+      id*: (string) Unique identifier
+      status: (string) one of: available, pending, sold
+      tags: ([]string)
+      owner: (object)
+        name: (string) Who owns the pet
+```
+
+Arrays show their element type as `([]string)`. Enums are listed inline. `allOf` branches are
+merged into one field list, since that is what a caller has to supply; `oneOf` and `anyOf`
+render as a summary of their branch types (`(oneOf: object|string)`) rather than expanding
+each branch.
+
+Two things stop the output from growing without bound. A schema that refers back to one of its
+own ancestors — which real specs do constantly — ends at `[circular]` instead of recursing. A
+schema nested deeper than `--depth` (6 by default) ends at `[max depth]`, so a truncated branch
+is visibly truncated rather than silently absent.
+
+`--output json` returns the same information as a structured tree, not the rendered string.
 
 ## Output
 

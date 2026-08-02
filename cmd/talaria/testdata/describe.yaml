@@ -1,0 +1,81 @@
+openapi: 3.0.3
+info:
+  title: Petstore
+  version: 1.0.0
+paths:
+  /pets/{petId}:
+    # Path-item level, so describe has to show the merged parameter list.
+    parameters:
+      - name: petId
+        in: path
+        required: true
+        description: The pet's identifier
+        schema:
+          type: string
+    get:
+      operationId: getPet
+      summary: Get one pet
+      description: Fetch a single pet by its identifier.
+      tags:
+        - pets
+      parameters:
+        - name: verbose
+          in: query
+          description: Include the pet's history
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: The pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+        "404":
+          description: No such pet
+    put:
+      operationId: replacePet
+      summary: Replace a pet
+      tags:
+        - pets
+      requestBody:
+        required: true
+        description: The replacement pet
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Pet"
+      responses:
+        "200":
+          description: The replaced pet
+        "400":
+          description: Bad request
+components:
+  schemas:
+    Pet:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          description: Unique identifier
+        name:
+          type: string
+        status:
+          type: string
+          enum:
+            - available
+            - pending
+            - sold
+        tags:
+          type: array
+          items:
+            type: string
+        owner:
+          type: object
+          properties:
+            name:
+              type: string
+              description: Who owns the pet

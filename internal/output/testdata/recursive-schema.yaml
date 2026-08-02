@@ -1,0 +1,33 @@
+openapi: 3.0.3
+info:
+  title: Recursive
+  version: 1.0.0
+paths:
+  /tree:
+    get:
+      operationId: getTree
+      responses:
+        "200":
+          description: A tree
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+components:
+  schemas:
+    Node:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
+          description: The node identifier
+        # Direct self-reference: the renderer has to stop here.
+        parent:
+          $ref: "#/components/schemas/Node"
+        # Indirect self-reference, through an array.
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
