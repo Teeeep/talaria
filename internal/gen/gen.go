@@ -55,6 +55,9 @@ type Generator struct {
 	rng *rand.Rand
 	// MaxDepth bounds how far generation nests. Zero means DefaultMaxDepth.
 	MaxDepth int
+	// Fixtures are the user's own test data, consulted by DataFor after spec
+	// examples and before generation. Nil is an empty set.
+	Fixtures *Fixtures
 }
 
 // New returns a Generator drawing from seed. The same seed always produces the
