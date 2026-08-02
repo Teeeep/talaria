@@ -1,13 +1,12 @@
-// Package curl turns a bound request into curl. Today that is the displayable
-// command `--dry-run` prints and every executed call reports (DESIGN.md §3.4);
-// later tasks add the config document curl actually reads and the executor that
-// spawns it.
+// Package curl turns a bound request into curl: the displayable command
+// `--dry-run` prints and every executed call reports, the config document curl
+// actually reads, and the executor that spawns it (DESIGN.md §3.4).
 //
-// Everything here is symbolic. It reads request.Value's Symbolic and redacted
-// forms and never calls SecretRef.Resolve, so an emitted command references
+// This file is symbolic. It reads request.Value's Symbolic and redacted forms
+// and never calls SecretRef.Resolve, so an emitted command references
 // $TALARIA_AUTH_BEARER rather than a token: "runnable in a shell where the env
-// var is set, useless to exfiltrate" (§5a). Resolution is a separate, greppable
-// step that belongs to the executor.
+// var is set, useless to exfiltrate" (§5a). Resolution happens in exactly one
+// place, config.go's resolve, and nothing outside this package can reach it.
 package curl
 
 import (

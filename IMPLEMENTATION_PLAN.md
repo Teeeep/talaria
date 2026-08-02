@@ -967,6 +967,23 @@ This is the single place in the program where a resolved secret exists.
 on an older machine, which matters because the distribution story targets machines that are not
 this one.
 
+**Divergence from the plan.**
+
+Red test 6 says stderr "passes through the redactor first", but `secret.Redactor` decides by
+*header name* and has nothing to say about a free-text error message. So `exec.go` scrubs with a
+replacer built from the request's own resolved credentials, mapping each back to its
+`<redacted:env:NAME>` form (and its percent-encoded spelling, since curl echoes URLs). That is
+stronger than a pattern match: talaria knows exactly which bytes it put on the wire, so the scrub
+is neither a guess nor defeatable by an unusual message format.
+
+`readResponse` also treats a completed curl reporting `http_code: 0` as `RequestFailed`. curl
+normally exits non-zero in that case and the process check catches it first; this is the second
+gate, so a Response can never claim status 0.
+
+`Response.Body` and `Response.Headers` are *unredacted*. Redaction of what came back off the wire
+is Task 20, and applying it here would leave nothing for Task 26's validation to check against
+the spec.
+
 ---
 
 ### Task 18: Request bodies from flag, file, and stdin
