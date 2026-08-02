@@ -379,6 +379,43 @@ func TestNoAuthMechanismLeaksIntoAnyOutputSurface(t *testing.T) {
 	}
 }
 
+// TestNoReportFormatLeaksTheCredential covers §5a's "junit reports" among the
+// output surfaces, and every other shape `run --report` writes.
+//
+// It is a loop of its own rather than a line in the test above because the
+// report formats are a superset of the --output ones: junit describes a suite
+// of operations, which is something only `run` produces. Driving it from
+// canary.ReportFormats means a fifth report format is covered the day it is
+// added.
+func TestNoReportFormatLeaksTheCredential(t *testing.T) {
+	for _, mech := range mechanisms {
+		for _, format := range canary.ReportFormats() {
+			t.Run(mech.name+"/"+format, func(t *testing.T) {
+				t.Parallel()
+
+				value := canary.Value(mech.name)
+				h := newHarness(t, mech.env(value))
+				srv := newServer(t, `{"id":"42","name":"Rex"}`)
+
+				res := h.runOK("run", specPath, "--operation", mech.op,
+					"--base-url", srv.URL, "--report", format)
+
+				if !mech.received(srv.received(), value) {
+					t.Fatalf("the server never saw the %s credential; the leak assertions below prove nothing", mech.name)
+				}
+				// A report that named the operation is a report that rendered.
+				// Without this a format writing an empty shell would pass every
+				// assertion below by having nothing in it at all.
+				if !strings.Contains(res.stdout, mech.op) {
+					t.Errorf("`--report %s` does not name the operation it ran:\n%s", format, res.stdout)
+				}
+
+				assertNoLeak(t, value, append(res.surfaces(), h.written()...))
+			})
+		}
+	}
+}
+
 // TestErrorPathsDoNotLeakTheCredential covers §5a's "error paths are where
 // redaction bugs live": a failure at each stage of a call, with a credential
 // present throughout.

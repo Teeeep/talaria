@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -540,5 +541,101 @@ func writeFixture(t *testing.T, dir, name, body string) {
 
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
 		t.Fatalf("writing the fixture: %v", err)
+	}
+}
+
+func TestRunRendersAJUnitReport(t *testing.T) {
+	srv := newRunServer(t)
+
+	// The ops tag is one passing operation and one that always 500s, and
+	// getReport cannot be supplied with its path parameter — one of each
+	// outcome, which is what makes the counts worth asserting on.
+	code, stdout, stderr := runRun(t, runSpecFile, "--tag", "ops",
+		"--operation", "getReport", "--base-url", srv.URL, "--report", "junit")
+	if code != 0 {
+		t.Fatalf("run --report junit = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	var suite struct {
+		XMLName  xml.Name `xml:"testsuite"`
+		Tests    int      `xml:"tests,attr"`
+		Failures int      `xml:"failures,attr"`
+		Skipped  int      `xml:"skipped,attr"`
+		Cases    []struct {
+			Name    string `xml:"name,attr"`
+			Time    string `xml:"time,attr"`
+			Failure *struct {
+				Message string `xml:"message,attr"`
+			} `xml:"failure"`
+			Skipped *struct {
+				Message string `xml:"message,attr"`
+			} `xml:"skipped"`
+		} `xml:"testcase"`
+	}
+	if err := xml.Unmarshal([]byte(stdout), &suite); err != nil {
+		t.Fatalf("junit report is not well-formed XML: %v\n%s", err, stdout)
+	}
+
+	if suite.Tests != 3 || suite.Failures != 1 || suite.Skipped != 1 {
+		t.Errorf("suite = %d tests, %d failures, %d skipped; want 3, 1 and 1:\n%s",
+			suite.Tests, suite.Failures, suite.Skipped, stdout)
+	}
+
+	cases := map[string]int{}
+	for i, c := range suite.Cases {
+		cases[c.Name] = i
+		if c.Time == "" {
+			t.Errorf("testcase %s carries no time attribute:\n%s", c.Name, stdout)
+		}
+	}
+
+	boom, ok := cases["getBoom"]
+	if !ok {
+		t.Fatalf("no testcase for getBoom:\n%s", stdout)
+	}
+	if suite.Cases[boom].Failure == nil {
+		t.Errorf("getBoom returned 500 and has no <failure> child:\n%s", stdout)
+	}
+
+	report, ok := cases["getReport"]
+	if !ok {
+		t.Fatalf("no testcase for getReport:\n%s", stdout)
+	}
+	if suite.Cases[report].Skipped == nil {
+		t.Fatalf("getReport was skipped and has no <skipped> child:\n%s", stdout)
+	}
+	if !strings.Contains(suite.Cases[report].Skipped.Message, "reportId") {
+		t.Errorf("skip message = %q, want it to name the parameter nothing could supply",
+			suite.Cases[report].Skipped.Message)
+	}
+
+	// --fail-on-error still decides the exit code, and the report is still
+	// written: a CI job needs the file whichever way the build went.
+	code, stdout, stderr = runRun(t, runSpecFile, "--operation", "getBoom",
+		"--fail-on-error", "--base-url", srv.URL, "--report", "junit")
+	if code != 4 {
+		t.Fatalf("run --report junit --fail-on-error = %d, want 4; stderr: %s", code, stderr)
+	}
+	if err := xml.Unmarshal([]byte(stdout), &suite); err != nil {
+		t.Fatalf("junit report is not well-formed XML: %v\n%s", err, stdout)
+	}
+	if suite.Failures != 1 {
+		t.Errorf("failures = %d, want the failing operation reported at exit 4:\n%s",
+			suite.Failures, stdout)
+	}
+}
+
+func TestOutputFlagRejectsJUnit(t *testing.T) {
+	// junit is a --report format: it describes a suite of operations, which is
+	// something only `run` produces.
+	srv := newRunServer(t)
+
+	code, _, stderr := runRun(t, runSpecFile, "--tag", "ops",
+		"--base-url", srv.URL, "--output", "junit")
+	if code != 2 {
+		t.Fatalf("run --output junit = %d, want 2; stderr: %s", code, stderr)
+	}
+	if len(srv.received()) != 0 {
+		t.Errorf("server saw %v, want nothing", srv.paths())
 	}
 }

@@ -141,7 +141,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&fixturesDir, "fixtures", "",
 		"directory of <operationId>.json test data, consulted after spec examples")
 	cmd.Flags().StringVar(&report, "report", "",
-		"report format: json|pretty|tsv (overrides --output)")
+		"report format: json|pretty|tsv|junit (overrides --output)")
 	cmd.Flags().BoolVar(&allowMutations, "allow-mutations", false,
 		"include operations whose method is not GET, HEAD or OPTIONS")
 	cmd.Flags().BoolVar(&failOnError, "fail-on-error", false,
@@ -154,14 +154,18 @@ func newRunCmd() *cobra.Command {
 // run's own flag and wins over the persistent --output: an agent that set
 // --output globally and then asked run for JSON must get JSON, not a format it
 // asked for two flags ago.
+//
+// It also accepts junit, which --output does not: a suite of operations is the
+// only thing there is to render as a test report, and `run` is the only command
+// that produces one.
 func resolveReportFormat(cmd *cobra.Command, report string) (output.Format, error) {
 	if report == "" {
 		return resolveFormat(cmd)
 	}
 
-	format, err := output.ParseFormat(report)
+	format, err := output.ParseReportFormat(report)
 	if err != nil {
-		return "", clierr.Usage("%w", err).WithAlternatives(output.Formats()...)
+		return "", clierr.Usage("%w", err).WithAlternatives(output.ReportFormats()...)
 	}
 
 	return format, nil
@@ -495,7 +499,45 @@ func runPayload(view runView) output.Payload {
 	}
 	rows = append(rows, []string{summaryLine(view.Summary)})
 
-	return output.Payload{Data: view, Table: output.Table{Rows: rows}}
+	return output.Payload{
+		Data:  view,
+		Table: output.Table{Rows: rows},
+		JUnit: junitSuite(view),
+	}
+}
+
+// junitSuite is the same results as a test suite, for `--report junit`.
+//
+// A skip stays a skip rather than becoming a failure: a DELETE left alone
+// without --allow-mutations is correct behaviour, and a CI job that went red
+// over it would be turned off within a week.
+func junitSuite(view runView) output.Suite {
+	cases := make([]output.Case, 0, len(view.Results))
+	for _, res := range view.Results {
+		c := output.Case{Name: res.OperationID, Seconds: res.seconds()}
+		switch res.Outcome {
+		case outcomeFailed:
+			c.Failure = res.Reason
+		case outcomeSkipped:
+			c.Skipped = res.Reason
+		}
+
+		cases = append(cases, c)
+	}
+
+	return output.Suite{Name: "talaria run", Cases: cases}
+}
+
+// seconds is the operation's timing in the unit JUnit's time attribute is
+// defined in. An operation that never reached a server took no measured time
+// rather than an unknown one: it is reported as 0, with the <skipped> child
+// saying why.
+func (res runResult) seconds() float64 {
+	if res.TimingMS == nil {
+		return 0
+	}
+
+	return float64(*res.TimingMS) / 1000
 }
 
 // summaryLine is the one line a human is looking for.

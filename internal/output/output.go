@@ -30,9 +30,12 @@ var formats = []Format{FormatJSON, FormatPretty, FormatTSV}
 // Formats returns every valid --output value, in the order shown to users.
 // Callers rendering a structured usage error need the list as data, not as
 // prose inside ParseFormat's message. The returned slice is a copy.
-func Formats() []string {
-	valid := make([]string, len(formats))
-	for i, f := range formats {
+func Formats() []string { return names(formats) }
+
+// names renders a list of formats as the strings a user types.
+func names(fs []Format) []string {
+	valid := make([]string, len(fs))
+	for i, f := range fs {
 		valid[i] = string(f)
 	}
 	return valid
@@ -40,14 +43,19 @@ func Formats() []string {
 
 // ParseFormat converts a --output value into a Format. The error names every
 // valid value so an agent can correct itself without reading the help text.
-func ParseFormat(s string) (Format, error) {
-	for _, f := range formats {
+func ParseFormat(s string) (Format, error) { return parseFormat("output", s, formats) }
+
+// parseFormat resolves s against valid. Kind names the flag being parsed, so a
+// rejected --report says "report format" and points at the values --report
+// takes rather than at --output's shorter list.
+func parseFormat(kind, s string, valid []Format) (Format, error) {
+	for _, f := range valid {
 		if Format(s) == f {
 			return f, nil
 		}
 	}
 
-	return "", fmt.Errorf("unknown output format %q: valid values are %s", s, strings.Join(Formats(), ", "))
+	return "", fmt.Errorf("unknown %s format %q: valid values are %s", kind, s, strings.Join(names(valid), ", "))
 }
 
 // Resolve picks the output format. An explicit --output value always wins; with

@@ -401,8 +401,19 @@ generation from the schema. `--fixtures dir/` supplies the middle one, matched b
 Each operation is reported as `passed`, `failed` or `skipped`, with a `reason` for the last two
 and a `summary` block counting all four numbers. A skip is not a failure: a `DELETE` left alone
 without `--allow-mutations`, or an operation whose required parameter nothing could supply, is
-correct behaviour rather than a broken API. `--report json|pretty|tsv` is `run`'s own format
-flag and overrides `--output`.
+correct behaviour rather than a broken API. `--report json|pretty|tsv|junit` is `run`'s own
+format flag and overrides `--output`.
+
+`--report junit` writes a JUnit XML suite — one `<testcase>` per operation, named by
+operationId, with a `<failure>` or `<skipped>` child carrying the reason — which is what makes
+`run` land in CI without glue:
+
+```sh
+talaria run ./openapi.yaml --base-url "$STAGING" --report junit > report.xml
+```
+
+`junit` is a `--report` value only: a suite of operations is the one thing there is to render
+as a test report, so `--output junit` exits 2.
 
 Failing operations exit 0 unless you pass `--fail-on-error`, which makes them exit 4. A missing
 credential exits 5 either way — that operation was never tested, and the fix is exporting a

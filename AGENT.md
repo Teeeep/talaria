@@ -111,7 +111,9 @@ talaria run ./openapi.yaml --tag pets --operation getPet --base-url http://local
 - Request data comes from the spec's own `example` first, then a file in `--fixtures dir/` named
   `<operationId>.json`, then generation from the schema. A fixture is `{"params": {…},
   "headers": {…}, "body": {…}}`; every field is optional.
-- `--report json|pretty|tsv` is `run`'s own format flag and overrides `--output`.
+- `--report json|pretty|tsv|junit` is `run`'s own format flag and overrides `--output`. `junit`
+  writes a JUnit XML suite — one `<testcase>` per operation, `<failure>` or `<skipped>` carrying
+  the reason — for a CI job to collect. It is a `--report` value only; `--output junit` exits 2.
 
 Each operation reports `passed`, `failed` or `skipped`, plus a `reason` for the last two:
 
