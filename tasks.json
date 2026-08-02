@@ -74,7 +74,7 @@
       "title": "Stop libopenapi writing structured logs to stdout",
       "line_start": 333,
       "line_end": 360,
-      "done": false
+      "done": true
     }
   ]
 }

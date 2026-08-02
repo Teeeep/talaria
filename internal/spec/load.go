@@ -1,15 +1,37 @@
 package spec
 
 import (
+	"io"
+	"log/slog"
 	"os"
 
 	"github.com/pb33f/libopenapi"
+	"github.com/pb33f/libopenapi/datamodel"
 
 	"github.com/Teeeep/talaria/internal/clierr"
 )
 
 // sourceBytes is the Source recorded for a spec that never had a path or URL.
 const sourceBytes = "<bytes>"
+
+// documentConfig is the configuration every parse runs under.
+//
+// Without one, libopenapi builds a default whose logger is a JSON slog handler
+// writing to the real os.Stdout — past cmd.OutOrStdout, past the talaria/v1
+// envelope and past every redaction path. A spec with an unresolvable $ref
+// would put stray log documents where the envelope goes and nothing else, so
+// the logger is discarded here; stdout belongs to the envelope.
+//
+// AllowFileReferences and AllowRemoteReferences stay at their false defaults on
+// purpose: that default is what stops a hostile spec's $ref reading local files
+// or fetching URLs, and naming the configuration explicitly is precisely where
+// it could be lost.
+func documentConfig() *datamodel.DocumentConfiguration {
+	cfg := datamodel.NewDocumentConfiguration()
+	cfg.Logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+	return cfg
+}
 
 // LoadBytes parses raw spec bytes, in either JSON or YAML, and builds the
 // OpenAPI 3.x model. Every failure comes back as a clierr.SpecLoad (exit 3),
@@ -46,7 +68,7 @@ func loadBytes(data []byte, source string) (*Document, error) {
 		data, convertedFrom = converted, versionSwagger2
 	}
 
-	doc, err := libopenapi.NewDocument(data)
+	doc, err := libopenapi.NewDocumentWithConfiguration(data, documentConfig())
 	if err != nil {
 		return nil, clierr.SpecLoad("parsing spec %s: %w", source, err)
 	}

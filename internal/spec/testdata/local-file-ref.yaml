@@ -1,0 +1,11 @@
+openapi: 3.1.0
+info:
+  title: Local File Ref
+  version: "1"
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        "200":
+          $ref: "./petstore-3.1.json#/paths/~1pets/get/responses/200"

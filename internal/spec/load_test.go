@@ -2,6 +2,8 @@ package spec
 
 import (
 	"errors"
+	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -123,4 +125,100 @@ func TestLoadFileReportsMissingPath(t *testing.T) {
 func TestLoadBytesRejectsNonSpecInput(t *testing.T) {
 	_, err := LoadBytes([]byte("this is not a spec at all"))
 	requireSpecLoad(t, err)
+}
+
+// captureStdout swaps the process's real os.Stdout for a pipe around fn and
+// returns everything written to it. The assertion has to cover the file
+// descriptor rather than a cobra writer, because that is the channel a
+// dependency's default logger reaches past the envelope on.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+
+	saved := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = saved }()
+
+	// Drain concurrently: a pipe with nobody reading blocks the writer once its
+	// buffer fills, which would hang the load instead of failing the test.
+	read := make(chan string, 1)
+	go func() {
+		out, _ := io.ReadAll(r)
+		read <- string(out)
+	}()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("closing pipe writer: %v", err)
+	}
+
+	return <-read
+}
+
+// stdout belongs to the talaria/v1 envelope. libopenapi's default document
+// configuration logs build problems as JSON to the real os.Stdout, which
+// bypasses cmd.OutOrStdout, the envelope and every redaction path at once — a
+// spec with an unresolvable $ref would otherwise put stray documents on stdout.
+func TestLoadKeepsSpecDiagnosticsOffStdout(t *testing.T) {
+	path := filepath.Join("testdata", "unresolvable-remote-ref.yaml")
+
+	out := captureStdout(t, func() {
+		_, _ = LoadFile(path)
+	})
+
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing written to it", out)
+	}
+}
+
+// Passing an explicit document configuration is exactly where the defaults that
+// stop a hostile spec reading local files or fetching URLs could be dropped, so
+// both stay pinned by a test.
+func TestLoadDoesNotResolveRemoteReferences(t *testing.T) {
+	doc, err := LoadFile(filepath.Join("testdata", "unresolvable-remote-ref.yaml"))
+	if err != nil {
+		requireSpecLoad(t, err)
+
+		return
+	}
+
+	if got := responseDescription(t, doc); got != "" {
+		t.Errorf("remote $ref resolved to %q, want it left unresolved", got)
+	}
+}
+
+func TestLoadDoesNotResolveFileReferences(t *testing.T) {
+	doc, err := LoadFile(filepath.Join("testdata", "local-file-ref.yaml"))
+	if err != nil {
+		requireSpecLoad(t, err)
+
+		return
+	}
+
+	if got := responseDescription(t, doc); got != "" {
+		t.Errorf("file $ref resolved to %q, want it left unresolved", got)
+	}
+}
+
+// responseDescription returns the description of the sole 200 response in the
+// $ref fixtures, or "" if the reference never resolved to one.
+func responseDescription(t *testing.T, doc *Document) string {
+	t.Helper()
+
+	pair := doc.Model.Paths.PathItems.First()
+	if pair == nil || pair.Value().Get == nil || pair.Value().Get.Responses == nil {
+		return ""
+	}
+	resp := pair.Value().Get.Responses.FindResponseByCode(200)
+	if resp == nil {
+		return ""
+	}
+
+	return resp.Description
 }
