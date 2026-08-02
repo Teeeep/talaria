@@ -76,6 +76,7 @@ func newRunCmd() *cobra.Command {
 		report         string
 		allowMutations bool
 		failOnError    bool
+		timeout        float64
 	)
 
 	// One warner for the whole command, as on `call`: a run that puts a
@@ -107,7 +108,7 @@ func newRunCmd() *cobra.Command {
 				return err
 			}
 
-			runner, err := newRunner(cmd, doc, fixturesDir, allowMutations, warner)
+			runner, err := newRunner(cmd, doc, fixturesDir, allowMutations, timeoutOptions(timeout), warner)
 			if err != nil {
 				return err
 			}
@@ -146,6 +147,10 @@ func newRunCmd() *cobra.Command {
 		"include operations whose method is not GET, HEAD or OPTIONS")
 	cmd.Flags().BoolVar(&failOnError, "fail-on-error", false,
 		"exit 4 if any operation failed")
+	// Per operation, not per suite: the bound that matters is the one that keeps
+	// a single wedged endpoint from costing the report.
+	cmd.Flags().Float64Var(&timeout, "timeout", curl.DefaultMaxTime.Seconds(),
+		"give up on each operation's request after this many seconds")
 
 	return cmd
 }
@@ -238,6 +243,7 @@ type runner struct {
 	store     *corpus.Store
 	redactors corpus.Redactors
 	warner    *secret.QueryKeyWarner
+	opts      curl.Options
 	stderr    io.Writer
 
 	allowMutations bool
@@ -251,6 +257,7 @@ func newRunner(
 	doc *spec.Document,
 	fixturesDir string,
 	allowMutations bool,
+	opts curl.Options,
 	warner *secret.QueryKeyWarner,
 ) (*runner, error) {
 	// The whole fixtures directory is read up front, before any request goes
@@ -292,6 +299,7 @@ func newRunner(
 		store:          store,
 		redactors:      newRedactors(cfg),
 		warner:         warner,
+		opts:           opts,
 		stderr:         cmd.ErrOrStderr(),
 		allowMutations: allowMutations,
 	}, nil
@@ -348,7 +356,7 @@ func (r *runner) execute(op operation.Operation) runResult {
 
 	warnQueryCredentials(r.stderr, r.warner, req)
 
-	resp, execErr := curl.Execute(req)
+	resp, execErr := curl.ExecuteWith(req, r.opts)
 	// Recorded either way, as `call` records: a request that never completed is
 	// still something that was tried.
 	recordCall(r.stderr, r.store, corpus.SourceRun, req, resp, r.redactors)

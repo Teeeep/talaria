@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -377,6 +378,54 @@ func TestRunFailOnErrorDecidesTheExitCode(t *testing.T) {
 	// the caller gets to read.
 	if got := decodeRun(t, stdout); got.result(t, "getBoom").Status != http.StatusInternalServerError {
 		t.Errorf("--fail-on-error swallowed the report:\n%s", stdout)
+	}
+}
+
+func TestRunStillReportsWhenAnOperationTimesOut(t *testing.T) {
+	// A listener that accepts and never answers. Without a bound on the curl
+	// subprocess the suite would stall here and emit no report at all, which is
+	// the one outcome CI and an agent cannot act on.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	accepted := make(chan struct{})
+	go func() {
+		defer close(accepted)
+
+		var conns []net.Conn
+		defer func() {
+			for _, conn := range conns {
+				conn.Close() //nolint:errcheck // Test teardown.
+			}
+		}()
+
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conns = append(conns, conn)
+		}
+	}()
+	t.Cleanup(func() {
+		ln.Close() //nolint:errcheck // Test teardown.
+		<-accepted
+	})
+
+	code, stdout, stderr := runRun(t, runSpecFile, "--operation", "listPets",
+		"--base-url", "http://"+ln.Addr().String(), "--timeout", "1", "--output", "json")
+	if code != 0 {
+		t.Fatalf("run = %d, want 0 without --fail-on-error; stderr: %s", code, stderr)
+	}
+
+	got := decodeRun(t, stdout)
+	if got.Summary.Failed != 1 {
+		t.Fatalf("summary = %+v, want the timed-out operation reported as failed", got.Summary)
+	}
+	if reason := got.result(t, "listPets").Reason; !strings.Contains(reason, "curl exited 28") {
+		t.Errorf("listPets reason = %q, want curl's timeout status in it", reason)
 	}
 }
 

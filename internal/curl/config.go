@@ -3,7 +3,9 @@ package curl
 import (
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/Teeeep/talaria/internal/clierr"
@@ -16,6 +18,51 @@ import (
 // where the config document stops being a reasonable place to put bytes rather
 // than at any hard limit of curl's.
 const maxInlineBody = 1 << 20
+
+// The default bounds on one call. They are generous enough that a slow but
+// working API still answers, and short enough that a wedged one becomes an exit
+// code rather than a process an agent cannot interpret — the reasoning
+// internal/spec/source.go already applies to fetching a spec, applied to the
+// higher-risk path.
+const (
+	DefaultConnectTimeout = 10 * time.Second
+	DefaultMaxTime        = 30 * time.Second
+)
+
+// Options bound one invocation of curl in time. They are enforced by curl
+// itself, which exits 28 when either runs out; the executor's own deadline is
+// only the backstop for a curl that ignores them.
+type Options struct {
+	// ConnectTimeout limits establishing the connection.
+	ConnectTimeout time.Duration
+	// MaxTime limits the whole operation, connection included.
+	MaxTime time.Duration
+}
+
+// DefaultOptions returns the bounds a caller gets without asking.
+func DefaultOptions() Options {
+	return Options{ConnectTimeout: DefaultConnectTimeout, MaxTime: DefaultMaxTime}
+}
+
+// withDefaults fills in the timeouts a caller left unset.
+//
+// A non-positive value means "unset" rather than "no limit": an unbounded call
+// is exactly what these options exist to prevent, so there is deliberately no
+// way to ask for one. A connect timeout longer than the total is clamped, since
+// curl would enforce the total against it anyway and the pair reads as a lie.
+func (o Options) withDefaults() Options {
+	if o.ConnectTimeout <= 0 {
+		o.ConnectTimeout = DefaultConnectTimeout
+	}
+	if o.MaxTime <= 0 {
+		o.MaxTime = DefaultMaxTime
+	}
+	if o.ConnectTimeout > o.MaxTime {
+		o.ConnectTimeout = o.MaxTime
+	}
+
+	return o
+}
 
 // Capture names the files curl writes the response to. Both are optional; the
 // executor allocates them and passes them here rather than appending them to
@@ -44,13 +91,22 @@ type Capture struct {
 // no document, rather than sending an empty header — an unauthenticated request
 // that looks authenticated is the worse outcome (§4).
 func BuildConfig(req *request.Request, capture Capture) (config []byte, argv []string, cleanup func(), err error) {
+	return BuildConfigWith(req, capture, DefaultOptions())
+}
+
+// BuildConfigWith is BuildConfig with the timeouts named rather than defaulted.
+func BuildConfigWith(
+	req *request.Request,
+	capture Capture,
+	opts Options,
+) (config []byte, argv []string, cleanup func(), err error) {
 	argv = []string{"curl", "-K", "-"}
 	if req == nil {
 		return nil, argv, func() {}, clierr.RequestFailed("no request to execute")
 	}
 
 	var doc document
-	if err := doc.build(req, capture); err != nil {
+	if err := doc.build(req, capture, opts.withDefaults()); err != nil {
 		doc.discard()
 		return nil, argv, doc.cleanup, err
 	}
@@ -68,7 +124,7 @@ type document struct {
 	files []string
 }
 
-func (d *document) build(req *request.Request, capture Capture) error {
+func (d *document) build(req *request.Request, capture Capture, opts Options) error {
 	url, err := req.URL(resolve)
 	if err != nil {
 		return err
@@ -104,6 +160,14 @@ func (d *document) build(req *request.Request, capture Capture) error {
 	// additive, so these two are the only protocols this process can use.
 	d.directive("proto", "=http,https")
 	d.directive("proto-redir", "=http,https")
+
+	// The bounds curl enforces on itself. Emitted as directives rather than
+	// watched from Go because curl exits 28 of its own accord, which runFailure
+	// already classifies as a failed request — so the happy path never has to
+	// know a clock exists. A `run` without these stalls on operation k of n and
+	// emits no report at all.
+	d.directive("connect-timeout", seconds(opts.ConnectTimeout))
+	d.directive("max-time", seconds(opts.MaxTime))
 
 	// silent suppresses the progress meter, which would otherwise be interleaved
 	// with the write-out payload on stdout; show-error keeps real failures
@@ -248,6 +312,12 @@ func (d *document) tempFile(data []byte) (string, error) {
 	}
 
 	return f.Name(), nil
+}
+
+// seconds renders a duration the way curl's timeout options read it: decimal
+// seconds, with no trailing zeroes, so a sub-second bound survives the trip.
+func seconds(d time.Duration) string {
+	return strconv.FormatFloat(d.Seconds(), 'f', -1, 64)
 }
 
 // directive writes one `name = "value"` line, escaped for curl's parser.

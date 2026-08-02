@@ -3,6 +3,7 @@ package curl
 import (
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -168,6 +169,115 @@ func TestExecuteCompletesAHEADRequest(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Execute() on HEAD did not return in 10s — curl is waiting for a body the server never sends")
+	}
+}
+
+// hangingServer listens, accepts, and never answers — the shape of a wedged API
+// or a dropped packet filter. A raw listener rather than httptest.Server: a
+// handler that blocks also blocks the server's own Close, so the test would hang
+// in cleanup instead of in the call it is measuring.
+func hangingServer(t *testing.T) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	accepted := make(chan struct{})
+	go func() {
+		defer close(accepted)
+
+		var conns []net.Conn
+		defer func() {
+			for _, conn := range conns {
+				conn.Close() //nolint:errcheck // Test teardown.
+			}
+		}()
+
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Held rather than closed: a closed connection is a failure curl
+			// reports at once, and this test is about the one it never would.
+			conns = append(conns, conn)
+		}
+	}()
+	t.Cleanup(func() {
+		ln.Close() //nolint:errcheck // Test teardown.
+		<-accepted
+	})
+
+	return "http://" + ln.Addr().String()
+}
+
+func TestBuildConfigBoundsTheCallInTime(t *testing.T) {
+	config, _, _ := buildConfig(t, getFrom("https://api.example.com"), Capture{})
+
+	// The defaults, in the document rather than in Go: curl enforces both itself
+	// and exits 28, so nothing on the happy path has to watch the clock.
+	for _, want := range []string{`connect-timeout = "10"`, `max-time = "30"`} {
+		if !hasDirective(config, want) {
+			t.Errorf("document has no %q directive:\n%s", want, config)
+		}
+	}
+}
+
+func TestBuildConfigWithUsesTheGivenTimeouts(t *testing.T) {
+	opts := Options{ConnectTimeout: 250 * time.Millisecond, MaxTime: 1500 * time.Millisecond}
+
+	config, _, cleanup, err := BuildConfigWith(getFrom("https://api.example.com"), Capture{}, opts)
+	if err != nil {
+		t.Fatalf("BuildConfigWith() error = %v", err)
+	}
+	t.Cleanup(cleanup)
+
+	// Fractional seconds, because a sub-second bound is exactly what a test or a
+	// tight CI budget asks for and curl accepts a decimal here.
+	for _, want := range []string{`connect-timeout = "0.25"`, `max-time = "1.5"`} {
+		if !hasDirective(config, want) {
+			t.Errorf("document has no %q directive:\n%s", want, config)
+		}
+	}
+}
+
+func TestExecuteWithGivesUpOnAServerThatNeverAnswers(t *testing.T) {
+	requireCurl(t)
+
+	opts := Options{ConnectTimeout: 500 * time.Millisecond, MaxTime: 500 * time.Millisecond}
+	req := getFrom(hangingServer(t))
+
+	type outcome struct {
+		err     error
+		elapsed time.Duration
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		start := time.Now()
+		_, err := ExecuteWith(req, opts)
+		done <- outcome{err, time.Since(start)}
+	}()
+
+	select {
+	case got := <-done:
+		cerr := requireCLIError(t, got.err)
+		if cerr.Code != clierr.CodeRequestFailed {
+			t.Errorf("Code = %d, want %d", cerr.Code, clierr.CodeRequestFailed)
+		}
+		// 28 is curl's own timeout status. Asserting it rather than any non-zero
+		// exit is what distinguishes curl honouring max-time from talaria killing
+		// a curl that ignored it — the fallback, not the mechanism.
+		if !strings.Contains(cerr.Message, "curl exited 28") {
+			t.Errorf("Message = %q, want curl's timeout status (28) in it", cerr.Message)
+		}
+		if got.elapsed > 5*time.Second {
+			t.Errorf("ExecuteWith() took %s with a 500ms max-time, want the timeout to bound it",
+				got.elapsed)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("ExecuteWith() never returned against a server that never answers")
 	}
 }
 

@@ -306,6 +306,10 @@ Two rules apply before anything is sent:
 An HTTP 4xx or 5xx is a successful observation and exits 0. Only a request that could not be
 completed at all — a refused connection, a TLS failure — is exit 1.
 
+Every request is bounded in time: 10 seconds to connect and 30 seconds in total by default,
+`--timeout <seconds>` to change the total. An API that stops answering becomes an exit 1 with
+curl's status 28 in the message rather than a process that hangs.
+
 ## Validating what came back
 
 Every executed call carries a `validation` block alongside the response:
@@ -407,6 +411,10 @@ and a `summary` block counting all four numbers. A skip is not a failure: a `DEL
 without `--allow-mutations`, or an operation whose required parameter nothing could supply, is
 correct behaviour rather than a broken API. `--report json|pretty|tsv|junit` is `run`'s own
 format flag and overrides `--output`.
+
+`--timeout` applies per operation, not per suite. An endpoint that never answers is one failed
+line in the report with curl's status 28 in its reason, so the run still finishes and CI still
+gets its output.
 
 `--report junit` writes a JUnit XML suite — one `<testcase>` per operation, named by
 operationId, with a `<failure>` or `<skipped>` child carrying the reason — which is what makes

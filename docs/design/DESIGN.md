@@ -179,6 +179,7 @@ talaria call [spec] <operationId>
     --profile staging             # named config: base-url + auth + headers
     --dry-run                     # print curl command, send nothing, exit 0
     --allow-mutations             # required for POST/PUT/PATCH/DELETE
+    --timeout 30                  # seconds; give up on the request rather than hang
     --output json|pretty
 
 # History — what did I call, what came back
@@ -191,6 +192,7 @@ talaria run [spec] [--tag t] [--operation id ...]
     --base-url ... --profile ...
     --allow-mutations
     --report json|junit|pretty
+    --timeout 30                  # seconds, per operation; one wedged endpoint never costs the report
     --fail-on-error               # nonzero exit if any HTTP >= 400
 
 # Digital twin (later phases)

@@ -61,6 +61,9 @@ talaria call getPet --param petId=42 --query verbose=true --header 'X-Trace: abc
 - Every binding problem is reported at once. Fix them in one edit, not one per run.
 - `--base-url` overrides the spec's server. `--profile` selects a named profile from the user's
   config file.
+- Every request is bounded: 10s to connect, 30s in total, `--timeout <seconds>` to change the
+  total. An API that stops answering exits 1 with curl's status 28 in the message — talaria
+  never hangs waiting for one.
 
 The response block carries status, headers, timing and body; a JSON body is embedded as JSON, so
 one parse gets you the fields. **An HTTP 4xx or 5xx exits 0** — it is a successful observation.
@@ -114,6 +117,8 @@ talaria run ./openapi.yaml --tag pets --operation getPet --base-url http://local
 - `--report json|pretty|tsv|junit` is `run`'s own format flag and overrides `--output`. `junit`
   writes a JUnit XML suite — one `<testcase>` per operation, `<failure>` or `<skipped>` carrying
   the reason — for a CI job to collect. It is a `--report` value only; `--output junit` exits 2.
+- `--timeout` bounds each operation, not the suite. An endpoint that never answers becomes one
+  failed line and the report still arrives.
 
 Each operation reports `passed`, `failed` or `skipped`, plus a `reason` for the last two:
 

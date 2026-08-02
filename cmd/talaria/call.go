@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -90,6 +91,7 @@ func newCallCmd() *cobra.Command {
 		dryRun         bool
 		allowMutations bool
 		failOnError    bool
+		timeout        float64
 	)
 
 	// Built here rather than per-run so the warning fires once for the whole
@@ -168,7 +170,7 @@ func newCallCmd() *cobra.Command {
 				return renderer.Render(callPayload(req, nil, nil))
 			}
 
-			resp, execErr := curl.Execute(req)
+			resp, execErr := curl.ExecuteWith(req, timeoutOptions(timeout))
 			// Recorded either way. A request that never completed is still
 			// something that was tried, and the entry says so by having no
 			// response block at all.
@@ -212,8 +214,20 @@ func newCallCmd() *cobra.Command {
 		"permit a method other than GET, HEAD or OPTIONS")
 	cmd.Flags().BoolVar(&failOnError, "fail-on-error", false,
 		"exit 4 if the response is an HTTP error or violates the spec")
+	cmd.Flags().Float64Var(&timeout, "timeout", curl.DefaultMaxTime.Seconds(),
+		"give up on the request after this many seconds")
 
 	return cmd
+}
+
+// timeoutOptions turns the --timeout flag into the executor's options, shared by
+// call and run because both bound one request the same way.
+//
+// A non-positive value falls back to the default rather than meaning "no
+// limit": a call that can hang forever is what the flag exists to prevent, and
+// `--timeout 0` is far more likely to be a mistake than a request for one.
+func timeoutOptions(seconds float64) curl.Options {
+	return curl.Options{MaxTime: time.Duration(seconds * float64(time.Second))}
 }
 
 // newRedactors builds the pair of firewalls an entry passes through on its way

@@ -2,6 +2,7 @@ package curl
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/request"
@@ -38,6 +40,20 @@ type Response struct {
 // nowhere else: not in argv, which /proc/*/cmdline exposes to any process on
 // the host, and not in the environment curl inherits (§5a).
 func Execute(req *request.Request) (*Response, error) {
+	return ExecuteWith(req, DefaultOptions())
+}
+
+// killGrace is how long past its own max-time a curl gets before talaria stops
+// waiting for it. curl enforces the timeout itself in every case anyone has
+// seen; this margin is for the ones nobody has — a curl wedged in a syscall, or
+// one whose stdout pipe a child process is still holding open. Without it, the
+// bound is only as good as the subprocess's willingness to honour it.
+const killGrace = 2 * time.Second
+
+// ExecuteWith is Execute with the timeouts named rather than defaulted.
+func ExecuteWith(req *request.Request, opts Options) (*Response, error) {
+	opts = opts.withDefaults()
+
 	path, err := exec.LookPath("curl")
 	if err != nil {
 		return nil, clierr.RequestFailed("curl is not installed or not on PATH: %w", err)
@@ -52,16 +68,23 @@ func Execute(req *request.Request) (*Response, error) {
 	}
 	defer cleanupCapture()
 
-	config, argv, cleanupConfig, err := BuildConfig(req, capture)
+	config, argv, cleanupConfig, err := BuildConfigWith(req, capture, opts)
 	defer cleanupConfig()
 	if err != nil {
 		return nil, err
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), opts.MaxTime+killGrace)
+	defer cancel()
+
 	// argv[0] is the command name BuildConfig reports; the resolved path is what
 	// actually gets executed, so a PATH change mid-run cannot swap the binary
 	// between the preflight and the call.
-	cmd := exec.Command(path, argv[1:]...)
+	cmd := exec.CommandContext(ctx, path, argv[1:]...)
+	// The context kills the process; WaitDelay bounds the reaping too, so a
+	// grandchild still holding the output pipe cannot leave Wait blocked after
+	// curl itself is gone.
+	cmd.WaitDelay = killGrace
 	// The document goes in over a pipe rather than through the process's own
 	// stdin, which belongs to the user and may be a request body (Task 18).
 	cmd.Stdin = bytes.NewReader(config)
@@ -71,6 +94,15 @@ func Execute(req *request.Request) (*Response, error) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		// The deadline firing means curl did not honour max-time, so its exit
+		// status is talaria's signal (killed) rather than curl's own 28, and the
+		// message says which of the two happened.
+		if ctx.Err() != nil {
+			return nil, clierr.RequestFailed(
+				"the request could not be completed: curl outlived its %s timeout and was killed",
+				opts.MaxTime)
+		}
+
 		return nil, runFailure(req, err, stderr.String())
 	}
 
