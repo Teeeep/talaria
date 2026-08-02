@@ -26,6 +26,12 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 
+	// Registered once, here, so every present and future subcommand accepts it
+	// (DESIGN.md §3.1: "--output json on every command"). The empty default
+	// means "decide from the terminal"; see output.Resolve.
+	root.PersistentFlags().String("output", "",
+		"output format: json|pretty|tsv (default: pretty on a terminal, json when piped)")
+
 	root.AddCommand(newVersionCmd())
 
 	return root

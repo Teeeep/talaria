@@ -34,6 +34,16 @@ as a runnable curl command.
   `DELETE` is against the twin.
 - **Not an MCP server.** Ever. The absence is the point.
 
+## Output
+
+Every command takes `--output json|pretty|tsv`. With no flag, talaria prints `pretty` when
+stdout is a terminal and `json` when it is piped — an explicit `--output` always wins.
+
+Every JSON payload carries a top-level `"schema": "talaria/v1"` field. It is versioned so agent
+prompts keep working; it only changes on a breaking change to the output shape. JSON output is
+deterministic — the same result renders byte-identically every time. `tsv` prints bare
+tab-separated rows with no header line, for `cut` and `awk`.
+
 ## Building
 
 Requires Go 1.26+ and curl 7.70+ (curl is the execution engine; `--write-out '%{json}'` is
