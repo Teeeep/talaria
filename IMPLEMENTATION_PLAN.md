@@ -343,8 +343,15 @@ the root only.
    consistent with what `talaria bogus` already produces.
 4. Assert `talaria auth` → 2 and `talaria auth bogus` → 2 in `exitcode_test.go`.
 
+**Built as:** step 1's `RunE: cmd.Help()` would have kept bare `talaria auth` at exit 0, which the
+title and the check below both reject, so `groupCommand`'s `RunE` returns
+`clierr.Usage("%q requires a subcommand")` carrying the subcommand names in `valid_alternatives`.
+No help block is printed on either path: stderr carries one JSON object, and prose in front of it
+is what `SilenceUsage` was set to avoid. `history` was checked per step 2 and left alone — it is
+runnable (it lists), not a parent-only group, and `usageArgs(cobra.NoArgs)` already exits 2 there.
+
 **Verify:** `go test ./cmd/talaria/...`
-- [ ] `talaria auth` and `talaria auth chekc` both exit 2 with a structured error on stderr.
+- [x] `talaria auth` and `talaria auth chekc` both exit 2 with a structured error on stderr.
 - [ ] `talaria auth check <spec>` is unaffected.
 
 ---

@@ -158,6 +158,81 @@ func TestRunWithNoArgumentsPrintsHelpAndSucceeds(t *testing.T) {
 	}
 }
 
+func TestRunTreatsACommandGroupWithNoSubcommandAsAUsageError(t *testing.T) {
+	// `talaria auth` holds subcommands and does nothing itself, so naming it
+	// alone is an incomplete invocation. Cobra's default — help on stdout, exit
+	// 0 — tells an agent that asked for JSON that it succeeded, and hands it
+	// prose to parse.
+	var stdout, stderr strings.Builder
+
+	if got := run([]string{"auth"}, &stdout, &stderr); got != 2 {
+		t.Fatalf("run(auth) = %d, want 2; stdout: %s", got, stdout.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("run(auth) wrote %q to stdout, want the failure on stderr only", stdout.String())
+	}
+
+	var payload struct {
+		Schema string `json:"schema"`
+		Error  struct {
+			Code         int      `json:"code"`
+			Message      string   `json:"message"`
+			Alternatives []string `json:"valid_alternatives"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(stderr.String()), &payload); err != nil {
+		t.Fatalf("stderr is not valid JSON: %v\ngot: %s", err, stderr.String())
+	}
+
+	if payload.Schema != "talaria/v1" {
+		t.Errorf("schema = %q, want talaria/v1", payload.Schema)
+	}
+	if payload.Error.Code != 2 {
+		t.Errorf("error.code = %d, want 2", payload.Error.Code)
+	}
+	if !strings.Contains(payload.Error.Message, "talaria auth") {
+		t.Errorf("error.message = %q, want it to name the command", payload.Error.Message)
+	}
+	if got := strings.Join(payload.Error.Alternatives, ","); got != "check" {
+		t.Errorf("error.valid_alternatives = %v, want [check]", payload.Error.Alternatives)
+	}
+}
+
+func TestRunTreatsAnUnknownSubcommandAsAUsageError(t *testing.T) {
+	// The same contract one level down: `talaria bogus` already exits 2, and an
+	// agent has no way to know that `talaria auth chekc` is a different kind of
+	// typo.
+	var stdout, stderr strings.Builder
+
+	if got := run([]string{"auth", "chekc"}, &stdout, &stderr); got != 2 {
+		t.Fatalf("run(auth chekc) = %d, want 2; stdout: %s", got, stdout.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("run(auth chekc) wrote %q to stdout, want the failure on stderr only", stdout.String())
+	}
+
+	var payload struct {
+		Error struct {
+			Code         int      `json:"code"`
+			Message      string   `json:"message"`
+			Alternatives []string `json:"valid_alternatives"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(stderr.String()), &payload); err != nil {
+		t.Fatalf("stderr is not valid JSON: %v\ngot: %s", err, stderr.String())
+	}
+
+	if payload.Error.Code != 2 {
+		t.Errorf("error.code = %d, want 2", payload.Error.Code)
+	}
+	if !strings.Contains(payload.Error.Message, "chekc") {
+		t.Errorf("error.message = %q, want it to name the unknown subcommand", payload.Error.Message)
+	}
+	if got := strings.Join(payload.Error.Alternatives, ","); got != "check" {
+		t.Errorf("error.valid_alternatives = %v, want [check], the near miss", payload.Error.Alternatives)
+	}
+}
+
 func TestRunTreatsAnUnknownFlagAsAUsageError(t *testing.T) {
 	var stdout, stderr strings.Builder
 

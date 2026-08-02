@@ -116,6 +116,49 @@ func unknownCommand(cmd *cobra.Command, args []string) error {
 		WithAlternatives(cmd.SuggestionsFor(args[0])...)
 }
 
+// groupCommand configures a parent-only command — one that exists to hold
+// subcommands and does nothing on its own — so that both ways of stopping short
+// of a real command exit 2 with the structured error every other bad invocation
+// produces. Cobra's default is help on stdout and exit 0, which tells an agent
+// that asked for JSON that it succeeded and then hands it prose (DESIGN.md §4;
+// §3.1 makes the exit code the thing agents branch on).
+//
+// It returns cmd so a constructor can wrap its literal, and it is a helper
+// rather than three lines in newAuthCmd so the next command group cannot be
+// added without the behaviour.
+func groupCommand(cmd *cobra.Command) *cobra.Command {
+	// A group is not runnable, and cobra bails out to the help before it reaches
+	// ValidateArgs on a command that is not — so, exactly as on the root, Args
+	// only classifies the typo if there is a RunE for it to guard.
+	cmd.Args = unknownCommand
+	// Without this the suggestions are prefix-only; see the root's own comment.
+	cmd.SuggestionsMinimumDistance = 2
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		// The subcommands go in valid_alternatives rather than being printed as
+		// a help block: stderr carries one JSON object, and prose in front of it
+		// is what an agent parsing stderr would choke on. It is the same answer
+		// help would have given, in the shape the caller asked for.
+		return clierr.Usage("%q requires a subcommand", cmd.CommandPath()).
+			WithAlternatives(subcommandNames(cmd)...)
+	}
+
+	return cmd
+}
+
+// subcommandNames lists the commands under cmd that a caller may invoke, in the
+// order cobra shows them. Hidden and deprecated ones are left out: naming them
+// as valid alternatives would send an agent straight back into an error.
+func subcommandNames(cmd *cobra.Command) []string {
+	names := make([]string, 0, len(cmd.Commands()))
+	for _, sub := range cmd.Commands() {
+		if sub.IsAvailableCommand() {
+			names = append(names, sub.Name())
+		}
+	}
+
+	return names
+}
+
 // usageArgs wraps a positional-argument validator so a wrong argument count
 // exits 2 like every other bad invocation. Cobra returns a bare error here, and
 // SetFlagErrorFunc does not cover it, so without this the caller would see the

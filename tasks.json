@@ -66,14 +66,14 @@
       "title": "Make `talaria auth` and `talaria auth <typo>` exit 2",
       "line_start": 317,
       "line_end": 345,
-      "done": false
+      "done": true
     },
     {
       "id": 9,
       "section": "9",
       "title": "Correct the documented `--header` syntax and gate the docs on it",
-      "line_start": 348,
-      "line_end": 377,
+      "line_start": 355,
+      "line_end": 388,
       "done": false
     }
   ]

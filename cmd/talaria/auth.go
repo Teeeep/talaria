@@ -28,10 +28,13 @@ type authScheme struct {
 }
 
 func newAuthCmd() *cobra.Command {
-	cmd := &cobra.Command{
+	// A group, not a command: `auth` holds the subcommands and answers nothing
+	// itself, so naming it alone is an incomplete invocation rather than a
+	// successful one. groupCommand is what makes that exit 2.
+	cmd := groupCommand(&cobra.Command{
 		Use:   "auth",
 		Short: "Inspect the credentials a spec's security schemes need",
-	}
+	})
 
 	cmd.AddCommand(newAuthCheckCmd())
 
