@@ -21,4 +21,9 @@ type Document struct {
 	Source string
 	// Model is the built OpenAPI 3.x model.
 	Model *v3high.Document
+	// ConvertedFrom is the original spec version when the source was not
+	// already OpenAPI 3.x — "2.0" for a converted Swagger document, empty
+	// otherwise. Commands that report on a spec can say so; everything else
+	// can ignore it, which is the point of converting at load time.
+	ConvertedFrom string
 }

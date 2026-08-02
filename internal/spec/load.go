@@ -35,6 +35,17 @@ func LoadFile(path string) (*Document, error) {
 // loadBytes is the single parse path both entry points share, so the error
 // wrapping and the Source bookkeeping stay in one place.
 func loadBytes(data []byte, source string) (*Document, error) {
+	// Swagger 2.0 is converted here, before anything else sees the bytes, so
+	// "any API doc" stops being a special case one command at a time.
+	var convertedFrom string
+	if isSwagger2(data) {
+		converted, err := convertSwagger2(data, source)
+		if err != nil {
+			return nil, err
+		}
+		data, convertedFrom = converted, versionSwagger2
+	}
+
 	doc, err := libopenapi.NewDocument(data)
 	if err != nil {
 		return nil, clierr.SpecLoad("parsing spec %s: %w", source, err)
@@ -48,8 +59,9 @@ func loadBytes(data []byte, source string) (*Document, error) {
 	}
 
 	return &Document{
-		Version: model.Model.Version,
-		Source:  source,
-		Model:   &model.Model,
+		Version:       model.Model.Version,
+		Source:        source,
+		Model:         &model.Model,
+		ConvertedFrom: convertedFrom,
 	}, nil
 }
