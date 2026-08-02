@@ -8,7 +8,17 @@ Source of truth: [docs/design/DESIGN.md](docs/design/DESIGN.md) (v0.3). Stack: `
 §7 sets a deliberate decision gate there: *"Do not start [5–8] on faith; start them because
 using Phases 1–4 made the absence of a twin painful."* Phases 5–8 (recording proxy, twin serve,
 stateful twin, fault injection) are therefore **not planned here** and must not be started as
-part of this plan. When Task 32 passes, stop and hand the gate decision to a human.
+part of this plan. When Task 33 passes, stop and hand the gate decision to a human.
+
+Also deliberately **out of scope**, so no task should drift into them:
+
+- `internal/twin` and every `talaria twin …` subcommand (Phases 6–8).
+- Distribution and packaging — cross-platform release binaries, `go install` docs, the install
+  script, the Homebrew tap, the pi package and the Claude Code skill (DESIGN.md §7 lists these
+  under distribution, not under a phase). Task 33 adds a CI workflow that runs the test suite;
+  it deliberately does **not** build or publish releases.
+- Request chaining / scenario DSL, OAuth flows, a built-in query language, and everything in §9
+  Non-goals. `history replay` (Task 23) is the sanctioned substitute for chaining.
 
 ## Commands (from `.ralph/stack.json` — do not invent others)
 
@@ -33,7 +43,11 @@ github.com/pb33f/libopenapi-validator v0.14.0
 github.com/getkin/kin-openapi         v0.145.0
 github.com/spf13/cobra                v1.10.2
 github.com/spf13/viper                v1.21.0
+gopkg.in/yaml.v3                      v3.0.1
 ```
+
+`yaml.v3` arrives transitively with libopenapi but Task 5 depends on it directly, so require it
+explicitly rather than relying on a transitive edge.
 
 **libopenapi API** — `libopenapi.NewDocument(b []byte) (Document, error)`, then
 `doc.BuildV3Model()` returning `(*DocumentModel[v3high.Document], error)` — a single `error`,
@@ -50,12 +64,33 @@ schemas, `securityDefinitions` → `components.securitySchemes`, and to fold
 `host`+`basePath`+`schemes` into a single `servers[0].url`. The two libraries meet at JSON
 bytes; nothing downstream sees kin-openapi types.
 
+**YAML 2.0 input** — `openapi2.T` only unmarshals JSON, so YAML 2.0 specs need a bridge step.
+Verified end to end: `yaml.Unmarshal(specBytes, &any)` with **`gopkg.in/yaml.v3`** →
+`json.Marshal(any)` → the v2→v3 chain above. yaml.v3 decodes mappings into
+`map[string]interface{}` (yaml.v2 produced `map[interface{}]interface{}`, which `json.Marshal`
+rejects) — so no key-normalisation pass is needed, but **the version matters**. A YAML 2.0
+fixture round-tripped this way kept operationId, tags, path params, the folded
+`https://api.example.com/v1` server URL and an apiKey `securityDefinition` intact.
+
 **libopenapi-validator API** — `validator.NewValidator(doc libopenapi.Document, opts ...config.Option) (Validator, []error)`
 and `ValidateHttpResponse(req *http.Request, resp *http.Response) (bool, []*errors.ValidationError)`.
+Verified against a 3.0 spec: a conforming body returns `(true, nil)`; a body with a wrong field
+type returns `(false, [1 error])` whose `.Message` and `.Reason` are both populated and
+human-readable. **The router is host- and prefix-tolerant**: with the spec declaring
+`servers: [https://api.real.example.com/v1]`, responses for request URLs
+`https://api.real.example.com/v1/pets`, `http://127.0.0.1:PORT/pets` *and*
+`http://127.0.0.1:PORT/v1/pets` all routed and validated identically. `--base-url` therefore
+does not break validation, and tests may validate calls made against an `httptest.Server`.
 
 **curl mechanisms** — `curl -K -` reads a config document from stdin; a secret-bearing
 `header = "Authorization: Bearer …"` directive never appears in argv. `--write-out '%{json}'`
 returns `http_code`, `time_total`, `num_headers` and more. Both verified locally.
+
+**curl config directives cover output capture too** — verified that `output = "/path"`,
+`dump-header = "/path"` and `write-out = "%{json}"` all work as config-document directives, not
+just as argv flags. That yields three separate streams from one exec: response body → the
+`output` file, response headers → the `dump-header` file, and the `%{json}` metadata → curl's
+stdout, with nothing to disentangle. Use this instead of parsing a trailer out of mixed stdout.
 
 **curl config body escaping** — escape the body in this order: `\` → `\\`, then `"` → `\"`,
 `\t` → `\t`, `\n` → `\n`, `\r` → `\r`, and emit as `data = "<escaped>"`. A byte-identical
@@ -77,19 +112,46 @@ These blocked implementation and are resolved here. Change them only with a desi
    `data` directive. Anything larger or non-UTF-8 goes to a `0600` temp file referenced as
    `data = "@/path"`, deleted immediately after exec. The inline path is the default because it
    leaves nothing on disk.
-3. **libopenapi-validator 3.0 strictness** (§8) stays open by design — Task 27 measures it
-   against real 3.0 specs and records the finding.
+3. **libopenapi-validator 3.0 strictness** (§8) stays open by design — Task 26 measures it
+   against real 3.0 specs and records the finding. Planning found no false failure on a simple
+   3.0 document (see Ground facts), so the risk is narrower than §8 feared, but it is untested
+   against the constructs where 3.1 strictness actually bites: nullable, exclusiveMinimum/Maximum
+   as booleans, and `example` vs `examples`. Task 26 must exercise exactly those.
 
 ## Conventions
 
+- Tasks are executed in numeric order. **"Depends on" lists what must already be built for the
+  task to compile and pass, not a claim that nothing else exists yet.** It is deliberately not a
+  chain: e.g. Task 12 (`internal/secret`) depends only on Task 1, so if the ordering ever needs
+  to change, the real constraints are written down rather than inferred from the numbering.
 - Tests are colocated (`internal/spec/loader_test.go`), per Go convention and `.ralph/stack.json`.
 - Spec fixtures live in `testdata/` beside the package that reads them.
 - No package under `internal/operation`, `internal/validate`, or `internal/gen` may import
-  `internal/curl` or `internal/twin` (DESIGN.md §5 boundary rule). Task 33 does not exist to
-  relax this.
+  `internal/curl` or `internal/twin` (DESIGN.md §5 boundary rule). No task in this plan relaxes
+  it; if a task seems to require it, the dependency is pointing the wrong way.
 - Secret values are `SecretRef` structs everywhere except inside `internal/curl` at exec time.
   If a task tempts you to put a resolved secret in a struct field typed `string`, stop — that is
   the bug class §5a exists to prevent.
+
+### Deviations from the DESIGN.md §5 package layout (deliberate)
+
+§5 lists the packages the design cares about; it is not exhaustive. This plan adds three, and a
+reviewer checking the implementation against §5 should read this rather than file a finding:
+
+- **`internal/request`** — holds the `Request` type §5a describes ("a `Request` whose secret
+  fields are *structurally* references"). §5 never says where it lives. It cannot live in
+  `internal/curl`, because `internal/corpus`, `internal/output` and `internal/validate` all
+  consume a `Request` and §5's boundary rule forbids them importing `curl`. A separate leaf
+  package is the only placement that keeps that rule satisfiable.
+- **`internal/clierr`** — the exit-code contract from §4. Every package returns these errors, so
+  it must sit below all of them.
+- **`internal/canary`** — test-only, holding the §5a leak suite and its surface enumeration.
+- **`internal/ci`** — test-only, holding the Task 33 test that keeps the CI workflow in step with
+  `.ralph/stack.json`. No production code.
+- **`internal/e2e`** — test-only, holding the Task 32 cross-component workflow test.
+
+Nothing else may be added without a design-doc update. In particular there is no `internal/http`
+or `internal/client`: curl is the execution engine (§3.4).
 
 ---
 
@@ -136,6 +198,7 @@ cannot run at all until `go mod init` happens — this task unblocks the entire 
 **Implementation files:**
 - `internal/output/output.go` (create) — `Format` type, `Resolve` for default selection
 - `internal/output/render.go` (create) — JSON, pretty and TSV renderers
+- `cmd/talaria/root.go` (modify) — persistent `--output` flag on the root command
 
 **Red — write failing tests:**
 1. Every JSON-rendered payload carries `"schema": "talaria/v1"` as a top-level field (DESIGN.md §3.1).
@@ -145,6 +208,10 @@ cannot run at all until `go mod init` happens — this task unblocks the entire 
    row, with no trailing blank line.
 4. JSON output is deterministic: rendering the same payload twice yields byte-identical output
    (map key ordering must not float).
+5. `--output` is registered **once** as a persistent flag on the root command, so every
+   subcommand accepts it (§3.1: "`--output json` on every command"). Assert by looking the flag
+   up on a freshly built child command, not by re-registering it per command.
+6. An invalid `--output xml` exits 2 with the three valid values listed.
 
 **Green — minimal implementation:**
 1. `Format` enum (`json`, `pretty`, `tsv`) with parsing and an `Unknown format` error listing
@@ -164,7 +231,7 @@ command from inventing its own shape.
 
 ### Task 3: Structured errors and the exit-code contract
 
-**Depends on:** Task 2
+**Depends on:** Tasks 1, 2
 
 **Test files:**
 - `internal/clierr/clierr_test.go` (create) — code mapping and stderr JSON shape
@@ -242,6 +309,8 @@ Swagger 2.0 path (Task 5) and the cache (Task 6) slot in behind a single interfa
 - `internal/spec/testdata/petstore-2.0.json` (create) — the canonical Swagger 2.0 petstore
 - `internal/spec/testdata/swagger2-apikey.json` (create) — 2.0 spec with `securityDefinitions`,
   `host`, `basePath`, `schemes`, and a `$ref` into `definitions`
+- `internal/spec/testdata/swagger2.yaml` (create) — the same API as `swagger2-apikey.json` in
+  YAML, to cover the YAML→JSON bridge
 
 **Implementation files:**
 - `internal/spec/convert.go` (create) — 2.0 detection and conversion
@@ -258,13 +327,20 @@ Swagger 2.0 path (Task 5) and the cache (Task 6) slot in behind a single interfa
 4. `securityDefinitions` become `components.securitySchemes` preserving type, `in` and header
    name — auth mapping in Task 14 depends on this surviving.
 5. A `$ref` to `#/definitions/Pet` resolves after conversion, with `required` fields intact.
+6. **The YAML 2.0 fixture converts to a document equal to the JSON fixture's** — same
+   operationIds, same single server URL, same security schemes. Input format must be invisible
+   downstream. This is the assertion that catches a yaml.v2 regression.
 
 **Green — minimal implementation:**
 1. `go get github.com/getkin/kin-openapi@v0.145.0`.
 2. Detect version by unmarshalling into a struct with `Swagger` and `OpenAPI` string fields.
 3. Convert with the verified bridge: `json.Unmarshal` → `openapi2.T`, `openapi2conv.ToV3`,
-   `json.Marshal`, hand the bytes to the existing `LoadBytes`. YAML 2.0 input must be converted
-   to JSON before unmarshalling into `openapi2.T`.
+   `json.Marshal`, hand the bytes to the existing `LoadBytes`.
+4. YAML 2.0 input must become JSON first, because `openapi2.T` only unmarshals JSON. Use
+   `gopkg.in/yaml.v3`: `yaml.Unmarshal(b, &v)` into an `interface{}`, then `json.Marshal(v)`.
+   **Do not use `gopkg.in/yaml.v2`** — it decodes mappings as `map[interface{}]interface{}`,
+   which `json.Marshal` rejects outright. Detect YAML vs JSON by attempting `json.Unmarshal`
+   first and falling back to YAML, rather than by file extension (URLs often have neither).
 4. Record on the wrapper that conversion happened, so `describe` can note it later if useful.
 
 **Verify:** `go test ./internal/spec/...`
@@ -277,7 +353,7 @@ it, and doing it wrong silently breaks every downstream command on half the spec
 
 ### Task 6: Spec source resolution, URL fetch, and local cache
 
-**Depends on:** Task 5
+**Depends on:** Task 4
 
 **Test files:**
 - `internal/spec/source_test.go` (create) — precedence, URL fetch, cache hit/miss
@@ -310,7 +386,7 @@ var." An agent pointed at a remote spec should not re-download it on every one o
 
 ### Task 7: The operation model
 
-**Depends on:** Task 6
+**Depends on:** Task 4
 
 **Test files:**
 - `internal/operation/operation_test.go` (create) — extraction from a built spec document
@@ -382,7 +458,7 @@ agent call into a self-correcting one.
 
 ### Task 9: `talaria list`
 
-**Depends on:** Task 8
+**Depends on:** Tasks 2, 6, 8
 
 **Test files:**
 - `cmd/talaria/list_test.go` (create) — output formats, tag filter, exit codes
@@ -415,7 +491,7 @@ makes the binary useful. Its compactness is the whole point — it exists so nob
 
 ### Task 10: `talaria describe` and the compact schema renderer
 
-**Depends on:** Task 9
+**Depends on:** Tasks 2, 8
 
 **Test files:**
 - `internal/output/schema_test.go` (create) — the compact schema format
@@ -454,7 +530,7 @@ tool exists to prevent. The cycle guard is not optional — real specs self-refe
 
 ### Task 11: `talaria search` and `talaria uses`
 
-**Depends on:** Task 10
+**Depends on:** Tasks 2, 8
 
 **Test files:**
 - `cmd/talaria/search_test.go` (create) — fuzzy search across kinds
@@ -494,7 +570,7 @@ context dump this tool avoids. Both commands are adopted from phyllotaxis (docs/
 
 ### Task 12: `internal/secret` — SecretRef and redaction
 
-**Depends on:** Task 11
+**Depends on:** Task 1
 
 **Test files:**
 - `internal/secret/secret_test.go` (create) — ref semantics, header matching, redaction
@@ -535,7 +611,7 @@ credential firewall is "not retrofittable — it shapes the core `Request` type.
 
 ### Task 13: `internal/config` — profiles and env-var auth mapping
 
-**Depends on:** Task 12
+**Depends on:** Tasks 7, 12
 
 **Test files:**
 - `internal/config/config_test.go` (create) — env conventions, profile loading, permissions
@@ -577,7 +653,7 @@ means `AGENT.md` documents a lie.
 
 ### Task 14: Request construction and parameter binding
 
-**Depends on:** Task 13
+**Depends on:** Tasks 8, 13
 
 **Test files:**
 - `internal/request/request_test.go` (create) — binding, validation, base-url resolution
@@ -616,7 +692,7 @@ string, every one of those surfaces becomes a leak channel.
 
 ### Task 15: Symbolic curl rendering, `call --dry-run`, and mutation gating
 
-**Depends on:** Task 14
+**Depends on:** Tasks 2, 14
 
 **Test files:**
 - `internal/curl/render_test.go` (create) — symbolic command rendering
@@ -656,7 +732,7 @@ is "runnable in a shell where the env var is set, useless to exfiltrate."
 
 ### Task 16: The curl config document (`-K -`) builder
 
-**Depends on:** Task 15
+**Depends on:** Tasks 12, 14
 
 **Test files:**
 - `internal/curl/config_test.go` (create) — directive emission, escaping, temp-file cutover
@@ -665,12 +741,16 @@ is "runnable in a shell where the env var is set, useless to exfiltrate."
 - `internal/curl/config.go` (create) — build the config document written to curl's stdin
 
 **Red — write failing tests:**
-1. The config document contains `url`, `request`, `header` and `silent` directives, and a
-   `write-out = "%{json}"` directive.
+1. The config document contains `url`, `request`, `header`, `silent` and `show-error`
+   directives, and a `write-out = "%{json}"` directive.
 2. A `SecretRef` header is resolved *into the config document only* — assert the canary value is
    present in the config bytes and absent from the argv slice the builder returns alongside it.
-3. The argv slice is exactly `["curl", "-K", "-"]` plus non-sensitive flags — no URL, no headers,
-   no credentials as arguments (§5a: `/proc/*/cmdline` is world-readable).
+3. The argv slice is exactly `["curl", "-K", "-"]` and nothing else — no URL, no headers, no
+   credentials, no output paths as arguments (§5a: `/proc/*/cmdline` is world-readable).
+   Everything curl needs is a directive, because `output`, `dump-header` and `write-out` are all
+   valid config-document directives (verified — see Ground facts). Task 17 appends the `output`
+   and `dump-header` directives when it allocates those temp files; the builder accepts them as
+   parameters rather than Task 17 reaching for argv and breaking this assertion.
 4. Body escaping is applied in the verified order (`\` first, then `"`, `\t`, `\n`, `\r`) and a
    JSON body containing embedded quotes, backslashes, newlines, tabs and multi-byte UTF-8
    round-trips byte-identically.
@@ -705,10 +785,12 @@ This is the single place in the program where a resolved secret exists.
 - `internal/curl/version.go` (create) — curl version preflight
 
 **Red — write failing tests:**
-1. Executing a GET against an `httptest.Server` returns status 200, the response body and
-   headers, and a non-zero `timing_ms` parsed from `--write-out '%{json}'`.
-2. The response body is captured separately from the `%{json}` metadata block (assert a body
-   containing a `}` does not corrupt metadata parsing).
+1. Executing a GET against an `httptest.Server` returns status 200, the response body and the
+   response headers, and a non-zero `timing_ms` parsed from `write-out = "%{json}"`.
+2. Body, headers and metadata arrive on three separate channels and cannot corrupt each other:
+   the body goes to the `output` file, the headers to the `dump-header` file, and `%{json}` is
+   the whole of curl's stdout. Assert with a response body that is itself a `%{json}`-shaped
+   JSON object containing `}` and a fake `http_code` — parsing must still report the real status.
 3. A connection to a closed port returns exit code 1 (`clierr.RequestFailed`) with curl's exit
    status in the message — an HTTP 500 does *not*, since that is a successful observation.
 4. HTTP 404 and 500 both return exit code 0 with the status recorded (§4 exit-code table).
@@ -718,11 +800,16 @@ This is the single place in the program where a resolved secret exists.
    (§5a: "Errors are built from the redacted representation").
 
 **Green — minimal implementation:**
-1. `exec.Command("curl", argv...)` with the config document written to `cmd.Stdin` via a pipe —
+1. `exec.Command("curl", "-K", "-")` with the config document written to `cmd.Stdin` via a pipe —
    never the Go process's real stdin.
-2. Write the body to a temp file or use `--output` to separate body bytes from the `%{json}`
-   trailer; parse the metadata as the last line.
-3. Preflight parses `curl --version` output once per process and caches it.
+2. Allocate two `0600` temp files in a `0700` dir, pass their paths to the Task 16 builder as
+   `output` and `dump-header` directives, and delete both in a deferred cleanup. Parse curl's
+   stdout as a single `%{json}` object; read status from `http_code`, timing from `time_total`.
+   Do **not** parse a trailer out of a mixed stdout stream — the three-channel split exists to
+   make that class of bug impossible.
+3. Parse the `dump-header` file into an `http.Header`, taking the **last** header block so that
+   redirects and `100 Continue` do not leave stale headers in front of the real response.
+4. Preflight parses `curl --version` output once per process and caches it.
 
 **Verify:** `go test ./internal/curl/...`
 
@@ -735,7 +822,7 @@ this one.
 
 ### Task 18: Request bodies from flag, file, and stdin
 
-**Depends on:** Task 17
+**Depends on:** Tasks 14, 16
 
 **Test files:**
 - `internal/request/body_test.go` (create) — the three body sources and stdin ownership
@@ -769,7 +856,7 @@ regression.
 
 ### Task 19: `talaria call` — real execution
 
-**Depends on:** Task 18
+**Depends on:** Tasks 15, 17, 18
 
 **Test files:**
 - `cmd/talaria/call_test.go` (create) — full call path against `httptest`
@@ -802,7 +889,7 @@ credential and real network traffic meet. Assertion 2 is the product in a single
 
 ### Task 20: Response redaction and query-key warning
 
-**Depends on:** Task 19
+**Depends on:** Tasks 12, 19
 
 **Test files:**
 - `internal/secret/response_test.go` (create) — response-side redaction
@@ -836,7 +923,7 @@ mitigation and being honest about the gap is the design's stated position.
 
 ### Task 21: `talaria auth check` and exit code 5
 
-**Depends on:** Task 20
+**Depends on:** Tasks 3, 13
 
 **Test files:**
 - `cmd/talaria/auth_test.go` (create) — presence reporting and exit codes
@@ -868,7 +955,7 @@ able to do without ever seeing a secret.
 
 ### Task 22: `internal/corpus` — the history store
 
-**Depends on:** Task 21
+**Depends on:** Tasks 12, 14
 
 **Test files:**
 - `internal/corpus/store_test.go` (create) — write-time redaction, retention, permissions
@@ -878,13 +965,15 @@ able to do without ever seeing a secret.
 - `internal/corpus/store.go` (create) — append, trim, read, permissions
 
 **Red — write failing tests:**
-1. An appended entry stores method, URL, request/response headers and bodies, status, timing and
-   an RFC3339 timestamp.
+1. An appended entry stores method, URL, operationId, request/response headers and bodies,
+   status, timing, a `source` (`call` | `run` | `replay`) and an RFC3339 timestamp.
 2. Redaction happens at **write** time: after appending an entry built from a request carrying a
    canary credential, the canary appears nowhere in the file's bytes (§5a: "Un-redacted recording
    is not an option").
 3. The store file is created `0600` inside a directory created `0700`.
-4. Appending beyond the 1000-entry cap trims oldest-first and leaves exactly 1000.
+4. The 1000-entry cap is applied **per `source`**, trimming oldest-first: appending 1001 `run`
+   entries leaves exactly 1000 of them and evicts no `call` entry. A global cap would let one
+   `run` over a large spec (Task 30) wipe a session of interactive history.
 5. Bodies over 64 KiB are truncated with `"truncated": true` and the file stays valid JSONL.
 6. `TALARIA_HISTORY=off` makes append a no-op that creates no file at all.
 7. A corrupt line in the middle of the file is skipped on read rather than failing the whole read.
@@ -906,7 +995,7 @@ the twin's corpus are the same data. See the retention decision at the top of th
 
 ### Task 23: `talaria history` — list, show, replay
 
-**Depends on:** Task 22
+**Depends on:** Tasks 19, 22
 
 **Test files:**
 - `cmd/talaria/history_test.go` (create) — filters, show, replay
@@ -919,7 +1008,9 @@ the twin's corpus are the same data. See the retention decision at the top of th
 1. A successful `call` writes exactly one history entry.
 2. `history` lists entries newest-first with index, timestamp, method, path and status.
 3. `--operation getPet` filters by operation; `--since 1h` filters by age; `--status 4xx` matches
-   400–499 (and `--status 404` matches exactly).
+   400–499 (and `--status 404` matches exactly); `--source call|run|replay` filters by origin.
+   `--source` is an addition beyond the §4 flag list, needed because `run` (Task 30) writes to
+   the same store and would otherwise bury interactive history.
 4. `history show <n>` prints the full redacted request and response; the canary value is absent.
 5. `history replay <n>` re-issues the call against the recorded URL and produces a *new* history
    entry, leaving the original intact.
@@ -942,7 +1033,7 @@ of request chaining without the scenario DSL" (§8).
 
 ### Task 24: The canary-secret leak suite
 
-**Depends on:** Task 23
+**Depends on:** Tasks 15, 19, 20, 23
 
 **Test files:**
 - `internal/canary/canary_test.go` (create) — every output surface, every auth mechanism
@@ -979,7 +1070,7 @@ every release thereafter.**" Assertion 5 is what keeps it honest as the tool gro
 
 ### Task 25: `AGENT.md` v1
 
-**Depends on:** Task 24
+**Depends on:** Tasks 21, 23
 
 **Test files:**
 - `cmd/talaria/agentdoc_test.go` (create) — documented facts match the implementation
@@ -1011,7 +1102,7 @@ reader who cannot check the source.
 
 ### Task 26: `internal/validate` — response validation
 
-**Depends on:** Task 25
+**Depends on:** Tasks 3, 7
 
 **Test files:**
 - `internal/validate/validate_test.go` (create) — status, body and content-type validation
@@ -1028,16 +1119,28 @@ reader who cannot check the source.
 3. A response whose content-type is absent from the spec's declared media types is flagged.
 4. A `default` response entry satisfies an otherwise-undocumented status.
 5. A 204 with an empty body validates rather than failing on "missing body".
-6. **The §8 open question:** run validation over the 3.0 fixture and assert which construct, if
-   any, produces a false failure under the validator's 3.1-strict JSON Schema default. Record the
-   finding in a comment at the top of the test file and, if a false failure occurs, configure the
-   validator down per-document and assert it now passes.
+6. Validation still routes when `--base-url` points somewhere other than the spec's server:
+   validate the same response against request URLs `https://api.real.example.com/v1/pets`,
+   `http://127.0.0.1:PORT/pets` and `http://127.0.0.1:PORT/v1/pets` and assert all three agree.
+   Planning verified the router is host- and prefix-tolerant (Ground facts); this test pins that
+   behaviour so a validator upgrade cannot silently break every test-server call.
+7. **The §8 open question:** the 3.0 fixture must contain the constructs where 3.1 strictness
+   actually bites — `nullable: true`, boolean `exclusiveMinimum`/`exclusiveMaximum`, and singular
+   `example` — and the test asserts which, if any, produce a false failure under the validator's
+   3.1-strict JSON Schema default. Record the finding in a comment at the top of the test file
+   and, if a false failure occurs, configure the validator down per-document and assert it now
+   passes. Planning saw no false failure on a *simple* 3.0 document, so absence of a finding here
+   is only meaningful if the fixture is genuinely adversarial.
 
 **Green — minimal implementation:**
 1. `go get github.com/pb33f/libopenapi-validator@v0.14.0`.
-2. Reconstruct `*http.Request`/`*http.Response` from the corpus entry and call
-   `ValidateHttpResponse`; map its `[]*errors.ValidationError` into the `validation` block.
-3. `internal/validate` must not import `internal/curl` (§5 boundary rule) — it takes plain data.
+2. Take **plain data** — method, URL, status, headers, body bytes — reconstruct
+   `*http.Request`/`*http.Response` internally, call `ValidateHttpResponse`, and map its
+   `[]*errors.ValidationError` (`.Message`, `.Reason`) into the `validation` block.
+3. `internal/validate` must not import `internal/curl`, `internal/corpus` or `internal/twin`
+   (§5 boundary rule). It is shared with the twin in later phases, so it takes a plain input
+   struct that both a live `call` and a stored corpus entry can produce — the caller converts,
+   not this package.
 
 **Verify:** `go test ./internal/validate/...`
 
@@ -1049,7 +1152,7 @@ risk as something to confirm in this phase rather than discover in production.
 
 ### Task 27: `call` validation block and `--fail-on-error`
 
-**Depends on:** Task 26
+**Depends on:** Tasks 19, 26
 
 **Test files:**
 - `cmd/talaria/call_validate_test.go` (create) — the validation block and exit code 4
@@ -1077,7 +1180,7 @@ inputs back.
 
 ### Task 28: `internal/gen` — schema-based data generation
 
-**Depends on:** Task 27
+**Depends on:** Task 7
 
 **Test files:**
 - `internal/gen/gen_test.go` (create) — generation from schemas and examples
@@ -1145,7 +1248,7 @@ operations whose generated data would be nonsense (real ids, valid foreign keys)
 
 ### Task 30: `talaria run` — smoke testing
 
-**Depends on:** Task 29
+**Depends on:** Tasks 19, 27, 29
 
 **Test files:**
 - `cmd/talaria/run_test.go` (create) — filters, execution, reporting, exit codes
@@ -1165,12 +1268,18 @@ operations whose generated data would be nonsense (real ids, valid foreign keys)
 6. Operations requiring an unsatisfied credential are reported as such and exit 5.
 7. Path params are filled from the priority chain (Task 29), and an operation whose required
    param cannot be supplied is reported as skipped with the reason.
+8. Each executed operation writes one history entry tagged `"source": "run"`, and `history
+   --source call` excludes them. A `run` over a large spec must not make `history` useless by
+   evicting a session's worth of `call` entries under the 1000-entry cap — assert that after a
+   `run` of N operations, prior `call` entries are still retrievable.
 
 **Green — minimal implementation:**
 1. Resolve → filter → for each operation build data, build request, exec, validate, collect.
 2. Sequential execution in spec order; no concurrency in v1 (determinism beats speed here, and
    parallel calls against a real API are a surprise nobody asked for).
-3. Every call goes through the same corpus writer as `call`.
+3. Every call goes through the same corpus writer as `call`, with `Source: "run"`. The field, the
+   per-source cap and the `--source` filter already exist (Tasks 22 and 23); this task only sets
+   the value correctly.
 
 **Verify:** `go test ./cmd/...`
 
@@ -1181,7 +1290,7 @@ and what an agent uses to answer "is this whole API behaving?" in one command.
 
 ### Task 31: JUnit report output
 
-**Depends on:** Task 30
+**Depends on:** Tasks 2, 30
 
 **Test files:**
 - `internal/output/junit_test.go` (create) — JUnit XML shape
@@ -1213,11 +1322,12 @@ after the canary suite rather than being bolted on later.
 
 ### Task 32: End-to-end integration across the whole loop
 
-**Depends on:** Task 31
+**Depends on:** Tasks 23, 30, 31
 
 **Test files:**
 - `internal/e2e/e2e_test.go` (create) — the full workflow against a local server
 - `internal/e2e/testdata/e2e-api.yaml` (create) — 3.0 spec matching the test server's behaviour
+- `internal/e2e/testdata/e2e-api-2.0.json` (create) — the same API as Swagger 2.0, for assertion 5
 
 **Implementation files:**
 - none — this task adds no production code. If it cannot pass without changing production code,
@@ -1248,6 +1358,46 @@ that proves component N's output actually reaches component N+1 — particularly
 conversion path (Task 5) survives all the way to validation, and that the credential firewall
 holds across a whole session rather than one command at a time.
 
-**When this passes, Phases 1–4 are complete. Stop.** DESIGN.md §7 sets a decision gate here:
+---
+
+### Task 33: CI workflow running the test suite
+
+**Depends on:** Task 32
+
+**Test files:**
+- `internal/ci/workflow_test.go` (create) — the workflow file stays in step with `.ralph/stack.json`
+
+**Implementation files:**
+- `.github/workflows/ci.yml` (create) — build, lint and test on push and pull request
+
+**Red — write failing tests:**
+1. `.github/workflows/ci.yml` parses as YAML and declares triggers for both `push` and
+   `pull_request`.
+2. Every shell command the workflow runs appears verbatim in `.ralph/stack.json`
+   (`build_command`, `lint_command`, `test_command`) — parse both files and compare, so the
+   workflow cannot drift into invented commands.
+3. The Go version pinned in the workflow matches the `go` directive in `go.mod`.
+4. The workflow runs `go test ./...`, which is what makes the Task 24 canary suite an actual
+   build gate rather than a test somebody has to remember to run.
+
+**Green — minimal implementation:**
+1. A single `ubuntu-latest` job: checkout, `actions/setup-go` pinned to the `go.mod` version,
+   then `go build ./...`, `test -z "$(gofmt -l .)" && go vet ./...`, `go test ./...`.
+2. Nothing else. **No release, matrix, cross-compilation or publishing step** — distribution is
+   out of scope (see Scope), and a release job here would quietly start Phase-9 work.
+3. curl is preinstalled on `ubuntu-latest` and is well above the 7.70 floor, so no install step
+   is needed; the Task 17 preflight covers the case where it is not.
+
+**Verify:** `go test ./internal/ci/...` then `go build ./...` and
+`test -z "$(gofmt -l .)" && go vet ./...` and `go test ./...`
+
+**Why:** §5a requires that the canary suite "gates every release thereafter" and that "redaction
+regressions fail the build". Until a build exists, nothing gates anything — the suite is only a
+file somebody could skip. This is the smallest thing that makes the design's own security
+requirement real, and the test keeps the workflow honest about which commands it runs.
+
+---
+
+**When Task 33 passes, Phases 1–4 are complete. Stop.** DESIGN.md §7 sets a decision gate here:
 Phases 5–8 are roughly as much work again, land in a crowded market, and must not be started
 until real usage has made the twin's absence painful. That call belongs to a human.
