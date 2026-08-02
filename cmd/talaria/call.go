@@ -1,6 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,8 +23,9 @@ import (
 // everything except the response and validation blocks, so an agent parses one
 // structure whether or not the request was sent.
 type callView struct {
-	DryRun  bool        `json:"dry_run"`
-	Request requestView `json:"request"`
+	DryRun   bool          `json:"dry_run"`
+	Request  requestView   `json:"request"`
+	Response *responseView `json:"response,omitempty"`
 }
 
 // requestView is what was, or would have been, sent. Curl is the symbolic
@@ -33,11 +39,49 @@ type requestView struct {
 	Body    string            `json:"body,omitempty"`
 }
 
+// responseView is what came back. Headers keep their repetitions — Set-Cookie
+// legitimately appears more than once, and HTTP forbids folding it into one
+// comma-joined value the way requestView's map does.
+type responseView struct {
+	Status   int                 `json:"status"`
+	Headers  map[string][]string `json:"headers"`
+	Body     responseBody        `json:"body"`
+	TimingMS int64               `json:"timing_ms"`
+}
+
+// responseBody is the raw bytes of a response, rendered per §4's sketch: a JSON
+// body is embedded as JSON so an agent can reach into it with one parse instead
+// of two, and anything else becomes a string.
+type responseBody []byte
+
+// MarshalJSON embeds the body when it is a JSON object or array, and quotes it
+// otherwise.
+//
+// The object/array test is deliberately narrower than "is valid JSON": a
+// plain-text body of `42` or `true` parses as JSON, and embedding it would
+// report a document the server never sent. Composite syntax is unambiguous, so
+// that is where the line goes.
+func (b responseBody) MarshalJSON() ([]byte, error) {
+	if len(b) == 0 {
+		return []byte("null"), nil
+	}
+
+	trimmed := bytes.TrimLeft(b, " \t\r\n")
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') && json.Valid(trimmed) {
+		// encoding/json compacts and re-validates whatever a MarshalJSON returns,
+		// so the body's own formatting does not leak into the envelope.
+		return trimmed, nil
+	}
+
+	return json.Marshal(string(b))
+}
+
 func newCallCmd() *cobra.Command {
 	var (
 		params         []string
 		queries        []string
 		headers        []string
+		body           []string
 		dryRun         bool
 		allowMutations bool
 	)
@@ -80,20 +124,22 @@ func newCallCmd() *cobra.Command {
 					operationName(op), op.Method)
 			}
 
-			if !dryRun {
-				// Phase 1 ends at the dry run: there is no execution path yet,
-				// and silently printing one would misreport what happened.
-				return clierr.Usage(
-					"talaria cannot send requests yet: pass --dry-run to print the curl command for %s",
-					operationName(op))
-			}
-
-			req, err := buildRequest(cmd, op, doc, params, queries, headers)
+			req, err := buildRequest(cmd, op, doc, params, queries, headers, body)
 			if err != nil {
 				return err
 			}
 
-			return output.New(format, cmd.OutOrStdout()).Render(dryRunPayload(req))
+			renderer := output.New(format, cmd.OutOrStdout())
+			if dryRun {
+				return renderer.Render(callPayload(req, nil))
+			}
+
+			resp, err := curl.Execute(req)
+			if err != nil {
+				return err
+			}
+
+			return renderer.Render(callPayload(req, resp))
 		},
 	}
 
@@ -106,6 +152,8 @@ func newCallCmd() *cobra.Command {
 		"add a query parameter, name=value (repeatable)")
 	cmd.Flags().StringArrayVar(&headers, "header", nil,
 		"add a request header, name=value (repeatable)")
+	cmd.Flags().StringArrayVar(&body, "body", nil,
+		"request body: a literal, @file to read one, or - to read this process's stdin")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false,
 		"print the curl command and send nothing")
 	cmd.Flags().BoolVar(&allowMutations, "allow-mutations", false,
@@ -120,7 +168,7 @@ func buildRequest(
 	cmd *cobra.Command,
 	op operation.Operation,
 	doc *spec.Document,
-	params, queries, headers []string,
+	params, queries, headers, body []string,
 ) (*request.Request, error) {
 	prof, err := loadProfile(cmd)
 	if err != nil {
@@ -146,6 +194,11 @@ func buildRequest(
 		Params:  params,
 		Query:   queries,
 		Headers: headers,
+		Body:    body,
+		// The Go process owns the real stdin, and `--body -` is the only thing
+		// that reads it. curl's stdin carries the config document and nothing
+		// else (DESIGN.md §5a).
+		Stdin: cmd.InOrStdin(),
 	})
 }
 
@@ -170,11 +223,18 @@ func loadProfile(cmd *cobra.Command) (*config.Profile, error) {
 	return cfg.Profile(name)
 }
 
-// dryRunPayload renders the request in both shapes from the same values, so the
-// JSON block and the printed command cannot disagree about what would be sent.
-func dryRunPayload(req *request.Request) output.Payload {
+// callPayload renders one call in both shapes from the same values, so the JSON
+// block and the printed command cannot disagree about what was sent. A nil resp
+// is a dry run: the request block is identical either way, which is what makes
+// `--dry-run` a faithful preview rather than a separate code path.
+//
+// The view is built from the request's *redacted* representation throughout —
+// requestView holds Value.String() and curl.Render's symbolic form, never a
+// resolved credential. The only code that resolves one is internal/curl, at
+// exec time, and it hands back a Response rather than a Request (§5a).
+func callPayload(req *request.Request, resp *curl.Response) output.Payload {
 	view := callView{
-		DryRun: true,
+		DryRun: resp == nil,
 		Request: requestView{
 			Curl:    curl.Render(req),
 			Method:  req.Method,
@@ -194,7 +254,30 @@ func dryRunPayload(req *request.Request) output.Payload {
 		{view.Request.Curl},
 	}
 
+	if resp != nil {
+		view.Response = &responseView{
+			Status:   resp.Status,
+			Headers:  resp.Headers,
+			Body:     responseBody(resp.Body),
+			TimingMS: resp.TimingMS,
+		}
+		// Status and timing only. The response headers are not summarised here
+		// because a Set-Cookie or an X-Auth-Token would land in a human's
+		// scrollback unasked; --output json is where the full response lives.
+		rows = append(rows, []string{statusLine(resp)})
+	}
+
 	return output.Payload{Data: view, Table: output.Table{Rows: rows}}
+}
+
+// statusLine is the pretty renderer's one-line summary of a response.
+func statusLine(resp *curl.Response) string {
+	line := strconv.Itoa(resp.Status)
+	if text := http.StatusText(resp.Status); text != "" {
+		line += " " + text
+	}
+
+	return fmt.Sprintf("%s in %dms", line, resp.TimingMS)
 }
 
 // pairMap renders headers or cookies as the object §4's sketch shows. Values

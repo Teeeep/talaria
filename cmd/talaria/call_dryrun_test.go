@@ -202,19 +202,6 @@ func TestCallReportsAMissingRequiredParam(t *testing.T) {
 	}
 }
 
-func TestCallWithoutDryRunReportsThatExecutionIsNotAvailableYet(t *testing.T) {
-	// Phase 1 ends at the dry run: there is no execution path at all yet, so
-	// the command says so rather than silently printing a dry run.
-	code, _, stderr := runCall(t, "testdata/call.yaml", "getPublic")
-	if code == 0 {
-		t.Fatalf("call without --dry-run = 0, want a failure; stderr: %s", stderr)
-	}
-
-	if msg := decodeErr(t, stderr).Error.Message; !strings.Contains(msg, "--dry-run") {
-		t.Errorf("error message %q does not point at --dry-run", msg)
-	}
-}
-
 func TestCallReportsAnUnknownOperation(t *testing.T) {
 	code, _, stderr := runCall(t, "testdata/call.yaml", "noSuchOperation", "--dry-run")
 	if code != int(clierr.CodeUsage) {
