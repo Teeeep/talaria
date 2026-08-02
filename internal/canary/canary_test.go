@@ -763,6 +763,67 @@ func TestAUserSuppliedHeaderIsRedactedLikeASpecCredential(t *testing.T) {
 	}
 }
 
+// TestConfiguredRedactHeadersCoversTheDisplayedRequest is the user-extensible
+// list at the surface it exists for. `redact.headers` reaching history but not
+// the stdout an agent reads would protect the permanent artifact and leave the
+// live one in the clear, which is the firewall backwards.
+//
+// X-Session-Id matches nothing built in — *token* and *secret* do not catch it
+// — so a pass here is the configured pattern doing the work and nothing else.
+// The companion test below proves that by removing the config.
+func TestConfiguredRedactHeadersCoversTheDisplayedRequest(t *testing.T) {
+	for _, format := range canary.Formats() {
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+
+			value := canary.Value("configured")
+			h := newHarness(t, nil)
+			srv := newServer(t, `{"ok":true}`)
+			writeConfig(t, h, "redact:\n  headers:\n    - 'x-session-*'\n")
+
+			call := []string{"call", specPath, "getPublic", "--base-url", srv.URL,
+				"--header", "X-Session-Id=" + value, "--output", format}
+			runs := []result{
+				h.runOK(append(call, "--dry-run")...),
+				h.runOK(call...),
+				h.runOK("history", "--output", format),
+				h.runOK("history", "show", "1", "--output", format),
+			}
+
+			// Configuring a display pattern hides the value; it does not stop
+			// talaria sending the header the user asked for.
+			if got := srv.received().Header.Get("X-Session-Id"); !strings.Contains(got, value) {
+				t.Fatalf("the server never saw X-Session-Id; the leak assertions below prove nothing")
+			}
+
+			var surfaces []canary.Surface
+			for _, res := range runs {
+				surfaces = append(surfaces, res.surfaces()...)
+			}
+
+			assertNoLeak(t, value, append(surfaces, h.written()...))
+		})
+	}
+}
+
+// TestAnUnconfiguredHeaderNameIsNotRedacted is the control for the test above:
+// the same header under the same flag, with no `redact.headers` entry, is shown.
+// Without it a redaction bug that hid everything would pass as a success.
+func TestAnUnconfiguredHeaderNameIsNotRedacted(t *testing.T) {
+	t.Parallel()
+
+	value := canary.Value("unconfigured")
+	h := newHarness(t, nil)
+	srv := newServer(t, `{"ok":true}`)
+
+	res := h.runOK("call", specPath, "getPublic", "--base-url", srv.URL,
+		"--header", "X-Session-Id="+value, "--output", "json", "--dry-run")
+	if !strings.Contains(res.stdout, value) {
+		t.Errorf("X-Session-Id was redacted with no pattern configured; the built-in list has grown "+
+			"and the test above no longer proves redact.headers does anything:\n%s", res.stdout)
+	}
+}
+
 // TestAnUnconfiguredResponseBodySecretIsNotRedacted documents the boundary
 // rather than pretending it is elsewhere. §5a redacts response headers and the
 // RFC 6749 token fields by name; a secret under an API-specific name is the

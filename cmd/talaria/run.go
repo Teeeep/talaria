@@ -347,6 +347,9 @@ func (r *runner) execute(op operation.Operation) runResult {
 		Params:  flagPairs(data.Params),
 		Headers: flagPairs(headersFor(data)),
 		Body:    bodyFlag(data.Body),
+		// Already built from this run's config, and shared with the entry that
+		// goes to history so the two surfaces cannot disagree.
+		Redactor: r.redactors.Request,
 		// No stdin: `run` makes many requests and stdin can only be read once,
 		// so there is nothing here for `--body -` to mean.
 	})

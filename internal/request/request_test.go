@@ -767,6 +767,63 @@ func TestBuildHidesALiteralUnderACredentialShapedQueryName(t *testing.T) {
 	}
 }
 
+// TestBuildAppliesTheConfiguredPatternsInEveryLocation covers the
+// user-extensible half of §5a's display redaction. The config file's
+// `redact.headers` is a floor-raising list, and README's promise is that it
+// reaches headers, query parameters and cookies alike — the setting is named
+// after the location credentials most often sit in, not the only one it covers.
+func TestBuildAppliesTheConfiguredPatternsInEveryLocation(t *testing.T) {
+	in := inputs(t, "getPet")
+	in.Redactor = secret.NewRedactor("x-trace", "verbose", "flavour")
+	in.Params = []string{"petId=1", "X-Trace=" + canary, "verbose=" + canary, "flavour=" + canary}
+	in.Query = []string{"page=2"}
+
+	req := build(t, in)
+
+	for _, tc := range []struct {
+		location string
+		pairs    []Pair
+		name     string
+	}{
+		{"header", req.Headers, "X-Trace"},
+		{"query", req.Query, "verbose"},
+		{"cookie", req.Cookies, "flavour"},
+	} {
+		value := find(t, tc.pairs, tc.name)
+		if got := value.String(); got != secret.Placeholder {
+			t.Errorf("%s %s displays as %q, want %q", tc.location, tc.name, got, secret.Placeholder)
+		}
+		if got := value.Reveal(); got != canary {
+			t.Errorf("%s %s no longer carries the value it will send: %q", tc.location, tc.name, got)
+		}
+	}
+
+	// The configured list extends the built-in one; it does not replace the
+	// judgement that a name nothing matches is ordinary and worth showing.
+	if got := find(t, req.Query, "page").String(); got != "2" {
+		t.Errorf("query page = %q, want 2; only the configured names are hidden", got)
+	}
+}
+
+// TestBuildWithNoConfiguredPatternsHidesTheBuiltInsOnly pins the nil case: an
+// Inputs that names no Redactor — every caller before the config file reached
+// this far, and every test that does not care — still gets the built-in floor
+// and nothing less.
+func TestBuildWithNoConfiguredPatternsHidesTheBuiltInsOnly(t *testing.T) {
+	in := inputs(t, "getPet")
+	in.Params = []string{"petId=1", "X-Trace=" + canary}
+	in.Headers = []string{"X-Api-Key=" + canary}
+
+	req := build(t, in)
+
+	if got := find(t, req.Headers, "X-Api-Key").String(); got != secret.Placeholder {
+		t.Errorf("header X-Api-Key = %q, want %q from the built-in list", got, secret.Placeholder)
+	}
+	if got := find(t, req.Headers, "X-Trace").String(); got != canary {
+		t.Errorf("header X-Trace = %q; with no configured patterns it matches nothing built in", got)
+	}
+}
+
 // TestQueryStringEscapesAResolvedSensitiveLiteral pins the half of the fix that
 // is easy to lose: QueryString is shared with the wire path, so skipping the
 // percent-encoding is only ever safe for a placeholder, never for a value.

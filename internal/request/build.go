@@ -50,6 +50,10 @@ type Inputs struct {
 	// It is a slice so a repeated flag is a reportable mistake rather than a
 	// silent last-one-wins.
 	Body []string
+	// Redactor is the config file's user-extensible display patterns
+	// (`redact.headers`), layered over the built-in credential names §5a fixes
+	// as the non-configurable floor. Nil means that floor and nothing more.
+	Redactor *secret.Redactor
 	// Stdin is the reader `--body -` consumes. It is injected rather than read
 	// from os.Stdin so the ownership rule is testable: the Go process reads the
 	// body in full before curl exists, and curl's own stdin carries the config
@@ -78,9 +82,9 @@ func Build(in Inputs) (*Request, error) {
 	// names query-string API keys (`?api_key=`) as a credential location, and a
 	// value's origin — spec, profile, --param or --query — does not change what
 	// the name says it is.
-	req.Query = hide(append(b.located(bound, inQuery), b.pairs(in.Query, "--query", nil)...))
-	req.Headers = hide(b.headers(bound))
-	req.Cookies = hide(b.located(bound, inCookie))
+	req.Query = hide(in.Redactor, append(b.located(bound, inQuery), b.pairs(in.Query, "--query", nil)...))
+	req.Headers = hide(in.Redactor, b.headers(bound))
+	req.Cookies = hide(in.Redactor, b.located(bound, inCookie))
 	// After the headers, because the body's content type defers to a
 	// Content-Type the user set; before the credentials, which never set one.
 	req.Body = b.body(req)
@@ -298,14 +302,13 @@ func (b *binder) headers(bound map[string]string) []Pair {
 // into --header from an ordinary string by looking at the string, and §5a's
 // answer is that it does not have to: the name decides, whether the value came
 // from a spec's security scheme, a profile, a bound parameter or the flag.
-func hide(pairs []Pair) []Pair {
-	// A nil *Redactor is the built-in list, which is the whole point here: the
-	// user-extensible patterns are a display concern the config file adds
-	// downstream, and this floor is not configurable.
-	var builtin *secret.Redactor
-
+//
+// red is the config file's extension of that list. A nil one is the built-in
+// floor alone, which is what it has to be: redaction is never opt-in, so a
+// caller that supplies no patterns gets the same protection as one that does.
+func hide(red *secret.Redactor, pairs []Pair) []Pair {
 	for i, p := range pairs {
-		if !p.Value.IsSecret() && builtin.IsSensitive(p.Name) {
+		if !p.Value.IsSecret() && red.IsSensitive(p.Name) {
 			pairs[i].Value = p.Value.Sensitive()
 		}
 	}

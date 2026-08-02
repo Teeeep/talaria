@@ -299,6 +299,10 @@ func buildRequest(
 		Query:   queries,
 		Headers: headers,
 		Body:    body,
+		// The same list history is redacted with. A pattern that hides a value
+		// in the permanent artifact but not on the stdout an agent reads has
+		// the firewall backwards.
+		Redactor: newRedactors(cfg).Request,
 		// The Go process owns the real stdin, and `--body -` is the only thing
 		// that reads it. curl's stdin carries the config document and nothing
 		// else (DESIGN.md §5a).

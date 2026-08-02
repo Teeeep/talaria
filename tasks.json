@@ -34,7 +34,7 @@
       "title": "Apply `redact.headers` to the displayed request and the emitted curl",
       "line_start": 163,
       "line_end": 198,
-      "done": false
+      "done": true
     },
     {
       "id": 5,

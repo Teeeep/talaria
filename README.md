@@ -212,7 +212,10 @@ redact:
     - data.token
 ```
 
-`headers` are globs over the header name, applied to request and response headers alike, on top
+`headers` are globs over the header name, applied to request and response headers alike — and, as
+the built-in list is, to query parameters and cookies, which are credential locations under
+another name. They hide the value everywhere it is displayed: `request.headers`, the emitted
+curl, `--dry-run`, pretty output and history. They go on top
 of the built-in list (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`,
 `*api*key*`, `*token*`, `*secret*`). `body-paths` are dotted JSON paths into a *response* body,
 on top of the built-in `access_token`, `refresh_token` and `id_token`. `call` reads this file
