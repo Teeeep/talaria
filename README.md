@@ -491,7 +491,7 @@ Exit codes are deterministic, so agents can branch on them:
 |---|---|
 | 0 | Success. An HTTP 4xx/5xx is still a successful *observation* for `call`; use `--fail-on-error` to change that |
 | 1 | The request could not be completed (network, curl failure) |
-| 2 | Usage error — unknown operation, missing required parameter, bad flag value |
+| 2 | Usage error — unknown operation, a command group named without its subcommand (`talaria auth`), missing required parameter, bad flag value |
 | 3 | Spec parse/load error |
 | 4 | Validation failure: the response violates the spec (only with `--fail-on-error` or `run`) |
 | 5 | A required security scheme has no credential — distinct from a usage error so an agent can ask a human to set `$NAME` |
@@ -537,7 +537,9 @@ as a system prompt or a skill file.
 It is tested like code. `cmd/talaria/agentdoc_test.go` checks the doc's exit-code table against
 the `clierr` constants, every command it names against the registered command tree, and every
 `TALARIA_*` variable against the ones talaria actually reads, so a manual that drifts from the
-binary fails the build.
+binary fails the build. It also *runs* the examples: every fenced `talaria …` line is executed
+against a fixture spec, under `--dry-run` where the command has it, and a usage error fails the
+build — because a documented invocation the parser rejects is one an agent will copy.
 
 ## The name
 
