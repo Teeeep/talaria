@@ -1,6 +1,7 @@
 package request
 
 import (
+	"io"
 	"net/url"
 	"sort"
 	"strings"
@@ -43,6 +44,15 @@ type Inputs struct {
 	Query []string
 	// Headers are --header name=value.
 	Headers []string
+	// Body holds --body exactly as given: a literal, @file, or "-" for stdin.
+	// It is a slice so a repeated flag is a reportable mistake rather than a
+	// silent last-one-wins.
+	Body []string
+	// Stdin is the reader `--body -` consumes. It is injected rather than read
+	// from os.Stdin so the ownership rule is testable: the Go process reads the
+	// body in full before curl exists, and curl's own stdin carries the config
+	// document (DESIGN.md §5a).
+	Stdin io.Reader
 }
 
 // Build binds inputs to an operation and returns the request to make.
@@ -65,6 +75,9 @@ func Build(in Inputs) (*Request, error) {
 	req.Query = append(b.located(bound, inQuery), b.pairs(in.Query, "--query")...)
 	req.Headers = b.headers(bound)
 	req.Cookies = b.located(bound, inCookie)
+	// After the headers, because the body's content type defers to a
+	// Content-Type the user set; before the credentials, which never set one.
+	req.Body = b.body(req)
 
 	b.credentials(req)
 

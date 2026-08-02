@@ -134,9 +134,10 @@ type Pair struct {
 	Value Value  `json:"value"`
 }
 
-// Body is the request body. Task 18 fills it from --body; the field exists on
-// Request from the start because §5a's point is that this type's shape is not
-// retrofittable.
+// Body is the request body: the bytes --body resolved to, and the media type
+// they will be sent as. Data is already the final bytes — the Go process reads
+// a file or stdin before curl exists, so nothing downstream has to open
+// anything (DESIGN.md §5a).
 type Body struct {
 	ContentType string
 	Data        []byte

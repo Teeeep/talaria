@@ -60,6 +60,15 @@ paths:
       operationId: createPet
       security:
         - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+          application/xml:
+            schema:
+              type: object
       responses:
         '201':
           description: created
