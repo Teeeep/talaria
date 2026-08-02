@@ -162,8 +162,11 @@ type result struct {
 // reach are the ones a case injected and the only files it can write are ones
 // the case can then read back and grep.
 type harness struct {
-	t     *testing.T
-	env   []string
+	t   *testing.T
+	env []string
+	// home is $HOME for the run: the directory curl looks in for .curlrc, and
+	// the parent of the three XDG roots below.
+	home  string
 	state string
 	cache string
 	conf  string
@@ -175,6 +178,7 @@ func newHarness(t *testing.T, vars map[string]string) *harness {
 	home := t.TempDir()
 	h := &harness{
 		t:     t,
+		home:  home,
 		state: filepath.Join(home, "state"),
 		cache: filepath.Join(home, "cache"),
 		conf:  filepath.Join(home, "config"),
@@ -722,6 +726,56 @@ func TestASpecFetchedOverHTTPLeavesNoCredentialInTheCache(t *testing.T) {
 	}
 
 	assertNoLeak(t, value, append(res.surfaces(), h.written()...))
+}
+
+// TestAPlantedCurlrcCannotCaptureTheCredential covers the capability §5a does
+// not concede: an attacker who can write one file under $HOME but cannot read
+// the environment.
+//
+// curl parses $HOME/.curlrc before the `-K -` document, so without curl's -q a
+// `trace-ascii` line there writes the plaintext Authorization header — the one
+// place in the process the credential is resolved — to a path of the writer's
+// choosing, at whatever mode their umask gives. The redacted output surfaces
+// stay clean throughout, which is why this needs a case of its own: every other
+// assertion in this suite would pass while the token sat in the trace file.
+func TestAPlantedCurlrcCannotCaptureTheCredential(t *testing.T) {
+	t.Parallel()
+
+	value := canary.Value("curlrc")
+	h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": value})
+	srv := newServer(t, `{"ok":true}`)
+
+	trace := filepath.Join(h.home, "trace.txt")
+	curlrc := filepath.Join(h.home, ".curlrc")
+	if err := os.WriteFile(curlrc, []byte("trace-ascii = "+trace+"\n"), 0o600); err != nil {
+		t.Fatalf("planting the .curlrc: %v", err)
+	}
+
+	res := h.runOK("call", specPath, "getBearer", "--base-url", srv.URL, "--output", "json")
+
+	// The call has to have happened with the credential on it, or a missing
+	// trace file would mean nothing.
+	if got := srv.received().Header.Get("Authorization"); got != "Bearer "+value {
+		t.Fatalf("the server never saw the credential; the assertions below prove nothing")
+	}
+
+	surfaces := append(res.surfaces(), h.written()...)
+	switch _, err := os.Stat(trace); {
+	case err == nil:
+		// The file existing is already the finding, but scanning it says whether
+		// the credential is in it — the difference between a lost -q and a lost
+		// firewall.
+		found, err := canary.Tree("curlrc trace", trace)
+		if err != nil {
+			t.Fatalf("reading the trace file: %v", err)
+		}
+		surfaces = append(surfaces, found...)
+		t.Errorf("curl honoured %s and wrote %s; the -q that disables it is gone from argv", curlrc, trace)
+	case !errors.Is(err, fs.ErrNotExist):
+		t.Fatalf("stating the trace file: %v", err)
+	}
+
+	assertNoLeak(t, value, surfaces)
 }
 
 // assertNoLeak fails the test naming every surface the canary reached.

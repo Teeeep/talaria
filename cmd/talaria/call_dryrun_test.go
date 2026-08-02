@@ -76,7 +76,7 @@ func TestCallDryRunPrintsSymbolicCurlAndExitsZero(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"curl -s ",
+		"curl -q -s ",
 		`-H "Authorization: Bearer $TALARIA_AUTH_BEARER"`,
 		"https://api.invalid/v1/pets/42",
 	} {

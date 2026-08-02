@@ -261,10 +261,12 @@ reads on *its* stdin never share a pipe. The content type is the `Content-Type` 
 The emitted command references credentials by environment-variable name and never by value:
 
 ```
-curl -s -H "Authorization: Bearer $TALARIA_AUTH_BEARER" 'https://api.example.com/v1/pets/42?verbose=true'
+curl -q -s -H "Authorization: Bearer $TALARIA_AUTH_BEARER" 'https://api.example.com/v1/pets/42?verbose=true'
 ```
 
-It is runnable wherever the variable is set and useless to exfiltrate. An API key that belongs
+It is runnable wherever the variable is set and useless to exfiltrate. The leading `-q` mirrors
+the call talaria made: it stops curl reading `~/.curlrc`, so no directive in a file talaria did
+not write can act on the request carrying the credential. An API key that belongs
 in the query string is symbolic there too; a `basic` scheme renders as curl's `-u
 "$TALARIA_AUTH_BASIC"`, because the header form would need the value base64-encoded into it.
 `--output json` returns the same request as a structured block, where credentials read

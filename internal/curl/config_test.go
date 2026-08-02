@@ -151,15 +151,75 @@ func TestBuildConfigArgvIsOnlyTheStdinConfigFlags(t *testing.T) {
 
 	// §5a: /proc/*/cmdline is world-readable, so nothing about the request may be
 	// an argument — not the URL, not a header, not an output path.
-	want := []string{"curl", "-K", "-"}
-	if len(argv) != len(want) {
-		t.Fatalf("argv = %q, want exactly %q", argv, want)
+	assertArgv(t, argv)
+}
+
+// stdinArgv is the whole command line talaria ever gives curl. It is asserted
+// by name in several places because both halves of it are load-bearing: `-K -`
+// keeps the request out of /proc/*/cmdline, and `-q` keeps curl from reading a
+// config file talaria did not write.
+var stdinArgv = []string{"curl", "-q", "-K", "-"}
+
+func assertArgv(t *testing.T, argv []string) {
+	t.Helper()
+
+	if len(argv) != len(stdinArgv) {
+		t.Fatalf("argv = %q, want exactly %q", argv, stdinArgv)
 	}
-	for i, arg := range want {
+	for i, arg := range stdinArgv {
 		if argv[i] != arg {
-			t.Fatalf("argv = %q, want exactly %q", argv, want)
+			t.Fatalf("argv = %q, want exactly %q", argv, stdinArgv)
 		}
 	}
+}
+
+// TestBuildConfigDisablesTheDefaultCurlrcOnEveryPath pins `-q`, and pins it
+// first — curl ignores the option anywhere else.
+//
+// Without it curl parses $CURL_HOME/.curlrc (else $HOME/.curlrc) *before* the
+// -K document, and every directive in that file applies to the request carrying
+// the resolved credential: `trace-ascii` writes the plaintext Authorization
+// header to a file of the writer's choosing, `proxy` ships it to a host of
+// theirs. Writing one file under $HOME is a weaker capability than the env-var
+// read §5a concedes, so this is inside the boundary talaria claims.
+//
+// The error paths are asserted too: BuildConfigWith returns argv on all three,
+// and a caller that ran the failing one would be running an unprotected curl.
+func TestBuildConfigDisablesTheDefaultCurlrcOnEveryPath(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		t.Setenv("TALARIA_AUTH_BEARER", canary)
+
+		_, argv, cleanup, err := BuildConfig(bearerReq(), Capture{})
+		t.Cleanup(cleanup)
+		if err != nil {
+			t.Fatalf("BuildConfig() error = %v", err)
+		}
+
+		assertArgv(t, argv)
+	})
+
+	t.Run("no request", func(t *testing.T) {
+		_, argv, cleanup, err := BuildConfig(nil, Capture{})
+		t.Cleanup(cleanup)
+		if err == nil {
+			t.Fatal("BuildConfig(nil) error = nil, want a failure")
+		}
+
+		assertArgv(t, argv)
+	})
+
+	t.Run("credential missing", func(t *testing.T) {
+		t.Setenv("TALARIA_AUTH_BEARER", canary)
+		os.Unsetenv("TALARIA_AUTH_BEARER") //nolint:errcheck // t.Setenv restores it.
+
+		_, argv, cleanup, err := BuildConfig(bearerReq(), Capture{})
+		t.Cleanup(cleanup)
+		if err == nil {
+			t.Fatal("BuildConfig() with the credential unset = nil, want a failure")
+		}
+
+		assertArgv(t, argv)
+	})
 }
 
 func TestBuildConfigTakesCaptureFilesAsDirectivesNotArguments(t *testing.T) {

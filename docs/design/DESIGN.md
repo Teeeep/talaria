@@ -228,7 +228,7 @@ Supports Swagger 2.0 and OpenAPI 3.0/3.1/3.2, JSON and YAML (§5).
 {
   "schema": "talaria/v1",
   "request": {
-    "curl": "curl -s -H \"Authorization: Bearer $TALARIA_AUTH_BEARER\" 'https://…'",
+    "curl": "curl -q -s -H \"Authorization: Bearer $TALARIA_AUTH_BEARER\" 'https://…'",
     "method": "GET", "url": "…",
     "headers": { "Authorization": "<redacted:env:TALARIA_AUTH_BEARER>" }
   },

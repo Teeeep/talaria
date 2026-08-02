@@ -100,7 +100,13 @@ func BuildConfigWith(
 	capture Capture,
 	opts Options,
 ) (config []byte, argv []string, cleanup func(), err error) {
-	argv = []string{"curl", "-K", "-"}
+	// -q first, where curl reads it: it disables the default config file, which
+	// curl would otherwise parse *before* the -K document. A `trace-ascii` or
+	// `proxy` line in a $HOME/.curlrc anyone can write applies to the one request
+	// carrying the resolved credential, and copies it straight back out. Writing
+	// that file is a weaker capability than the env-var read §5a concedes, so
+	// this flag is what keeps the firewall inside its claimed boundary.
+	argv = []string{"curl", "-q", "-K", "-"}
 	if req == nil {
 		return nil, argv, func() {}, clierr.RequestFailed("no request to execute")
 	}

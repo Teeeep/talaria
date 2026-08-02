@@ -222,8 +222,8 @@ func TestRenderUsesDashIForHEAD(t *testing.T) {
 
 	// -I, not -X HEAD: the emitted command has to reproduce the call, and pasted
 	// `-X HEAD` waits for a body the server never sends.
-	if !strings.Contains(got, "curl -s -I ") {
-		t.Errorf("Render() = %s\nwant it to contain `curl -s -I `", got)
+	if !strings.Contains(got, "curl -q -s -I ") {
+		t.Errorf("Render() = %s\nwant it to contain `curl -q -s -I `", got)
 	}
 	if strings.Contains(got, "-X HEAD") {
 		t.Errorf("Render() = %s\nwant no -X HEAD in it", got)
@@ -252,11 +252,22 @@ func TestRenderSendsALeadingAtBodyAsText(t *testing.T) {
 	}
 }
 
+// TestRenderMirrorsTheCurlrcDisable keeps the reproduction honest about the
+// call it reproduces: the executed command is `curl -q -K -`, so an emitted one
+// without -q would read the reader's ~/.curlrc and behave differently from the
+// call it claims to reproduce — and would apply that file's directives to a
+// request the reader has just pasted their credential into.
+func TestRenderMirrorsTheCurlrcDisable(t *testing.T) {
+	if got := Render(bearerReq()); !strings.HasPrefix(got, "curl -q ") {
+		t.Errorf("Render() = %s\nwant -q first, where curl reads it", got)
+	}
+}
+
 func TestRenderPutsTheURLLast(t *testing.T) {
 	got := Render(bearerReq())
 
-	if !strings.HasPrefix(got, "curl -s ") {
-		t.Errorf("Render() = %s\nwant it to start with `curl -s `", got)
+	if !strings.HasPrefix(got, "curl -q -s ") {
+		t.Errorf("Render() = %s\nwant it to start with `curl -q -s `", got)
 	}
 	if !strings.HasSuffix(got, `'https://api.example.com/v1/pets/42'`) {
 		t.Errorf("Render() = %s\nwant it to end with the quoted URL", got)

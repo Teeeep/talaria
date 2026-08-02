@@ -172,11 +172,12 @@ so it is not copy-pasteable either.
 The emitted curl references variables symbolically:
 
 ```
-curl -s -H "Authorization: Bearer $TALARIA_AUTH_BEARER" 'https://api.example.com/v1/pets/42'
+curl -q -s -H "Authorization: Bearer $TALARIA_AUTH_BEARER" 'https://api.example.com/v1/pets/42'
 ```
 
 That command is runnable in a shell where the variable is set and useless to anyone else. Quote
-it freely in reports.
+it freely in reports. The leading `-q` is the one talaria itself passes: it stops curl reading
+`~/.curlrc`, whose directives would otherwise apply to the request carrying the credential.
 
 One thing redaction cannot fix: an API key that belongs in the *query string* travels in the URL
 and lands in server access logs. talaria warns once on stderr. Report the warning; it is a

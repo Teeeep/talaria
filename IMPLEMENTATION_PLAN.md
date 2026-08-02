@@ -80,10 +80,14 @@ capability than the env-var read §5a concedes, so this is inside the claimed bo
    exist — and, if it does, that it does not contain the canary.
 
 **Verify:** `go test ./internal/curl/... ./internal/canary/...`
-- [ ] With a `.curlrc` containing `trace-ascii` planted in `HOME`, a call carrying the canary
+- [x] With a `.curlrc` containing `trace-ascii` planted in `HOME`, a call carrying the canary
       writes no trace file and leaks nothing.
-- [ ] `BuildConfigWith` returns argv beginning `curl -q -K -` on the success path and on both
-      error paths.
+      (`TestAPlantedCurlrcCannotCaptureTheCredential`; it reproduced the leak before the fix.)
+- [x] `BuildConfigWith` returns argv beginning `curl -q -K -` on the success path and on both
+      error paths. (`TestBuildConfigDisablesTheDefaultCurlrcOnEveryPath`.)
+
+The rendered curl now starts `curl -q -s`, so the `curl -s` examples in `README.md`, `AGENT.md`
+and the `call` output sketch in DESIGN.md §"Output shape" were updated to match.
 
 ---
 

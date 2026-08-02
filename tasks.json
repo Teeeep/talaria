@@ -10,7 +10,7 @@
       "title": "Stop curl reading `~/.curlrc` before the credential-bearing config",
       "line_start": 54,
       "line_end": 87,
-      "done": false
+      "done": true
     },
     {
       "id": 2,

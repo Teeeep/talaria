@@ -29,7 +29,11 @@ func Render(req *request.Request) string {
 		return ""
 	}
 
-	args := []string{"curl", "-s"}
+	// -q mirrors the executed command (config.go's argv), so a pasted
+	// reproduction behaves like the call talaria made rather than like the
+	// reader's ~/.curlrc — which would otherwise apply its directives to a
+	// request the reader has just expanded a real credential into.
+	args := []string{"curl", "-q", "-s"}
 	switch {
 	// -I rather than -X HEAD, matching the config document: pasted, -X HEAD waits
 	// for a body the server never sends, so the reproduction would hang where the

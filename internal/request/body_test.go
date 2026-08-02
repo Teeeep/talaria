@@ -177,9 +177,9 @@ func TestStdinBodyReachesCurlThroughTheConfigDocument(t *testing.T) {
 		t.Errorf("config document = %q, want it to carry %s", config, want)
 	}
 
-	// curl is invoked as `curl -K -`, so its own stdin is the config document
+	// curl is invoked as `curl -q -K -`, so its own stdin is the config document
 	// the executor pipes in — a reader talaria creates, never the process's.
-	if strings.Join(argv, " ") != "curl -K -" {
+	if strings.Join(argv, " ") != "curl -q -K -" {
 		t.Errorf("argv = %v, want curl to read its config from its own stdin", argv)
 	}
 }
