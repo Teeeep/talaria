@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -681,6 +683,104 @@ func TestReplayRejectsARecordedURLWhoseSchemeIsNotHTTP(t *testing.T) {
 				t.Errorf("error %v does not name the offending scheme %q", err, scheme)
 			}
 		})
+	}
+}
+
+// binaryBody is every byte value four times over: what a protobuf or an image
+// upload is made of, and what a JSON string cannot hold.
+func binaryBody() []byte {
+	out := make([]byte, 0, 4*256)
+	for i := 0; i < 4; i++ {
+		for b := 0; b < 256; b++ {
+			out = append(out, byte(b))
+		}
+	}
+
+	return out
+}
+
+// A replay has to put the original bytes back on the wire. The entry stores a
+// non-UTF-8 body base64'd (internal/corpus), so replay has to decode it —
+// reading Data as text would send 2048 replacement-character bytes in place of
+// the 1024 that were sent.
+func TestReplaySendsTheOriginalBytesOfABinaryBody(t *testing.T) {
+	data := binaryBody()
+	entry := corpus.Entry{
+		Source: corpus.SourceCall,
+		Method: "POST",
+		URL:    "https://api.example.com/pets/42/photo",
+		Request: corpus.EntryRequest{
+			Body: &corpus.Body{
+				ContentType: "application/octet-stream",
+				Data:        base64.StdEncoding.EncodeToString(data),
+				Encoding:    corpus.EncodingBase64,
+			},
+		},
+	}
+
+	req, err := replayRequest(io.Discard, entry)
+	if err != nil {
+		t.Fatalf("replayRequest: %v", err)
+	}
+	if req.Body == nil {
+		t.Fatal("the replayed request has no body")
+	}
+	if !bytes.Equal(req.Body.Data, data) {
+		t.Errorf("the replay carries %d bytes, want the recorded %d", len(req.Body.Data), len(data))
+	}
+}
+
+// An entry written by a newer talaria may use an encoding this build cannot
+// read. Replaying its Data as literal text would send something the original
+// call did not, so it is refused the way a truncated body already is.
+func TestReplayRefusesABodyEncodingItDoesNotKnow(t *testing.T) {
+	entry := corpus.Entry{
+		Source:  corpus.SourceCall,
+		Method:  "POST",
+		URL:     "https://api.example.com/pets",
+		Request: corpus.EntryRequest{Body: &corpus.Body{Data: "AAAA", Encoding: "zstd+base64"}},
+	}
+
+	_, err := replayRequest(io.Discard, entry)
+	if err == nil {
+		t.Fatal("replayRequest accepted an unknown body encoding, want a usage error")
+	}
+	if code := clierr.From(err).Code; code != clierr.CodeUsage {
+		t.Fatalf("error = %v (code %d), want usage (%d)", err, code, clierr.CodeUsage)
+	}
+	if !strings.Contains(err.Error(), "zstd+base64") {
+		t.Errorf("error %v does not name the encoding it refused", err)
+	}
+}
+
+// `history show` prints the entry for a human to read. A base64 body is not
+// text, and printing its encoded form as if it were the body would be a lie
+// about what was sent.
+func TestHistoryShowDoesNotPrintABinaryBodyAsText(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString(binaryBody())
+	entry := corpus.Entry{
+		Source: corpus.SourceCall,
+		Method: "POST",
+		URL:    "https://api.example.com/pets/42/photo",
+		Request: corpus.EntryRequest{
+			Body: &corpus.Body{
+				ContentType: "application/octet-stream",
+				Data:        encoded,
+				Encoding:    corpus.EncodingBase64,
+			},
+		},
+	}
+
+	var printed string
+	for _, row := range historyShowPayload(1, entry).Table.Rows {
+		printed += strings.Join(row, " ") + "\n"
+	}
+
+	if strings.Contains(printed, encoded) {
+		t.Errorf("history show printed the base64 payload as if it were the body:\n%s", printed)
+	}
+	if !strings.Contains(printed, "1024") || !strings.Contains(printed, corpus.EncodingBase64) {
+		t.Errorf("history show does not say the body is %d base64-encoded bytes:\n%s", len(binaryBody()), printed)
 	}
 }
 

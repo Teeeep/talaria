@@ -316,12 +316,12 @@ func historyShowPayload(index int, entry corpus.Entry) output.Payload {
 		rows = append(rows, []string{name + ": " + entry.Request.Headers[name]})
 	}
 	if entry.Request.Body != nil {
-		rows = append(rows, []string{entry.Request.Body.Data})
+		rows = append(rows, []string{bodyLine(entry.Request.Body)})
 	}
 	if entry.Response != nil {
 		rows = append(rows, []string{fmt.Sprintf("%d in %dms", entry.Response.Status, entry.Response.TimingMS)})
 		if entry.Response.Body != nil {
-			rows = append(rows, []string{entry.Response.Body.Data})
+			rows = append(rows, []string{bodyLine(entry.Response.Body)})
 		}
 	}
 
@@ -329,6 +329,24 @@ func historyShowPayload(index int, entry corpus.Entry) output.Payload {
 		Data:  historyShowView{Index: index, Entry: entry},
 		Table: output.Table{Rows: rows},
 	}
+}
+
+// bodyLine renders a recorded body for a human. A body with no encoding is the
+// text that was sent and prints as itself; anything else is not text, and
+// printing its stored form would claim bytes went on the wire that did not. The
+// summary says how big it was and how to get at it — `--output json` carries the
+// entry as recorded, encoding and all.
+func bodyLine(body *corpus.Body) string {
+	if body.Encoding == "" {
+		return body.Data
+	}
+
+	data, err := body.Bytes()
+	if err != nil {
+		return fmt.Sprintf("<body with unreadable %s encoding: %v>", body.Encoding, err)
+	}
+
+	return fmt.Sprintf("<binary body, %d bytes, %s in --output json>", len(data), body.Encoding)
 }
 
 // statusCell renders the status column, which is empty for an entry that
@@ -515,7 +533,11 @@ func replayRequest(stderr io.Writer, entry corpus.Entry) (*request.Request, erro
 				"the recorded request body was truncated at %d bytes, so replaying it would send something the original did not",
 				corpus.MaxBody)
 		}
-		req.Body = &request.Body{ContentType: body.ContentType, Data: []byte(body.Data)}
+		data, err := body.Bytes()
+		if err != nil {
+			return nil, err
+		}
+		req.Body = &request.Body{ContentType: body.ContentType, Data: data}
 	}
 
 	return req, nil

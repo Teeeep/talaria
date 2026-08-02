@@ -16,8 +16,11 @@
 package corpus
 
 import (
+	"encoding/base64"
 	"time"
+	"unicode/utf8"
 
+	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/curl"
 	"github.com/Teeeep/talaria/internal/request"
 	"github.com/Teeeep/talaria/internal/secret"
@@ -79,14 +82,46 @@ type EntryResponse struct {
 	TimingMS int64               `json:"timing_ms"`
 }
 
+// EncodingBase64 marks a Data that holds standard base64 rather than the body's
+// own bytes. It is the only encoding this build writes or reads.
+const EncodingBase64 = "base64"
+
 // Body is a recorded body and how much of it was kept.
 type Body struct {
 	ContentType string `json:"content_type,omitempty"`
 	Data        string `json:"data"`
+	// Encoding says how to read Data. Empty means Data is the body's bytes as
+	// text, which is the case for everything that is valid UTF-8; a body that is
+	// not gets EncodingBase64, because a JSON string cannot carry an invalid
+	// byte — encoding/json rewrites each one to U+FFFD, and a reader replaying
+	// that would send bytes the original call never sent.
+	Encoding string `json:"encoding,omitempty"`
 	// Truncated reports that Data is the first MaxBody bytes and not the whole
 	// body. It is explicit so a reader never mistakes a cut body for what the
 	// server sent.
 	Truncated bool `json:"truncated,omitempty"`
+}
+
+// Bytes returns the recorded body as the bytes it was on the wire.
+//
+// An encoding this build does not know is refused rather than guessed at: the
+// store is a file anything can write, and a newer talaria may have added one.
+// Reading such a Data as literal text is the exact silent corruption the
+// Encoding field exists to prevent.
+func (b Body) Bytes() ([]byte, error) {
+	switch b.Encoding {
+	case "":
+		return []byte(b.Data), nil
+	case EncodingBase64:
+		data, err := base64.StdEncoding.DecodeString(b.Data)
+		if err != nil {
+			return nil, clierr.Usage("the recorded body claims %s encoding but does not decode: %v", EncodingBase64, err)
+		}
+
+		return data, nil
+	default:
+		return nil, clierr.Usage("the recorded body has encoding %q, which this version of talaria cannot read", b.Encoding)
+	}
 }
 
 // Redactors are the two firewalls an entry passes through on its way to disk.
@@ -199,10 +234,13 @@ func (r Redactors) requestBody(b *request.Body) *Body {
 
 // newBody keeps at most MaxBody bytes of data, reporting whether it had to cut.
 //
-// The cut is at a byte offset, so it may land inside a UTF-8 sequence; that
-// partial rune becomes a replacement character when the entry is marshalled,
-// which keeps the JSONL line valid — the property that matters, since one
-// unparseable line is one a reader has to skip.
+// A JSONL line has to stay parseable — one unparseable line is one a reader has
+// to skip — and encoding/json buys that by rewriting every byte a Go string
+// cannot hold to U+FFFD. That is fine for text and destroys anything else, so
+// the bytes are checked first: valid UTF-8 is stored as itself and stays
+// readable in the store, and anything else is base64'd so the entry survives the
+// round trip byte for byte. The cut is at a byte offset and may land inside a
+// UTF-8 sequence, which lands such a body in the base64 case too.
 func newBody(contentType string, data []byte) *Body {
 	if len(data) == 0 {
 		return nil
@@ -213,7 +251,13 @@ func newBody(contentType string, data []byte) *Body {
 		data = data[:MaxBody]
 		body.Truncated = true
 	}
-	body.Data = string(data)
+	if utf8.Valid(data) {
+		body.Data = string(data)
+
+		return body
+	}
+	body.Data = base64.StdEncoding.EncodeToString(data)
+	body.Encoding = EncodingBase64
 
 	return body
 }

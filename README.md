@@ -366,7 +366,11 @@ Entries are written **redacted, at write time**. The store is the highest-risk a
 produces, so un-redacted recording is not an option and there is no flag for it. It lives at
 `$XDG_STATE_HOME/talaria/history.jsonl` (falling back to `~/.local/state/talaria/`), directory
 `0700` and file `0600`, one JSON entry per line, keeping the most recent 1000 entries *per
-source* and truncating bodies at 64 KiB with an explicit `"truncated": true`. Concurrent
+source* and truncating bodies at 64 KiB with an explicit `"truncated": true`. A body that is
+not valid UTF-8 — a protobuf, an image, a gzip stream — is stored base64-encoded with
+`"encoding": "base64"`, because a JSON string would otherwise replace each byte it cannot hold
+and a replay would send something the original call did not; `history show` reports such a body
+as `<binary body, N bytes, base64 in --output json>` rather than printing it. Concurrent
 talaria processes can share one history file: each append takes an exclusive advisory lock on
 a sibling `history.jsonl.lock` for the whole of the write and the retention trim, so an entry
 talaria reported as recorded is one you will find in the file.
