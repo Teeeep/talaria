@@ -114,13 +114,93 @@ func TestBodyPreservesNumbersItDoesNotRedact(t *testing.T) {
 	}
 }
 
+func TestBodyRedactsInsideATopLevelArray(t *testing.T) {
+	// A collection endpoint answers with an array, so a path rooted at a named
+	// key has to apply to every element of it. Skipping the shape would mean the
+	// built-in token paths silently do nothing for half the APIs there are.
+	red := NewResponseRedactor(nil, nil)
+
+	body := red.Body([]byte(`[{"access_token":"` + responseCanary +
+		`","id":1234567890123456789},{"name":"Rex"}]`))
+
+	assertNoResponseCanary(t, string(body))
+
+	var got []map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("the redacted body is not valid JSON (%s): %v", body, err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("the redacted body has %d elements, want both kept: %s", len(got), body)
+	}
+	if got[0]["access_token"] != Placeholder {
+		t.Errorf("[0].access_token = %v, want %q", got[0]["access_token"], Placeholder)
+	}
+	if got[1]["name"] != "Rex" {
+		t.Errorf("[1].name = %v, want the element with no match untouched", got[1]["name"])
+	}
+	if !strings.Contains(string(body), "1234567890123456789") {
+		t.Errorf("redaction reformatted a number inside the array:\n%s", body)
+	}
+}
+
+func TestBodyRedactsInsideANestedArray(t *testing.T) {
+	// `items.access_token` names the token of every element of `items`; an
+	// intermediate segment that turns out to be an array is fanned out over.
+	// A path stays rooted — an array is a container the path did not have to
+	// name, an object one segment down is — so both paths are named in full.
+	red := NewResponseRedactor(nil, []string{"items.access_token", "data.tokens.value"})
+
+	body := red.Body([]byte(`{"items":[{"access_token":"` + responseCanary +
+		`"},{"access_token":"` + responseCanary +
+		`"}],"data":{"tokens":[{"value":"` + responseCanary + `","kind":"bearer"}]}}`))
+
+	assertNoResponseCanary(t, string(body))
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("the redacted body is not valid JSON (%s): %v", body, err)
+	}
+
+	items, ok := got["items"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("items = %v, want the surrounding array preserved", got["items"])
+	}
+	for i, item := range items {
+		element, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("items[%d] = %v, want an object", i, item)
+		}
+		if element["access_token"] != Placeholder {
+			t.Errorf("items[%d].access_token = %v, want %q", i, element["access_token"], Placeholder)
+		}
+	}
+
+	tokens, ok := got["data"].(map[string]any)["tokens"].([]any)
+	if !ok || len(tokens) != 1 {
+		t.Fatalf("data.tokens = %v, want the configured path's array preserved", got["data"])
+	}
+	token, ok := tokens[0].(map[string]any)
+	if !ok {
+		t.Fatalf("data.tokens[0] = %v, want an object", tokens[0])
+	}
+	if token["value"] != Placeholder {
+		t.Errorf("data.tokens[0].value = %v, want %q", token["value"], Placeholder)
+	}
+	if token["kind"] != "bearer" {
+		t.Errorf("data.tokens[0].kind = %v, want it untouched", token["kind"])
+	}
+}
+
 func TestBodyOfAMissingPathIsANoOp(t *testing.T) {
 	red := NewResponseRedactor(nil, []string{"data.token", "nothing.here.at.all"})
 
-	original := `{"name":"Rex","data":{"name":"Rex"}}`
-
-	if got := string(red.Body([]byte(original))); got != original {
-		t.Errorf("Body = %q, want the bytes returned verbatim when nothing matched", got)
+	for _, original := range []string{
+		`{"name":"Rex","data":{"name":"Rex"}}`,
+		`[{"name":"Rex"},{"data":{"name":"Rex"}}]`,
+	} {
+		if got := string(red.Body([]byte(original))); got != original {
+			t.Errorf("Body = %q, want the bytes returned verbatim when nothing matched", got)
+		}
 	}
 }
 
@@ -130,8 +210,9 @@ func TestBodySkipsNonJSONBodies(t *testing.T) {
 	for _, body := range []string{
 		"not json at all",
 		"",
-		`[{"access_token":"x"}]`,
+		`"a bare string"`,
 		`{"access_token":"x"} trailing junk`,
+		`[{"access_token":"x"}] trailing junk`,
 	} {
 		if got := string(red.Body([]byte(body))); got != body {
 			t.Errorf("Body(%q) = %q, want it returned unchanged", body, got)

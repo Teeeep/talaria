@@ -218,7 +218,10 @@ another name. They hide the value everywhere it is displayed: `request.headers`,
 curl, `--dry-run`, pretty output and history. They go on top
 of the built-in list (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`,
 `*api*key*`, `*token*`, `*secret*`). `body-paths` are dotted JSON paths into a *response* body,
-on top of the built-in `access_token`, `refresh_token` and `id_token`. `call` reads this file
+on top of the built-in `access_token`, `refresh_token` and `id_token`. A path is rooted at the
+top of the body, but arrays along the way cost it nothing: `data.token` reaches the token of every
+element of `data` when `data` is a list, and a top-level `access_token` reaches every element of a
+top-level array. `call` reads this file
 whether or not you passed `--profile`, because a security setting that only takes effect when
 you happen to be using a profile is one that silently does not.
 

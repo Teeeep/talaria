@@ -42,7 +42,7 @@
       "title": "Redact response bodies that are arrays or contain arrays",
       "line_start": 201,
       "line_end": 234,
-      "done": false
+      "done": true
     },
     {
       "id": 6,

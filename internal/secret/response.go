@@ -90,18 +90,18 @@ func (r *ResponseRedactor) Headers(h map[string][]string) map[string][]string {
 
 // Body returns body with the configured JSON paths replaced.
 //
-// A body that is not a single JSON object is returned verbatim: a dotted path
-// has no meaning in a text or binary body, and rewriting bytes talaria does not
-// understand would report a document the server never sent. So is a body in
-// which nothing matched, which keeps the common case exact — the caller sees
-// the server's own formatting, not encoding/json's.
+// A body that is not a single JSON object or array is returned verbatim: a
+// dotted path has no meaning in a text or binary body, and rewriting bytes
+// talaria does not understand would report a document the server never sent. So
+// is a body in which nothing matched, which keeps the common case exact — the
+// caller sees the server's own formatting, not encoding/json's.
 func (r *ResponseRedactor) Body(body []byte) []byte {
 	paths := r.bodyPaths()
 	if len(paths) == 0 || len(body) == 0 {
 		return body
 	}
 
-	doc, ok := decodeObject(body)
+	doc, ok := decodeDocument(body)
 	if !ok {
 		return body
 	}
@@ -146,13 +146,16 @@ func (r *ResponseRedactor) bodyPaths() [][]string {
 	return r.paths
 }
 
-// decodeObject decodes body as exactly one JSON object. Trailing content means
-// this was never one JSON document — a body ending in junk is not something to
-// re-encode — and a top-level array is skipped because a dotted path is rooted
-// at a named key.
-func decodeObject(body []byte) (map[string]any, bool) {
+// decodeDocument decodes body as exactly one JSON object or array. Trailing
+// content means this was never one JSON document — a body ending in junk is not
+// something to re-encode — and a root that is neither is skipped, because a
+// dotted path cannot name anything inside a bare string or number.
+//
+// An array root is decoded rather than skipped: a collection endpoint answers
+// with one, and the elements are objects a path does name.
+func decodeDocument(body []byte) (any, bool) {
 	trimmed := bytes.TrimLeft(body, " \t\r\n")
-	if len(trimmed) == 0 || trimmed[0] != '{' {
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
 		return nil, false
 	}
 
@@ -162,7 +165,7 @@ func decodeObject(body []byte) (map[string]any, bool) {
 	// redacted body must still report what the server actually sent.
 	dec.UseNumber()
 
-	var doc map[string]any
+	var doc any
 	if err := dec.Decode(&doc); err != nil {
 		return nil, false
 	}
@@ -177,22 +180,37 @@ func decodeObject(body []byte) (map[string]any, bool) {
 // was there to replace. A path that names nothing — a missing key, or a segment
 // that turns out not to be an object — is a no-op rather than an error: a
 // redaction list is written once and applied to every response an API returns.
-func redactPath(doc map[string]any, path []string) bool {
-	if len(path) == 1 {
-		if _, ok := doc[path[0]]; !ok {
+//
+// An array is fanned out over without consuming a segment, because a path names
+// keys and an array has none: `items.token` reaches the token of every element
+// of items, and a top-level `access_token` reaches every element of a top-level
+// array. Anything matched anywhere is reported as a match.
+func redactPath(doc any, path []string) bool {
+	switch node := doc.(type) {
+	case []any:
+		redacted := false
+		for _, element := range node {
+			if redactPath(element, path) {
+				redacted = true
+			}
+		}
+
+		return redacted
+
+	case map[string]any:
+		if len(path) > 1 {
+			return redactPath(node[path[0]], path[1:])
+		}
+		if _, ok := node[path[0]]; !ok {
 			return false
 		}
-		doc[path[0]] = Placeholder
+		node[path[0]] = Placeholder
 
 		return true
-	}
 
-	child, ok := doc[path[0]].(map[string]any)
-	if !ok {
+	default:
 		return false
 	}
-
-	return redactPath(child, path[1:])
 }
 
 // splitPath splits a dotted path into segments, returning nil for one that

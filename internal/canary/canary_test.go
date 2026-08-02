@@ -858,6 +858,75 @@ func TestAnUnconfiguredResponseBodySecretIsNotRedacted(t *testing.T) {
 	}
 }
 
+// TestAnArrayResponseBodyIsRedacted gates the two shapes body redaction used to
+// walk straight past: a top-level JSON array, and an array nested under an
+// object. Both are ordinary collection responses, and §5a redacts at write
+// time, so a miss here does not merely print the token once — it files it in
+// history.jsonl for good.
+//
+// The marker field is the proof the body reached each surface at all: without
+// it, a version that dropped response bodies entirely would pass.
+func TestAnArrayResponseBodyIsRedacted(t *testing.T) {
+	cases := []struct {
+		name string
+		body func(value string) string
+		// config is the redact.body-paths entry the shape needs, if any. A
+		// top-level array needs none: the built-in paths reach it.
+		config string
+	}{
+		{
+			name: "top-level",
+			body: func(v string) string {
+				return `[{"access_token":"` + v + `","marker":"canary-marker"}]`
+			},
+		},
+		{
+			name: "nested",
+			body: func(v string) string {
+				return `{"items":[{"access_token":"` + v + `","marker":"canary-marker"}]}`
+			},
+			config: "redact:\n  body-paths:\n    - items.access_token\n",
+		},
+	}
+
+	for _, tc := range cases {
+		for _, format := range canary.Formats() {
+			t.Run(tc.name+"/"+format, func(t *testing.T) {
+				t.Parallel()
+
+				value := canary.Value("array-body")
+				h := newHarness(t, nil)
+				srv := newServer(t, tc.body(value))
+				if tc.config != "" {
+					writeConfig(t, h, tc.config)
+				}
+
+				runs := []result{
+					h.runOK("call", specPath, "getPublic", "--base-url", srv.URL, "--output", format),
+					h.runOK("history", "--output", format),
+					h.runOK("history", "show", "1", "--output", format),
+					// The stored entry, which carries the body whatever the format
+					// above chose to display. Only json renders a response body, so
+					// this is where the shape can be proved to have arrived.
+					h.runOK("history", "show", "1", "--output", "json"),
+				}
+
+				if stored := runs[len(runs)-1].stdout; !strings.Contains(stored, "canary-marker") {
+					t.Fatalf("the response body never reached the history entry; "+
+						"the leak assertions below prove nothing:\n%s", stored)
+				}
+
+				var surfaces []canary.Surface
+				for _, res := range runs {
+					surfaces = append(surfaces, res.surfaces()...)
+				}
+
+				assertNoLeak(t, value, append(surfaces, h.written()...))
+			})
+		}
+	}
+}
+
 // TestNoCommandExposesAVerboseOrDebugFlag is §5a's "no --verbose that bypasses
 // [redaction]" in its strongest form: there is no such flag to bypass it.
 // Whoever adds one inherits this test, and with it the obligation to route it
