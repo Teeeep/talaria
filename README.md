@@ -407,6 +407,18 @@ secret, raw, percent-encoded and base64. It is the check that gates a release, s
 there is a redaction regression, not a flaky test. Run it alone with
 `go test ./internal/canary/...`.
 
+## Driving talaria from an agent
+
+[AGENT.md](AGENT.md) is the operating manual for the LLM on the other end: the
+list→search→describe→dry-run→call loop, the exit codes and what to do about each, and — the part
+no other API client has to answer — how to name a credential you cannot see. Hand it to the model
+as a system prompt or a skill file.
+
+It is tested like code. `cmd/talaria/agentdoc_test.go` checks the doc's exit-code table against
+the `clierr` constants, every command it names against the registered command tree, and every
+`TALARIA_*` variable against the ones talaria actually reads, so a manual that drifts from the
+binary fails the build.
+
 ## The name
 
 *Talaria* — the winged sandals of Hermes. The tool isn't the messenger; the agent is. This is
