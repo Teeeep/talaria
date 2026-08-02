@@ -585,6 +585,74 @@ func TestRunFixturesDirectoryMustExist(t *testing.T) {
 	}
 }
 
+// mediaSpecFile declares application/xml before application/json for the same
+// body; formDataSpecFile is a Swagger 2.0 operation whose converted body is
+// application/x-www-form-urlencoded. Generation produces JSON for both.
+const (
+	mediaSpecFile    = "testdata/run_media.yaml"
+	formDataSpecFile = "testdata/run_formdata.yaml"
+)
+
+// A body that says it is XML or form-encoded while carrying JSON is rejected by
+// any server strict enough to check, and the smoke test then reports a spec bug
+// that is talaria's.
+func TestRunSendsTheBodyUnderTheMediaTypeItWasGeneratedFrom(t *testing.T) {
+	tests := []struct {
+		name string
+		spec string
+	}{
+		{"json declared after xml", mediaSpecFile},
+		{"converted swagger 2.0 formData", formDataSpecFile},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newRunServer(t)
+
+			code, _, stderr := runRun(t, tt.spec, "--operation", "createPet", "--allow-mutations",
+				"--base-url", srv.URL, "--output", "json")
+			if code != 0 {
+				t.Fatalf("run = %d, want 0; stderr: %s", code, stderr)
+			}
+
+			sent := srv.received()
+			if len(sent) != 1 {
+				t.Fatalf("server saw %v, want one request", srv.paths())
+			}
+			if !json.Valid([]byte(sent[0].Body)) {
+				t.Fatalf("request body = %q, want JSON", sent[0].Body)
+			}
+			if got := sent[0].Header.Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q for body %q, want application/json", got, sent[0].Body)
+			}
+		})
+	}
+}
+
+// A fixture header is what the author deliberately meant to send, so it beats
+// the media type generation picked — the same precedence `call` gives a
+// user-set --header.
+func TestRunFixtureContentTypeWinsOverTheGeneratedMediaType(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "createPet.json",
+		`{"body": {"name": "Fixie"}, "headers": {"Content-Type": "application/vnd.pet+json"}}`)
+
+	srv := newRunServer(t)
+	code, _, stderr := runRun(t, mediaSpecFile, "--operation", "createPet", "--allow-mutations",
+		"--fixtures", dir, "--base-url", srv.URL, "--output", "json")
+	if code != 0 {
+		t.Fatalf("run --fixtures = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	sent := srv.received()
+	if len(sent) != 1 {
+		t.Fatalf("server saw %v, want one request", srv.paths())
+	}
+	if got := sent[0].Header.Get("Content-Type"); got != "application/vnd.pet+json" {
+		t.Errorf("Content-Type = %q, want the fixture's application/vnd.pet+json", got)
+	}
+}
+
 func writeFixture(t *testing.T, dir, name, body string) {
 	t.Helper()
 

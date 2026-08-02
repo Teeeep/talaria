@@ -1,0 +1,36 @@
+swagger: "2.0"
+info:
+  title: Swagger 2.0 formData Fixture
+  version: 1.0.0
+host: api.invalid
+basePath: /v1
+schemes: [https]
+paths:
+  /pets:
+    post:
+      operationId: createPet
+      summary: Create a pet from form fields
+      tags: [pets]
+      # The conversion to OpenAPI 3 turns these formData parameters into a
+      # request body under application/x-www-form-urlencoded, which is the only
+      # media type the converted operation declares — while talaria's generator
+      # still produces JSON for it.
+      consumes:
+        - application/x-www-form-urlencoded
+      parameters:
+        - name: name
+          in: formData
+          required: true
+          type: string
+      produces:
+        - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string

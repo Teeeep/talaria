@@ -54,6 +54,23 @@ func bodyOp(id string, schema *base.SchemaProxy) operation.Operation {
 	}
 }
 
+// mediaOp is an operation declaring one body schema under several media types,
+// in the order given — the order a spec's `content` map was written in.
+func mediaOp(id string, schema *base.SchemaProxy, mediaTypes ...string) operation.Operation {
+	op := operation.Operation{
+		ID:          id,
+		Method:      "POST",
+		Path:        "/pets",
+		RequestBody: &operation.RequestBody{Required: true},
+	}
+	for _, ct := range mediaTypes {
+		op.RequestBody.Content = append(op.RequestBody.Content,
+			operation.MediaType{ContentType: ct, Schema: schema})
+	}
+
+	return op
+}
+
 // wantCode asserts the exit code a failure carries, which is the part of an
 // error an agent actually branches on.
 func wantCode(t *testing.T, err error, code clierr.Code) *clierr.Error {
@@ -333,6 +350,67 @@ func TestDataForWithoutFixtures(t *testing.T) {
 
 	if len(got.Body) == 0 {
 		t.Error("DataFor() produced no body with no fixtures loaded, want generated data")
+	}
+}
+
+// The bytes generation produces are JSON whatever the spec declares, so the
+// media type reported alongside them has to describe the bytes and not merely
+// the first entry in the operation's `content` map.
+func TestDataForReportsTheMediaTypeTheBodyWasGeneratedFor(t *testing.T) {
+	schema := schemaProxy(objectSchema([]string{"name"}, "name", scalarSchema("string")))
+
+	tests := []struct {
+		name       string
+		mediaTypes []string
+		want       string
+	}{
+		{"json declared second", []string{"application/xml", "application/json"}, "application/json"},
+		{"vendor json keeps its own spelling", []string{"application/vnd.api+json"}, "application/vnd.api+json"},
+		{"no json media type at all", []string{"application/x-www-form-urlencoded"}, "application/json"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := New(testSeed).DataFor(mediaOp("createPet", schema, tt.mediaTypes...))
+
+			if len(got.Body) == 0 {
+				t.Fatalf("DataFor() produced no body for %v", tt.mediaTypes)
+			}
+			if got.ContentType != tt.want {
+				t.Errorf("DataFor() content type = %q for %v, want %q", got.ContentType, tt.mediaTypes, tt.want)
+			}
+		})
+	}
+}
+
+// A fixture body reaches the server as the author wrote it, and `compact`
+// already treats it as JSON, so an operation the spec says takes no body still
+// gets an honest media type.
+func TestFixtureBodyForAnUndeclaredRequestBodyIsJSON(t *testing.T) {
+	dir := writeFixtures(t, "createPet.json", `{"body": {"name": "Fido"}}`)
+	g := New(testSeed)
+	g.Fixtures = loadFixtures(t, dir)
+
+	got := g.DataFor(operation.Operation{ID: "createPet", Method: "POST", Path: "/pets"})
+
+	if len(got.Body) == 0 {
+		t.Fatal("DataFor() dropped the fixture body")
+	}
+	if got.ContentType != "application/json" {
+		t.Errorf("DataFor() content type = %q, want application/json", got.ContentType)
+	}
+}
+
+// Nothing to send means nothing to declare: an operation with no body must not
+// carry a Content-Type describing bytes that do not exist.
+func TestDataForHasNoMediaTypeWithoutABody(t *testing.T) {
+	got := New(testSeed).DataFor(operation.Operation{ID: "listPets", Method: "GET", Path: "/pets"})
+
+	if len(got.Body) != 0 {
+		t.Fatalf("DataFor() body = %s, want none", got.Body)
+	}
+	if got.ContentType != "" {
+		t.Errorf("DataFor() content type = %q, want empty", got.ContentType)
 	}
 }
 

@@ -409,6 +409,13 @@ Test data follows one priority chain: the spec's own `example`, then a fixture f
 generation from the schema. `--fixtures dir/` supplies the middle one, matched by operationId —
 `dir/createPet.json` holds `{"params": {…}, "headers": {…}, "body": {…}}`, every field optional.
 
+A generated body is always JSON, so `run` sends it as `application/json` — or as the operation's
+own JSON media type, `application/vnd.api+json` say — whatever else the spec lists first. An
+operation that declares no JSON media type at all, such as a converted Swagger 2.0 `formData`
+operation, still gets `application/json`, because that is what the bytes are; a server that only
+speaks XML answering 415 is a truer result than JSON labelled `application/xml`. A fixture
+`headers` entry setting `Content-Type` wins, as `--header` does in `call`.
+
 Each operation is reported as `passed`, `failed` or `skipped`, with a `reason` for the last two
 and a `summary` block counting all four numbers. A skip is not a failure: a `DELETE` left alone
 without `--allow-mutations`, or an operation whose required parameter nothing could supply, is

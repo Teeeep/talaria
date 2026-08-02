@@ -27,6 +27,9 @@ import (
 // passes next time and teaches nobody anything (DESIGN.md §5a).
 const runSeed = 1
 
+// contentTypeHeader is the header a generated body's media type travels in.
+const contentTypeHeader = "Content-Type"
+
 // The three outcomes one operation can have. Skipped is deliberately not a
 // failure: a DELETE left alone without --allow-mutations, or an operation whose
 // path parameter nothing could supply, is correct behaviour rather than a
@@ -342,7 +345,7 @@ func (r *runner) execute(op operation.Operation) runResult {
 		Creds:   creds,
 		BaseURL: r.baseURL,
 		Params:  flagPairs(data.Params),
-		Headers: flagPairs(data.Headers),
+		Headers: flagPairs(headersFor(data)),
 		Body:    bodyFlag(data.Body),
 		// No stdin: `run` makes many requests and stdin can only be read once,
 		// so there is nothing here for `--body -` to mean.
@@ -458,10 +461,38 @@ func flagPairs(values map[string]string) []string {
 	return out
 }
 
+// headersFor is the headers one request sends: the fixture's, plus the media
+// type the body was generated as.
+//
+// Without that header the request builder falls back to the operation's first
+// declared media type, which is not necessarily the one the body was generated
+// from — a spec listing application/xml before application/json, or a converted
+// Swagger 2.0 formData operation, then sends JSON bytes under a media type it
+// is not. A fixture header wins, as a user-set --header wins in `call`.
+func headersFor(data gen.Data) map[string]string {
+	headers := make(map[string]string, len(data.Headers)+1)
+	for name, value := range data.Headers {
+		headers[name] = value
+	}
+
+	if len(data.Body) == 0 || data.ContentType == "" {
+		return headers
+	}
+
+	for name := range headers {
+		if strings.EqualFold(name, contentTypeHeader) {
+			return headers
+		}
+	}
+	headers[contentTypeHeader] = data.ContentType
+
+	return headers
+}
+
 // bodyFlag renders a generated body as the --body value it stands in for, so
-// the media type is chosen by the one piece of code that chooses media types.
-// Generated and fixture bodies are always JSON, so neither can collide with
-// --body's `@file` and `-` spellings.
+// the media type travels with it in headersFor rather than being re-derived
+// from the spec. Generated and fixture bodies are always JSON, so neither can
+// collide with --body's `@file` and `-` spellings.
 func bodyFlag(body []byte) []string {
 	if len(body) == 0 {
 		return nil

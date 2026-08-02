@@ -111,6 +111,11 @@ type Data struct {
 	Headers map[string]string
 	// Body is the encoded request body, or nil.
 	Body []byte
+	// ContentType is the media type Body was generated as, and empty when there
+	// is no body. The caller sends it: the operation's own `content` map cannot
+	// be trusted to describe these bytes, because generation encodes JSON
+	// whatever media types the document declares.
+	ContentType string
 }
 
 // DataFor returns the request data for one operation, applying the DESIGN.md
@@ -125,10 +130,12 @@ type Data struct {
 func (g *Generator) DataFor(op operation.Operation) Data {
 	fixture, _ := g.Fixtures.Get(op.ID)
 
+	body, contentType := g.bodyFor(op, fixture)
 	data := Data{
-		Params:  make(map[string]string, len(op.Params)),
-		Headers: make(map[string]string, len(fixture.Headers)),
-		Body:    g.bodyFor(op, fixture),
+		Params:      make(map[string]string, len(op.Params)),
+		Headers:     make(map[string]string, len(fixture.Headers)),
+		Body:        body,
+		ContentType: contentType,
 	}
 
 	for name, value := range fixture.Headers {
@@ -182,60 +189,91 @@ func (g *Generator) paramValue(p operation.Param, fixture Fixture) (any, bool) {
 	return g.value(p.Schema, 0, make(map[string]int))
 }
 
-// bodyFor resolves the request body through the same chain.
+// bodyFor resolves the request body through the same chain, and reports the
+// media type the bytes should be sent as.
 //
 // A fixture body is used even for an operation that declares no request body:
 // specs under-document bodies all the time, and a fixture is the escape hatch
 // for exactly that. The reverse — inventing a body for an operation the spec
 // says takes none — is not something anyone asked for, so generation only runs
 // when there is a schema to generate from.
-func (g *Generator) bodyFor(op operation.Operation, fixture Fixture) []byte {
-	sp := bodySchema(op)
+func (g *Generator) bodyFor(op operation.Operation, fixture Fixture) ([]byte, string) {
+	sp, mediaType := bodySchema(op)
+	contentType := bodyContentType(mediaType)
 
 	if sp != nil {
 		if s := sp.Schema(); s != nil {
 			if v, ok := exampleValue(s); ok {
-				return encode(v)
+				return withType(encode(v), contentType)
 			}
 		}
 	}
 
 	if len(fixture.Body) > 0 {
-		return compact(fixture.Body)
+		return withType(compact(fixture.Body), contentType)
 	}
 
 	if sp == nil {
-		return nil
+		return nil, ""
 	}
 
 	v, ok := g.value(sp, 0, make(map[string]int))
 	if !ok {
-		return nil
+		return nil, ""
 	}
 
-	return encode(v)
+	return withType(encode(v), contentType)
 }
 
 // bodySchema picks the media type to generate for: JSON if the operation
 // accepts it, otherwise the first declared. Generation produces a Go value
 // shaped for encoding/json, so a JSON media type is the one it can actually
-// satisfy.
-func bodySchema(op operation.Operation) *base.SchemaProxy {
+// satisfy. The chosen media type comes back with the schema so the caller can
+// say what it sent.
+func bodySchema(op operation.Operation) (*base.SchemaProxy, string) {
 	if op.RequestBody == nil {
-		return nil
+		return nil, ""
 	}
 
 	for _, mt := range op.RequestBody.Content {
 		if strings.Contains(mt.ContentType, "json") {
-			return mt.Schema
+			return mt.Schema, mt.ContentType
 		}
 	}
 
 	if len(op.RequestBody.Content) > 0 {
-		return op.RequestBody.Content[0].Schema
+		return op.RequestBody.Content[0].Schema, op.RequestBody.Content[0].ContentType
 	}
 
-	return nil
+	return nil, ""
+}
+
+// bodyContentType is what a generated body travels as. Everything this package
+// produces is JSON — generated values are marshalled by encoding/json and a
+// fixture body is compacted as JSON — so a media type that is not JSON, or an
+// operation that declares none at all, still yields application/json.
+//
+// Labelling JSON bytes application/x-www-form-urlencoded because a converted
+// Swagger 2.0 formData operation declares that is how a smoke test comes to
+// report a spec bug that is talaria's. A 415 from a server that only speaks XML
+// is the honest answer instead.
+func bodyContentType(mediaType string) string {
+	if strings.Contains(mediaType, "json") {
+		return mediaType
+	}
+
+	return "application/json"
+}
+
+// withType pairs a body with its media type, dropping the media type when
+// encoding produced nothing: there is no Content-Type for bytes that will not
+// be sent.
+func withType(body []byte, contentType string) ([]byte, string) {
+	if len(body) == 0 {
+		return nil, ""
+	}
+
+	return body, contentType
 }
 
 // encode marshals a generated value. The value came from the generator or from
