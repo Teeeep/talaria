@@ -45,6 +45,14 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().String("spec", "",
 		"OpenAPI/Swagger spec to use: file path or URL (default: $"+spec.EnvSpec+")")
 
+	// Persistent for the same reason: call, run and auth check all take them
+	// (DESIGN.md §4), and registering either per-command would shadow the other
+	// registration silently. Commands that read no config simply ignore them.
+	root.PersistentFlags().String("profile", "",
+		"named profile from the config file: base-url + headers + auth")
+	root.PersistentFlags().String("base-url", "",
+		"override the spec's server URL")
+
 	// A bad flag is a bad invocation, not a failed request; without this it
 	// would reach the translator as a bare error and exit 1.
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {

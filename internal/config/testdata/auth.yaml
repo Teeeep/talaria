@@ -1,0 +1,110 @@
+openapi: 3.0.3
+info:
+  title: Auth fixture
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+security:
+  - bearerAuth: []
+paths:
+  /bearer:
+    get:
+      operationId: getBearer
+      responses:
+        "200":
+          description: OK
+  /basic:
+    get:
+      operationId: getBasic
+      security:
+        - basicAuth: []
+      responses:
+        "200":
+          description: OK
+  /header-key:
+    get:
+      operationId: getHeaderKey
+      security:
+        - petKey: []
+      responses:
+        "200":
+          description: OK
+  /query-key:
+    get:
+      operationId: getQueryKey
+      security:
+        - queryKey: []
+      responses:
+        "200":
+          description: OK
+  /cookie-key:
+    get:
+      operationId: getCookieKey
+      security:
+        - cookieKey: []
+      responses:
+        "200":
+          description: OK
+  /both:
+    get:
+      operationId: getBoth
+      security:
+        - bearerAuth: []
+          petKey: []
+      responses:
+        "200":
+          description: OK
+  /oauth-or-bearer:
+    get:
+      operationId: getOAuthOrBearer
+      security:
+        - oauth2:
+            - "pets:read"
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+  /oauth-only:
+    get:
+      operationId: getOAuthOnly
+      security:
+        - oauth2:
+            - "pets:read"
+      responses:
+        "200":
+          description: OK
+  /open:
+    get:
+      operationId: getOpen
+      security: []
+      responses:
+        "200":
+          description: OK
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    basicAuth:
+      type: http
+      scheme: basic
+    petKey:
+      type: apiKey
+      in: header
+      name: X-Pet-Key
+    queryKey:
+      type: apiKey
+      in: query
+      name: api_key
+    cookieKey:
+      type: apiKey
+      in: cookie
+      name: session
+    oauth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.example.com/token
+          scopes:
+            "pets:read": read pets

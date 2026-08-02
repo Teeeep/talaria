@@ -150,6 +150,47 @@ the response. Reference cycles are handled; `Pet` referring to `Owner` referring
 ordinary in real specs. A schema name the spec does not define exits 2 with the closest valid
 names; a schema nothing references exits 0 with no operations.
 
+## Credentials and profiles
+
+Credentials are named, never shown. talaria maps each security scheme a spec declares onto an
+environment variable by convention, and carries the *name* from there on:
+
+| Scheme in the spec | Environment variable |
+|---|---|
+| `type: http`, `scheme: bearer` | `TALARIA_AUTH_BEARER` |
+| `type: http`, `scheme: basic` | `TALARIA_AUTH_BASIC` (as `user:password`) |
+| `type: apiKey`, named `petKey` | `TALARIA_AUTH_APIKEY_PETKEY` |
+
+API keys are supported in all three locations — `header`, `query` and `cookie`. OAuth2 and
+OpenID Connect flows are out of scope for v1: bring your own token and let a `bearer` scheme
+carry it. When a spec offers several alternative security requirements, talaria uses the first
+one it can satisfy, so a spec offering "OAuth2 or a bearer token" resolves to the bearer token.
+
+For more than one environment, `~/.config/talaria/config.yaml` holds named profiles selected
+with `--profile`. `--profile` and `--base-url` are accepted by every command that makes
+requests:
+
+```yaml
+profiles:
+  staging:
+    base-url: https://staging.example.com
+    headers:
+      X-Env: staging
+    auth:
+      bearerAuth: ${STAGING_TOKEN}
+```
+
+A profile's `auth` entries may only *reference* an environment variable — `${VAR}` or `$VAR`.
+A literal token in the file is refused, because a credential talaria can read from a config file
+is a credential it would have to carry. The file names credentials and internal hosts, so it
+must be mode `0600` or stricter; anything looser exits 2 telling you to `chmod`. Unknown keys
+are an error rather than silence, so a mistyped `baseurl:` does not quietly send the request
+somewhere else.
+
+Presence is checked without reading the value, which is what `talaria auth check` will report
+when it lands with `call`: which schemes have a credential, and which variable to set for the
+ones that do not.
+
 ## Output
 
 Every command takes `--output json|pretty|tsv`. With no flag, talaria prints `pretty` when

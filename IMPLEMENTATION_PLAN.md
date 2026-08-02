@@ -720,6 +720,33 @@ agent learns *which* variable to ask a human to set.
 (Task 21) and every authenticated call read it, and getting the env-var convention wrong here
 means `AGENT.md` documents a lie.
 
+**Divergence from the plan.**
+
+No viper. The profile file is one YAML document read with `gopkg.in/yaml.v3`, already a
+dependency. Viper's value is env/flag/file layering, and none of that layering can apply here:
+the file is stat-ed before it is read (the 0600 check below), the auth values are *references*
+that must not be expanded, and flag precedence lives in the request builder. Adding a
+dependency to do less than `yaml.Unmarshal` was the wrong trade. Decoding uses
+`KnownFields(true)`, so a mistyped `baseurl:` is an error rather than a request quietly sent
+somewhere else.
+
+A literal credential in a profile's `auth` map is **refused** (exit 2), not inlined. The plan's
+item 4 only describes the `${VAR}` case; the unstated case matters more, because a value talaria
+can read out of a config file is one it would have to carry, and §5a's claim is that it never
+does. `${VAR}` and `$VAR` are both accepted. The refusal message names the profile and the
+scheme and never the value.
+
+Requirement selection: a spec's `security` block is a list of *alternatives*, so Resolve takes
+the first one it can satisfy rather than the first one written. A spec offering `oauth2` or
+`bearerAuth` therefore works, where failing on the first entry would make every such spec
+uncallable. Only when no alternative is supported does it exit 2, listing why each was rejected.
+
+`Present()` lives on `secret.SecretRef` rather than in this package, so `os.LookupEnv` stays
+inside the firewall package next to `Resolve`. `Credential.Present()` delegates to it.
+
+Permission check is `perm &^ 0600 != 0`, so 0400 passes: the requirement is that nobody *else*
+can read the file, and stricter is not a misconfiguration.
+
 ---
 
 ### Task 14: Request construction and parameter binding

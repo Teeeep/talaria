@@ -68,6 +68,22 @@ func (r SecretRef) Symbolic() string {
 // scheme has no credential configured" is represented.
 func (r SecretRef) IsZero() bool { return r.Source == "" && r.Name == "" }
 
+// Present reports whether the referenced credential is set, without reading it
+// into anything a caller could print. It is what `auth check` answers with: the
+// agent learns that $NAME is missing and can ask for it, and learns nothing
+// about the value when it is there.
+//
+// A ref that names nothing is not present.
+func (r SecretRef) Present() bool {
+	if r.Source != SourceEnv {
+		return false
+	}
+
+	value, ok := os.LookupEnv(r.Name)
+
+	return ok && value != ""
+}
+
 // Resolve reads the referenced value. It is the one crossing of the firewall,
 // and internal/curl is the only package that should call it — long enough to
 // write curl's config document, and no longer.
