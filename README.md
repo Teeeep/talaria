@@ -34,6 +34,19 @@ as a runnable curl command.
   `DELETE` is against the twin.
 - **Not an MCP server.** Ever. The absence is the point.
 
+## Pointing talaria at a spec
+
+Spec-reading commands take an OpenAPI 3.x or Swagger 2.0 spec as a file path or an `http(s)` URL,
+from whichever of these is set first:
+
+1. the positional argument
+2. `--spec`
+3. `$TALARIA_SPEC`
+
+Swagger 2.0 is converted to OpenAPI 3.x at load time, so every command sees one shape. Remote
+specs are cached under `$XDG_CACHE_HOME/talaria/specs` (falling back to `~/.cache/talaria/specs`)
+and fetched once per URL, not once per call. Cache files are written `0600` in a `0700` directory.
+
 ## Output
 
 Every command takes `--output json|pretty|tsv`. With no flag, talaria prints `pretty` when

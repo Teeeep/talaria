@@ -7,6 +7,7 @@ import (
 
 	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/output"
+	"github.com/Teeeep/talaria/internal/spec"
 )
 
 // version is the binary's version string. It defaults to "dev" and is
@@ -36,6 +37,13 @@ func newRootCmd() *cobra.Command {
 	// means "decide from the terminal"; see output.Resolve.
 	root.PersistentFlags().String("output", "",
 		"output format: json|pretty|tsv (default: pretty on a terminal, json when piped)")
+
+	// Also persistent: every spec-reading command takes the same spec the same
+	// way, and an agent that exports $TALARIA_SPEC once should not have to
+	// repeat itself on each call (DESIGN.md §4). Precedence between the three
+	// sources lives in spec.Resolve, not here.
+	root.PersistentFlags().String("spec", "",
+		"OpenAPI/Swagger spec to use: file path or URL (default: $"+spec.EnvSpec+")")
 
 	// A bad flag is a bad invocation, not a failed request; without this it
 	// would reach the translator as a bare error and exit 1.
