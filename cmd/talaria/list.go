@@ -159,6 +159,15 @@ func truncate(s string, max int) string {
 // environment, loads it and indexes its operations. Every spec-reading command
 // starts this way, so the precedence and the error codes are decided once.
 func loadIndex(cmd *cobra.Command, args []string) (*operation.Index, error) {
+	_, index, err := loadSpec(cmd, args)
+
+	return index, err
+}
+
+// loadSpec is loadIndex plus the document the index was built from. `call` and
+// `auth check` need it: security schemes live on the document, not on any one
+// operation, so resolving credentials means reading both.
+func loadSpec(cmd *cobra.Command, args []string) (*spec.Document, *operation.Index, error) {
 	var arg string
 	if len(args) > 0 {
 		arg = args[0]
@@ -166,18 +175,18 @@ func loadIndex(cmd *cobra.Command, args []string) (*operation.Index, error) {
 
 	flag, err := cmd.Flags().GetString("spec")
 	if err != nil {
-		return nil, clierr.Usage("%w", err)
+		return nil, nil, clierr.Usage("%w", err)
 	}
 
 	ref, err := spec.Resolve(arg, flag)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	doc, err := spec.Load(ref)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return operation.NewIndexFor(doc), nil
+	return doc, operation.NewIndexFor(doc), nil
 }

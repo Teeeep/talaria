@@ -4,7 +4,8 @@
 your credentials.*
 
 > **Status: early implementation.** `talaria version`, `talaria list`, `talaria describe`,
-> `talaria search` and `talaria uses` work so far; the rest of the command tree is scaffolded.
+> `talaria search`, `talaria uses` and `talaria call --dry-run` work so far; the rest of the
+> command tree is scaffolded.
 > The [design document](docs/design/DESIGN.md) is the source of truth.
 
 Every API client — Postman, Insomnia, Bruno, curl itself — assumes the operator is a human who
@@ -188,8 +189,42 @@ are an error rather than silence, so a mistyped `baseurl:` does not quietly send
 somewhere else.
 
 Presence is checked without reading the value, which is what `talaria auth check` will report
-when it lands with `call`: which schemes have a credential, and which variable to set for the
-ones that do not.
+when it lands: which schemes have a credential, and which variable to set for the ones that do
+not.
+
+## Building a call
+
+```sh
+talaria call ./openapi.yaml getPet --param petId=42 --query verbose=true --dry-run
+```
+
+`call` binds parameters, headers and credentials to an operation and renders the request as
+curl. `--param` takes a parameter the operation declares, in any location; `--query` and
+`--header` add ones it does not, and all three repeat. Every binding problem is reported at
+once, so a wrong parameter name and a missing required one arrive in the same message rather
+than one run apart.
+
+The emitted command references credentials by environment-variable name and never by value:
+
+```
+curl -s -H "Authorization: Bearer $TALARIA_AUTH_BEARER" 'https://api.example.com/v1/pets/42?verbose=true'
+```
+
+It is runnable wherever the variable is set and useless to exfiltrate. An API key that belongs
+in the query string is symbolic there too; a `basic` scheme renders as curl's `-u
+"$TALARIA_AUTH_BASIC"`, because the header form would need the value base64-encoded into it.
+`--output json` returns the same request as a structured block, where credentials read
+`<redacted:env:NAME>` — that field is read, not run.
+
+Two rules apply before anything is sent:
+
+- **Read-only by default.** `GET`, `HEAD` and `OPTIONS` need no flag; every other method
+  requires `--allow-mutations` and exits 2 without it. The gate is checked before the request
+  is even built, and `--dry-run` does not exempt it, so the rule is learnable without a
+  network round trip.
+- **`--dry-run` sends nothing.** It prints the command and exits 0.
+
+Real execution lands in the next phase; today `call` requires `--dry-run`.
 
 ## Output
 

@@ -122,7 +122,7 @@
       "title": "Symbolic curl rendering, `call --dry-run`, and mutation gating",
       "line_start": 717,
       "line_end": 753,
-      "done": false
+      "done": true
     },
     {
       "id": 16,

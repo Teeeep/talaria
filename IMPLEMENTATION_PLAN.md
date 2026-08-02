@@ -826,6 +826,39 @@ string, every one of those surfaces becomes a leak channel.
 §3.4: the emitted curl is "a portable reproduction for bug reports, docs, and scripts", and it
 is "runnable in a shell where the env var is set, useless to exfiltrate."
 
+**Divergence from the plan.**
+
+The `request.headers` block shows `Bearer <redacted:env:TALARIA_AUTH_BEARER>`, keeping the
+scheme prefix, where §4's sketch shows the bare `<redacted:env:NAME>`. The header really does
+read `Bearer <token>` on the wire, and a request block that drops the prefix misreports the
+request it claims to describe. The redaction is unchanged; only the surrounding literal is.
+
+`internal/curl` renders its own URL rather than calling `Request.URL`. `Request.QueryString`
+percent-encodes every value, which is correct for the wire and wrong for both display forms:
+`%24TALARIA_AUTH_BEARER` is no longer a reference a shell expands, and
+`%3Credacted%3Aenv%3A…%3E` is no longer legible. So encoding is applied per value here —
+literals escaped, credential renderings passed through — and `Request.URL` stays the
+wire-correct counterpart Task 17's executor uses with a resolving renderer.
+
+Shell quoting is decided per word rather than per character. A word of pure literal text is
+single-quoted, which needs no escaping beyond the quote itself and leaves `$` and backticks
+inert; a word carrying a credential must be double-quoted so the shell expands `$NAME`, so its
+literal parts are escaped against the four characters double quotes still interpret. A ref
+whose name is not a shell identifier, or whose source is not the environment, renders redacted
+and inert — an emitted command that stops being copy-pasteable beats one that expands into
+something unintended.
+
+Basic auth renders as `-u "$TALARIA_AUTH_BASIC"` with no `Authorization` header, as
+`internal/request` already documented: the header text is base64(user:password) and cannot be
+built without the value, while `-u` takes the raw pair and stays symbolic.
+
+`call` without `--dry-run` exits 2 naming `--dry-run`, because Phase 1 has no execution path
+and silently printing a dry run would misreport what happened. Task 19 replaces that branch.
+`loadIndex` grew a `loadSpec` sibling returning the document as well: security schemes live on
+the document, not on an operation, so resolving credentials needs both. The config file is read
+only when `--profile` is passed, so an invocation without one never touches — or refuses to
+read — the user's configuration.
+
 ---
 
 ### Task 16: The curl config document (`-K -`) builder
