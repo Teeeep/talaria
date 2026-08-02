@@ -75,6 +75,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newSearchCmd())
 	root.AddCommand(newUsesCmd())
 	root.AddCommand(newCallCmd())
+	root.AddCommand(newRunCmd())
 	root.AddCommand(newAuthCmd())
 	root.AddCommand(newHistoryCmd())
 

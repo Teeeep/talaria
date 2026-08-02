@@ -4,8 +4,8 @@
 your credentials.*
 
 > **Status: early implementation.** `talaria version`, `talaria list`, `talaria describe`,
-> `talaria search`, `talaria uses`, `talaria call`, `talaria auth check` and
-> `talaria history` work so far; the rest of the command tree is scaffolded.
+> `talaria search`, `talaria uses`, `talaria call`, `talaria auth check`,
+> `talaria history` and `talaria run` work so far; the rest of the command tree is scaffolded.
 > The [design document](docs/design/DESIGN.md) is the source of truth.
 
 Every API client — Postman, Insomnia, Bruno, curl itself — assumes the operator is a human who
@@ -377,6 +377,37 @@ TALARIA_HISTORY=off talaria call ./openapi.yaml getPet --param petId=42
 variable is what someone auditing a machine sets. Either way nothing is written — no entry, no
 file, no directory. A dry run is never recorded; a request that failed to complete is, with no
 response block, because it is still something that was tried.
+
+## Smoke testing
+
+`run` is `call` over many operations at once — the command that answers "is this whole API
+behaving?" and the one a CI job invokes:
+
+```sh
+talaria run ./openapi.yaml --base-url http://localhost:9000
+talaria run ./openapi.yaml --tag pets --operation getPet --fail-on-error
+talaria run ./openapi.yaml --fixtures ./fixtures --allow-mutations --report json
+```
+
+`--tag` and `--operation` both repeat and combine as a **union**; with neither, the whole spec
+runs. A filter matching nothing exits 2 rather than passing with nothing tested. Operations run
+one at a time, in spec order — determinism beats speed, and parallel calls against a real API
+are a surprise nobody asked for.
+
+Test data follows one priority chain: the spec's own `example`, then a fixture file, then
+generation from the schema. `--fixtures dir/` supplies the middle one, matched by operationId —
+`dir/createPet.json` holds `{"params": {…}, "headers": {…}, "body": {…}}`, every field optional.
+
+Each operation is reported as `passed`, `failed` or `skipped`, with a `reason` for the last two
+and a `summary` block counting all four numbers. A skip is not a failure: a `DELETE` left alone
+without `--allow-mutations`, or an operation whose required parameter nothing could supply, is
+correct behaviour rather than a broken API. `--report json|pretty|tsv` is `run`'s own format
+flag and overrides `--output`.
+
+Failing operations exit 0 unless you pass `--fail-on-error`, which makes them exit 4. A missing
+credential exits 5 either way — that operation was never tested, and the fix is exporting a
+variable, not reading a report. Every request goes into history with `"source": "run"`, under
+its own 1000-entry cap, so a run over a large spec cannot bury the calls you made by hand.
 
 ## Output
 

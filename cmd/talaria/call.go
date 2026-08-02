@@ -351,13 +351,40 @@ func validateResponse(
 	req *request.Request,
 	view *responseView,
 ) *validate.Result {
-	result, err := validate.Response(doc, validate.Input{
+	result, err := validate.Response(doc, validationInput(req, view))
+
+	return reportValidation(stderr, result, err)
+}
+
+// validateWith is validateResponse against a validator that is already built.
+// `run` makes one per suite rather than one per response, because building it
+// compiles every schema in the document.
+func validateWith(
+	stderr io.Writer,
+	validator *validate.Validator,
+	req *request.Request,
+	view *responseView,
+) *validate.Result {
+	result, err := validator.Response(validationInput(req, view))
+
+	return reportValidation(stderr, result, err)
+}
+
+// validationInput is the one conversion from a request and a redacted response
+// into what the validator reads, so `call` and `run` cannot check different
+// things.
+func validationInput(req *request.Request, view *responseView) validate.Input {
+	return validate.Input{
 		Method:  req.Method,
 		URL:     curl.URL(req),
 		Status:  view.Status,
 		Headers: http.Header(view.Headers),
 		Body:    view.Body,
-	})
+	}
+}
+
+// reportValidation turns a validator failure into a warning and no result.
+func reportValidation(stderr io.Writer, result *validate.Result, err error) *validate.Result {
 	if err != nil {
 		fmt.Fprintf(stderr, "warning: the response was not validated: %v\n", err)
 		return nil

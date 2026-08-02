@@ -350,6 +350,11 @@ func TestNoAuthMechanismLeaksIntoAnyOutputSurface(t *testing.T) {
 					h.runOK("history", "replay", "1", "--output", format),
 					h.runOK("describe", specPath, mech.op, "--output", format),
 					h.runOK("list", specPath, "--output", format),
+					// Last, so it disturbs no history index above. `run` sends
+					// the same credential `call` does and renders its own
+					// report, so it is its own surface.
+					h.runOK("run", specPath, "--operation", mech.op,
+						"--base-url", srv.URL, "--report", format),
 				)
 
 				// The credential reached the server. Without this the rest of

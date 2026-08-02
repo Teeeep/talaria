@@ -1,0 +1,145 @@
+openapi: 3.0.3
+info:
+  title: Run Fixture
+  version: 1.0.0
+servers:
+  # Deliberately unroutable: every test passes --base-url, so a request that
+  # ignored it would fail here rather than quietly reaching the network.
+  - url: https://api.invalid/v1
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    petKey:
+      type: apiKey
+      in: header
+      name: X-Pet-Key
+# Document-level security, so every operation below needs the bearer token
+# unless it names its own scheme.
+security:
+  - bearerAuth: []
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      tags: [pets]
+      responses:
+        "200":
+          description: A pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+    post:
+      operationId: createPet
+      summary: Create a pet
+      tags: [pets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            # No example anywhere: the body comes from a fixture when one is
+            # supplied and from generation otherwise, which is what the fixture
+            # tests need to tell apart.
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      summary: Fetch one pet
+      tags: [pets]
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "42"
+      responses:
+        "200":
+          description: A pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /status:
+    get:
+      operationId: getStatus
+      summary: Service status
+      tags: [ops]
+      responses:
+        "200":
+          description: A pet-shaped status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /reports/{reportId}:
+    get:
+      operationId: getReport
+      summary: Fetch one report
+      tags: [reports]
+      parameters:
+        # A content-typed parameter has no schema, so there is nothing to
+        # generate from and nothing to fill the path template with.
+        - name: reportId
+          in: path
+          required: true
+          content:
+            application/json:
+              schema:
+                type: string
+      responses:
+        "200":
+          description: A pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /secure:
+    get:
+      operationId: getSecure
+      summary: Needs its own API key
+      tags: [secure]
+      security:
+        - petKey: []
+      responses:
+        "200":
+          description: A pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /boom:
+    get:
+      operationId: getBoom
+      summary: Always fails
+      tags: [ops]
+      responses:
+        "200":
+          description: A pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
