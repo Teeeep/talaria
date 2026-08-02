@@ -103,10 +103,14 @@ These blocked implementation and are resolved here. Change them only with a desi
 
 1. **History location & retention** (§8 demands "a deliberate answer, not a default"):
    `$XDG_STATE_HOME/talaria/history.jsonl`, falling back to `~/.local/state/talaria/history.jsonl`.
-   Directory `0700`, file `0600`. Append-only JSONL, trimmed to the most recent **1000** entries
-   on write. Per-entry request and response bodies truncated at **64 KiB** with an explicit
-   `"truncated": true` marker. Opt out with `TALARIA_HISTORY=off` or `history.enabled: false`
-   in the profile config. Rationale: a per-project `.talaria/` invites committing the tool's
+   Directory `0700`, file `0600`. Append-only JSONL, trimmed on write to the most recent
+   **1000 entries per `source`** (`call`, `run`, `replay`) rather than 1000 overall — a single
+   `run` over a large spec must not evict a session of interactive `call` history (Task 22).
+   Per-entry request and response bodies truncated at **64 KiB** with an explicit
+   `"truncated": true` marker. Opt out with `TALARIA_HISTORY=off` (read by the store itself,
+   Task 22) or `history.enabled: false` in the profile config (layered by the command wiring,
+   Task 23, because `internal/corpus` does not import `internal/config`); the env var wins when
+   both are set. Rationale: a per-project `.talaria/` invites committing the tool's
    highest-risk artifact (§5a); a single mode-0600 file under XDG state does not.
 2. **Body-in-config cutover** (§8): bodies that are ≤ **1 MiB** *and* valid UTF-8 go inline as a
    `data` directive. Anything larger or non-UTF-8 goes to a `0600` temp file referenced as
@@ -985,10 +989,15 @@ able to do without ever seeing a secret.
    `run` over a large spec (Task 30) wipe a session of interactive history.
 5. Bodies over 64 KiB are truncated with `"truncated": true` and the file stays valid JSONL.
 6. `TALARIA_HISTORY=off` makes append a no-op that creates no file at all.
-7. A corrupt line in the middle of the file is skipped on read rather than failing the whole read.
+7. Constructing the store with recording disabled (the setting Task 23 layers from
+   `history.enabled: false`) is likewise a no-op that creates no file, and `TALARIA_HISTORY=off`
+   still wins when the setting says enabled — the env var is the operator's override.
+8. A corrupt line in the middle of the file is skipped on read rather than failing the whole read.
 
 **Green — minimal implementation:**
-1. `Entry` struct plus `Store` with an injectable base directory (tests use `t.TempDir()`).
+1. `Entry` struct plus `Store` with an injectable base directory (tests use `t.TempDir()`) and an
+   `Enabled bool` setting. The store reads `TALARIA_HISTORY` itself but must **not** import
+   `internal/config` — the profile key arrives as that bool from the caller.
 2. Append writes one JSON line; trimming rewrites the file atomically via temp file + rename,
    preserving `0600`.
 3. Build every entry from the redacted request/response representation — the store must not be
@@ -1004,7 +1013,7 @@ the twin's corpus are the same data. See the retention decision at the top of th
 
 ### Task 23: `talaria history` — list, show, replay
 
-**Depends on:** Tasks 19, 22
+**Depends on:** Tasks 13, 19, 22 (Task 13 supplies the profile `history.enabled` setting)
 
 **Test files:**
 - `cmd/talaria/history_test.go` (create) — filters, show, replay
@@ -1025,10 +1034,16 @@ the twin's corpus are the same data. See the retention decision at the top of th
    entry, leaving the original intact.
 6. `history replay` on a mutating operation still requires `--allow-mutations`.
 7. `history show` with an out-of-range index exits 2 stating the valid range.
+8. `history.enabled: false` in the selected profile suppresses recording: a successful `call`
+   writes no entry and creates no history file. This is the second half of the opt-out promised in
+   the retention decision at the top of this plan — Task 22 gave the store the `Enabled` setting,
+   and this task is the only place that reads the profile and can supply it.
 
 **Green — minimal implementation:**
 1. Read the store, apply filters, render through Task 2.
-2. Replay rebuilds a `Request` from the stored entry and re-runs the Task 17 executor —
+2. Construct the store with `Enabled` taken from the resolved profile config (Task 13), so
+   `internal/corpus` never imports `internal/config`.
+3. Replay rebuilds a `Request` from the stored entry and re-runs the Task 17 executor —
    credentials are re-resolved from the environment, never read back from history (they are not
    there to read).
 
