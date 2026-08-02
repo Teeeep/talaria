@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -238,6 +239,10 @@ func quoted(flag string, values []string) []string {
 // validator, the seeded generator, the history store and the redactors. Built
 // once so the per-operation loop only makes requests.
 type runner struct {
+	// ctx is the suite's cancellation source, carried here because a run is a
+	// loop of requests and a Ctrl-C partway through has to stop the one in
+	// flight, not just the ones not yet made.
+	ctx       context.Context
 	doc       *spec.Document
 	profile   *config.Profile
 	baseURL   string
@@ -294,6 +299,7 @@ func newRunner(
 	generator.Fixtures = fixtures
 
 	return &runner{
+		ctx:            cmd.Context(),
 		doc:            doc,
 		profile:        profile,
 		baseURL:        baseURL,
@@ -362,7 +368,7 @@ func (r *runner) execute(op operation.Operation) runResult {
 
 	warnQueryCredentials(r.stderr, r.warner, req)
 
-	resp, execErr := curl.ExecuteWith(req, r.opts)
+	resp, execErr := curl.ExecuteWith(r.ctx, req, r.opts)
 	// Recorded either way, as `call` records: a request that never completed is
 	// still something that was tried.
 	recordCall(r.stderr, r.store, corpus.SourceRun, req, resp, r.redactors)

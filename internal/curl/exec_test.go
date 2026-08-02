@@ -1,12 +1,15 @@
 package curl
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -74,7 +77,7 @@ func TestExecuteReturnsStatusBodyHeadersAndTiming(t *testing.T) {
 		io.WriteString(w, `{"id":1,"name":"rex"}`) //nolint:errcheck // Test server.
 	})
 
-	resp, err := Execute(getFrom(server.URL))
+	resp, err := Execute(t.Context(), getFrom(server.URL))
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -108,7 +111,7 @@ func TestExecuteKeepsBodyAndMetadataOnSeparateChannels(t *testing.T) {
 		io.WriteString(w, body) //nolint:errcheck // Test server.
 	})
 
-	resp, err := Execute(getFrom(server.URL))
+	resp, err := Execute(t.Context(), getFrom(server.URL))
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -147,7 +150,7 @@ func TestExecuteCompletesAHEADRequest(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		resp, err := Execute(req)
+		resp, err := Execute(t.Context(), req)
 		done <- outcome{resp, err}
 	}()
 
@@ -256,7 +259,7 @@ func TestExecuteWithGivesUpOnAServerThatNeverAnswers(t *testing.T) {
 	done := make(chan outcome, 1)
 	go func() {
 		start := time.Now()
-		_, err := ExecuteWith(req, opts)
+		_, err := ExecuteWith(t.Context(), req, opts)
 		done <- outcome{err, time.Since(start)}
 	}()
 
@@ -290,7 +293,7 @@ func TestExecuteReportsAConnectionFailureAsRequestFailed(t *testing.T) {
 	base := server.URL
 	server.Close()
 
-	_, err := Execute(getFrom(base))
+	_, err := Execute(t.Context(), getFrom(base))
 
 	cerr := requireCLIError(t, err)
 	if cerr.Code != clierr.CodeRequestFailed {
@@ -315,7 +318,7 @@ func TestExecuteTreatsHTTPErrorsAsSuccessfulObservations(t *testing.T) {
 				io.WriteString(w, `{"error":"nope"}`) //nolint:errcheck // Test server.
 			})
 
-			resp, err := Execute(getFrom(server.URL))
+			resp, err := Execute(t.Context(), getFrom(server.URL))
 			if err != nil {
 				t.Fatalf("Execute() error = %v, want nil for HTTP %d", err, status)
 			}
@@ -426,5 +429,140 @@ func TestRequestFailedRedactsCredentialsInCurlStderr(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "curl exited 60") {
 		t.Errorf("error = %q, want curl's exit status in it", err)
+	}
+}
+
+// waitFor blocks on signal until it fires or the test gives up, so a wiring
+// mistake fails with the description rather than hanging the package.
+func waitFor(t *testing.T, signal <-chan struct{}, within time.Duration, describe string) {
+	t.Helper()
+
+	select {
+	case <-signal:
+	case <-time.After(within):
+		t.Fatalf("timed out after %s waiting for %s", within, describe)
+	}
+}
+
+// assertNoTalariaTemp fails if talaria left any of its own temp files behind in
+// dir. It is the assertion behind the whole of Task 6: a call that ended early
+// must not leave the unredacted response, or a request body, on disk.
+func assertNoTalariaTemp(t *testing.T, dir string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", dir, err)
+	}
+
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), capturePrefix) || strings.HasPrefix(entry.Name(), bodyPrefix) {
+			t.Errorf("%s survived the call: the response or request body is still on disk", entry.Name())
+		}
+	}
+}
+
+func TestExecuteWithKillsCurlWhenTheContextIsCancelled(t *testing.T) {
+	requireCurl(t)
+
+	// Every temp file this call makes lands here and nowhere else, which is what
+	// makes "left nothing behind" assertable rather than approximate.
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+
+	started, dropped := make(chan struct{}, 1), make(chan struct{}, 1)
+	server := serve(t, func(_ http.ResponseWriter, r *http.Request) {
+		// Drained first: net/http only watches a connection for the peer going
+		// away once the handler has consumed the request body, so an unread body
+		// would leave the assertion below unable to observe anything at all.
+		io.Copy(io.Discard, r.Body) //nolint:errcheck // Test server.
+		started <- struct{}{}
+		select {
+		// The server sees curl's connection go away only if curl actually died.
+		// An orphaned curl reparented to init would hold this open and finish
+		// the request long after talaria returned, which is the bug.
+		case <-r.Context().Done():
+			dropped <- struct{}{}
+		case <-time.After(10 * time.Second):
+		}
+	})
+
+	req := getFrom(server.URL)
+	req.Method = http.MethodPost
+	// A NUL byte cannot be inlined into the config document, so this body takes
+	// the temp-file path — the second thing a killed talaria used to leave behind.
+	req.Body = &request.Body{ContentType: "application/octet-stream", Data: []byte{'a', 0, 'b'}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := ExecuteWith(ctx, req, Options{MaxTime: 30 * time.Second})
+		done <- err
+	}()
+
+	waitFor(t, started, 10*time.Second, "curl to reach the server")
+	cancel()
+
+	select {
+	case err := <-done:
+		cerr := requireCLIError(t, err)
+		if cerr.Code != clierr.CodeRequestFailed {
+			t.Errorf("Code = %d, want %d", cerr.Code, clierr.CodeRequestFailed)
+		}
+		// Distinct from the max-time message: a cancelled request is the caller's
+		// doing, and reporting it as a timeout would send an agent looking for a
+		// slow API that does not exist.
+		if !strings.Contains(cerr.Message, "cancel") {
+			t.Errorf("Message = %q, want it to say the request was cancelled", cerr.Message)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ExecuteWith() did not return after its context was cancelled")
+	}
+
+	waitFor(t, dropped, 10*time.Second, "the server to see curl go away")
+	assertNoTalariaTemp(t, tmp)
+}
+
+func TestSweepStaleRemovesOnlyTalariaTempFilesPastTheGrace(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+
+	aged := time.Now().Add(-2 * staleGrace)
+	stale := []string{capturePrefix + "old", bodyPrefix + "old"}
+	kept := []string{capturePrefix + "live", bodyPrefix + "live", "someone-elses-old"}
+
+	for _, name := range []string{capturePrefix + "old", capturePrefix + "live"} {
+		path := filepath.Join(tmp, name)
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatalf("staging %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "body"), []byte("secret"), 0o600); err != nil {
+			t.Fatalf("staging %s: %v", name, err)
+		}
+	}
+	for _, name := range []string{bodyPrefix + "old", bodyPrefix + "live", "someone-elses-old"} {
+		if err := os.WriteFile(filepath.Join(tmp, name), []byte("body"), 0o600); err != nil {
+			t.Fatalf("staging %s: %v", name, err)
+		}
+	}
+	for _, name := range []string{capturePrefix + "old", bodyPrefix + "old", "someone-elses-old"} {
+		if err := os.Chtimes(filepath.Join(tmp, name), aged, aged); err != nil {
+			t.Fatalf("ageing %s: %v", name, err)
+		}
+	}
+
+	SweepStale()
+
+	for _, name := range stale {
+		if _, err := os.Lstat(filepath.Join(tmp, name)); !os.IsNotExist(err) {
+			t.Errorf("%s survived the sweep, err = %v", name, err)
+		}
+	}
+	for _, name := range kept {
+		if _, err := os.Lstat(filepath.Join(tmp, name)); err != nil {
+			t.Errorf("%s was swept but should have been left alone: %v", name, err)
+		}
 	}
 }

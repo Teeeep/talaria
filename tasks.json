@@ -50,7 +50,7 @@
       "title": "Handle signals so a killed talaria does not orphan curl or leak the raw capture",
       "line_start": 237,
       "line_end": 274,
-      "done": false
+      "done": true
     },
     {
       "id": 7,

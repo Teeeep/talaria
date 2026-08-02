@@ -272,9 +272,9 @@ never runs, so the call is absent from history); and the capture directory survi
    `talaria-body-*` temp file.
 
 **Verify:** `go test ./internal/curl/... ./cmd/talaria/...`
-- [ ] Cancelling the context mid-call kills curl rather than orphaning it, and leaves no
+- [x] Cancelling the context mid-call kills curl rather than orphaning it, and leaves no
       `talaria-call-*` or `talaria-body-*` behind.
-- [ ] The un-signalled path is unchanged: `go test -race ./...` stays green.
+- [x] The un-signalled path is unchanged: `go test -race ./...` stays green.
 
 ---
 

@@ -68,6 +68,9 @@ talaria call getPet --param petId=42 --query verbose=true --header 'X-Trace: abc
 - Every request is bounded: 10s to connect, 30s in total, `--timeout <seconds>` to change the
   total. An API that stops answering exits 1 with curl's status 28 in the message — talaria
   never hangs waiting for one.
+- Interrupting talaria (Ctrl-C, SIGTERM) cancels the request in flight and exits 1 with a
+  message saying it was cancelled, not that it timed out. An interrupted mutation is one talaria
+  stopped sending; the attempt is still in history, with no response block.
 
 The response block carries status, headers, timing and body; a JSON body is embedded as JSON, so
 one parse gets you the fields. **An HTTP 4xx or 5xx exits 0** — it is a successful observation.

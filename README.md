@@ -324,6 +324,10 @@ Every request is bounded in time: 10 seconds to connect and 30 seconds in total 
 `--timeout <seconds>` to change the total. An API that stops answering becomes an exit 1 with
 curl's status 28 in the message rather than a process that hangs.
 
+Interrupting talaria — Ctrl-C, or a `kill` — stops the request rather than leaving it running.
+curl is killed along with talaria, the call exits 1 saying it was cancelled, the attempt is still
+recorded in history, and nothing of the response is left behind in your temp directory.
+
 ## Validating what came back
 
 Every executed call carries a `validation` block alongside the response:

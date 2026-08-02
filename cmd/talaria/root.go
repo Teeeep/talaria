@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"io"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Teeeep/talaria/internal/clierr"
+	"github.com/Teeeep/talaria/internal/curl"
 	"github.com/Teeeep/talaria/internal/output"
 	"github.com/Teeeep/talaria/internal/spec"
 )
@@ -144,13 +149,36 @@ func resolveFormat(cmd *cobra.Command) (output.Format, error) {
 // run executes the talaria command tree and returns the process exit code.
 // It deliberately does not call os.Exit — main is the only place that does —
 // so every exit code in the CLI is assertable in-process.
+//
+// The signal context is what makes a Ctrl-C or a `kill` orderly rather than
+// abrupt. Without it nothing catches the signal, the process dies where it
+// stands, and none of the deferred cleanup runs: curl is reparented to init and
+// finishes the request talaria was told to stop — a write that carries on after
+// the caller cancelled it — while the capture directory holding the raw,
+// unredacted response stays on disk.
 func run(args []string, stdout, stderr io.Writer) int {
+	// Anything a previous SIGKILL left behind goes first: that signal cannot be
+	// caught, so the sweep is the only cleanup those files will ever get.
+	curl.SweepStale()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	return runContext(ctx, args, stdout, stderr)
+}
+
+// runContext is run with the cancellation source given rather than taken from
+// the process's signals, so a test can cancel a call without signalling itself.
+//
+// The context reaches every command through cobra, which is how internal/curl
+// gets the one it kills the subprocess with.
+func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	root := newRootCmd()
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	root.SetArgs(args)
 
-	return exitCode(root.Execute(), stderr)
+	return exitCode(root.ExecuteContext(ctx), stderr)
 }
 
 // exitCode renders err as structured JSON on stderr and returns the code to

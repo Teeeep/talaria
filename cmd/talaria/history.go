@@ -206,7 +206,7 @@ func newHistoryReplayCmd() *cobra.Command {
 			renderer := output.New(format, cmd.OutOrStdout())
 			redactors := newRedactors(cfg)
 
-			resp, execErr := curl.Execute(req)
+			resp, execErr := curl.Execute(cmd.Context(), req)
 			recordCall(cmd.ErrOrStderr(), store, corpus.SourceReplay, req, resp, redactors)
 			if execErr != nil {
 				return execErr

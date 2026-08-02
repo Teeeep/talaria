@@ -170,7 +170,7 @@ func newCallCmd() *cobra.Command {
 				return renderer.Render(callPayload(req, nil, nil))
 			}
 
-			resp, execErr := curl.ExecuteWith(req, timeoutOptions(timeout))
+			resp, execErr := curl.ExecuteWith(cmd.Context(), req, timeoutOptions(timeout))
 			// Recorded either way. A request that never completed is still
 			// something that was tried, and the entry says so by having no
 			// response block at all.

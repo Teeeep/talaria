@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -8,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/Teeeep/talaria/internal/clierr"
+	"github.com/Teeeep/talaria/internal/spec"
 )
 
 // callResponseSecret is a credential-shaped value the *server* sends back. It
@@ -331,5 +335,34 @@ func TestCallReportsAnUnreachableServer(t *testing.T) {
 
 	if msg := decodeErr(t, stderr).Error.Message; !strings.Contains(msg, "curl exited") {
 		t.Errorf("error message %q does not report curl's exit status", msg)
+	}
+}
+
+func TestCallStopsWhenTheProcessIsCancelled(t *testing.T) {
+	t.Setenv(spec.EnvSpec, "")
+	t.Setenv("TALARIA_AUTH_BEARER", callCanary)
+
+	srv := newCallServer(t, jsonPet)
+
+	// Cancelled before the call rather than during it: the wiring under test is
+	// whether the process's cancellation reaches curl at all, and a context that
+	// is already done makes that question deterministic.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var stdout, stderr strings.Builder
+	code := runContext(ctx, []string{
+		"call", "testdata/call.yaml", "getPet", "--param", "petId=42",
+		"--base-url", srv.URL, "--output", "json",
+	}, &stdout, &stderr)
+
+	if code != int(clierr.CodeRequestFailed) {
+		t.Fatalf("call = %d, want %d; stderr: %s", code, clierr.CodeRequestFailed, stderr.String())
+	}
+	if msg := decodeErr(t, stderr.String()).Error.Message; !strings.Contains(msg, "cancel") {
+		t.Errorf("error message = %q, want it to say the request was cancelled", msg)
+	}
+	if rec := srv.received(); rec.Path != "" {
+		t.Errorf("server saw %s %s, want a cancelled call to have sent nothing", rec.Method, rec.Path)
 	}
 }
