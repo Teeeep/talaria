@@ -1247,6 +1247,27 @@ of request chaining without the scenario DSL" (§8).
 output surface… Redaction regressions fail the build. **This suite is Phase 2 work and gates
 every release thereafter.**" Assertion 5 is what keeps it honest as the tool grows.
 
+**As built (deviations from the sketch above):**
+- *Subprocess, not in-process.* The command tree lives in `package main` and cannot be
+  imported, so `TestMain` builds the binary once and each case runs it with an isolated
+  `HOME`/`XDG_*`. This also greps every byte the process emits rather than only what a test's
+  writers would see. Because the dependency on the rest of the tree is then invisible to
+  `go test`, `readSources` reads every `.go` file in the module so the test cache cannot
+  replay a stale pass — a gate that can go stale is not a gate.
+- *Assertion 3 found a real leak, and it needed implementation.* A literal under a
+  credential-shaped name (`--header X-Api-Key: …`, a profile header, a bound parameter)
+  printed verbatim in `request.headers` and in the emitted curl. Fixed structurally, the way
+  §5a's architecture consequence asks: `request.Value` gained `Sensitive()`/`Reveal()`,
+  `request.Build` marks such literals via the built-in `secret.Redactor` list, and
+  `internal/curl`'s `resolve` is the only caller of `Reveal`. Every display surface —
+  present and future — inherits it.
+- *Assertion 4 documents a narrower boundary than the plan assumed.* `access_token`,
+  `refresh_token` and `id_token` in a response body are already redacted by default, so the
+  uncovered threat is a secret under an API-specific name (`data.session`); the test pins
+  both halves.
+- *Response validation has no error-path case* — it does not exist until tasks 26–27. Whoever
+  adds `--fail-on-error` adds the case; a comment in the test says so.
+
 ---
 
 ### Task 25: `AGENT.md` v1

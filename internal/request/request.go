@@ -44,6 +44,9 @@ type Value struct {
 	literal string
 	ref     secret.SecretRef
 	enc     Encoding
+	// sensitive hides a literal from every display form. A referenced
+	// credential needs no such flag: it has no value to hide.
+	sensitive bool
 }
 
 // Literal returns a Value holding text the user supplied directly.
@@ -52,8 +55,28 @@ func Literal(s string) Value { return Value{literal: s} }
 // Secret returns a Value naming a credential, encoded per enc.
 func Secret(ref secret.SecretRef, enc Encoding) Value { return Value{ref: ref, enc: enc} }
 
+// Sensitive returns a copy of v that displays as `<redacted>` everywhere a
+// Value is displayed, while still going on the wire unchanged.
+//
+// It is what a literal sitting under a credential-shaped name becomes: a token
+// the user typed into `--header Authorization: …` is as sensitive as one
+// talaria resolved itself (§5a's built-in list, which "applies to pretty output
+// too"). Marking the Value rather than scrubbing each renderer is the point —
+// §5a's architecture consequence is that a surface has to *ask* for a secret to
+// leak one, and there is no way to ask a Value for a hidden literal except
+// Reveal.
+func (v Value) Sensitive() Value {
+	v.sensitive = true
+
+	return v
+}
+
 // IsSecret reports whether this value names a credential.
 func (v Value) IsSecret() bool { return !v.ref.IsZero() }
+
+// IsSensitive reports whether this value is hidden from display: every secret
+// is, and so is a literal marked by Sensitive.
+func (v Value) IsSensitive() bool { return v.sensitive || v.IsSecret() }
 
 // Ref returns the credential this value names, or the zero SecretRef for a
 // literal. The ref is safe to print: it holds a name, not a value.
@@ -68,10 +91,29 @@ func (v Value) Encoding() Encoding { return v.enc }
 // history show, and it is safe under every printf verb because SecretRef is.
 func (v Value) String() string {
 	if !v.IsSecret() {
+		if v.sensitive {
+			return secret.Placeholder
+		}
+
 		return v.literal
 	}
 
 	return v.Prefix() + v.ref.String()
+}
+
+// Reveal returns the literal text this value carries, hidden or not. It exists
+// for the one renderer that builds curl's config document: a sensitive literal
+// still has to go on the wire, and String no longer returns it.
+//
+// For a value naming a credential it returns the redacted display form.
+// Reading a real credential is SecretRef.Resolve, in internal/curl at exec
+// time, and this is not that.
+func (v Value) Reveal() string {
+	if v.IsSecret() {
+		return v.String()
+	}
+
+	return v.literal
 }
 
 // GoString keeps %#v — the verb reached for when debugging, i.e. exactly when a

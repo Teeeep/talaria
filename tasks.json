@@ -39,7 +39,7 @@
     {
       "id": 5,
       "section": "5",
-      "title": "Swagger 2.0 → OpenAPI 3.x conversion at load time",
+      "title": "Swagger 2.0 \u2192 OpenAPI 3.x conversion at load time",
       "line_start": 321,
       "line_end": 371,
       "done": true
@@ -95,7 +95,7 @@
     {
       "id": 12,
       "section": "12",
-      "title": "`internal/secret` — SecretRef and redaction",
+      "title": "`internal/secret` \u2014 SecretRef and redaction",
       "line_start": 616,
       "line_end": 676,
       "done": true
@@ -103,7 +103,7 @@
     {
       "id": 13,
       "section": "13",
-      "title": "`internal/config` — profiles and env-var auth mapping",
+      "title": "`internal/config` \u2014 profiles and env-var auth mapping",
       "line_start": 677,
       "line_end": 751,
       "done": true
@@ -151,7 +151,7 @@
     {
       "id": 19,
       "section": "19",
-      "title": "`talaria call` — real execution",
+      "title": "`talaria call` \u2014 real execution",
       "line_start": 1023,
       "line_end": 1055,
       "done": true
@@ -175,7 +175,7 @@
     {
       "id": 22,
       "section": "22",
-      "title": "`internal/corpus` — the history store",
+      "title": "`internal/corpus` \u2014 the history store",
       "line_start": 1122,
       "line_end": 1166,
       "done": true
@@ -183,7 +183,7 @@
     {
       "id": 23,
       "section": "23",
-      "title": "`talaria history` — list, show, replay",
+      "title": "`talaria history` \u2014 list, show, replay",
       "line_start": 1167,
       "line_end": 1210,
       "done": true
@@ -193,79 +193,79 @@
       "section": "24",
       "title": "The canary-secret leak suite",
       "line_start": 1211,
-      "line_end": 1251,
-      "done": false
+      "line_end": 1272,
+      "done": true
     },
     {
       "id": 25,
       "section": "25",
       "title": "`AGENT.md` v1",
-      "line_start": 1252,
-      "line_end": 1283,
+      "line_start": 1273,
+      "line_end": 1304,
       "done": false
     },
     {
       "id": 26,
       "section": "26",
-      "title": "`internal/validate` — response validation",
-      "line_start": 1284,
-      "line_end": 1333,
+      "title": "`internal/validate` \u2014 response validation",
+      "line_start": 1305,
+      "line_end": 1354,
       "done": false
     },
     {
       "id": 27,
       "section": "27",
       "title": "`call` validation block and `--fail-on-error`",
-      "line_start": 1334,
-      "line_end": 1361,
+      "line_start": 1355,
+      "line_end": 1382,
       "done": false
     },
     {
       "id": 28,
       "section": "28",
-      "title": "`internal/gen` — schema-based data generation",
-      "line_start": 1362,
-      "line_end": 1397,
+      "title": "`internal/gen` \u2014 schema-based data generation",
+      "line_start": 1383,
+      "line_end": 1418,
       "done": false
     },
     {
       "id": 29,
       "section": "29",
       "title": "Fixtures and the test-data priority chain",
-      "line_start": 1398,
-      "line_end": 1429,
+      "line_start": 1419,
+      "line_end": 1450,
       "done": false
     },
     {
       "id": 30,
       "section": "30",
-      "title": "`talaria run` — smoke testing",
-      "line_start": 1430,
-      "line_end": 1482,
+      "title": "`talaria run` \u2014 smoke testing",
+      "line_start": 1451,
+      "line_end": 1503,
       "done": false
     },
     {
       "id": 31,
       "section": "31",
       "title": "JUnit report output",
-      "line_start": 1483,
-      "line_end": 1514,
+      "line_start": 1504,
+      "line_end": 1535,
       "done": false
     },
     {
       "id": 32,
       "section": "32",
       "title": "End-to-end integration across the whole loop",
-      "line_start": 1515,
-      "line_end": 1563,
+      "line_start": 1536,
+      "line_end": 1584,
       "done": false
     },
     {
       "id": 33,
       "section": "33",
       "title": "CI workflow running the test suite",
-      "line_start": 1564,
-      "line_end": 1605,
+      "line_start": 1585,
+      "line_end": 1626,
       "done": false
     }
   ]

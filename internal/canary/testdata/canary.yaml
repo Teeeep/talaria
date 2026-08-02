@@ -1,0 +1,108 @@
+openapi: 3.0.3
+info:
+  title: Canary Fixture
+  version: 1.0.0
+servers:
+  # Unroutable on purpose: every case that means to reach a server passes
+  # --base-url, so anything that hits the network here is a bug in the test.
+  - url: https://api.invalid/v1
+components:
+  securitySchemes:
+    # One scheme per auth mechanism talaria supports, so the leak suite can
+    # drive each of them in isolation and name the one that leaked.
+    bearerAuth:
+      type: http
+      scheme: bearer
+    basicAuth:
+      type: http
+      scheme: basic
+    headerKey:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+    queryKey:
+      type: apiKey
+      in: query
+      name: api_key
+    cookieKey:
+      type: apiKey
+      in: cookie
+      name: session_key
+paths:
+  /bearer:
+    get:
+      operationId: getBearer
+      summary: Authenticates with a bearer token
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+  /basic:
+    get:
+      operationId: getBasic
+      summary: Authenticates with HTTP basic
+      security:
+        - basicAuth: []
+      responses:
+        "200":
+          description: OK
+  /header-key:
+    get:
+      operationId: getHeaderKey
+      summary: Authenticates with an API key in a header
+      security:
+        - headerKey: []
+      responses:
+        "200":
+          description: OK
+  /query-key:
+    get:
+      operationId: getQueryKey
+      summary: Authenticates with an API key in the query string
+      security:
+        - queryKey: []
+      responses:
+        "200":
+          description: OK
+  /cookie-key:
+    get:
+      operationId: getCookieKey
+      summary: Authenticates with an API key in a cookie
+      security:
+        - cookieKey: []
+      responses:
+        "200":
+          description: OK
+  /public:
+    get:
+      operationId: getPublic
+      summary: Needs no credential
+      security: []
+      responses:
+        "200":
+          description: OK
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      summary: Has a required path parameter, for the binding-error path
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /things:
+    post:
+      operationId: createThing
+      summary: A mutation, for the gating-error path
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Created

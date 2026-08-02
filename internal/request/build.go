@@ -9,6 +9,7 @@ import (
 	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/config"
 	"github.com/Teeeep/talaria/internal/operation"
+	"github.com/Teeeep/talaria/internal/secret"
 	"github.com/Teeeep/talaria/internal/spec"
 )
 
@@ -73,8 +74,8 @@ func Build(in Inputs) (*Request, error) {
 	req.Path = b.path(bound)
 
 	req.Query = append(b.located(bound, inQuery), b.pairs(in.Query, "--query")...)
-	req.Headers = b.headers(bound)
-	req.Cookies = b.located(bound, inCookie)
+	req.Headers = hide(b.headers(bound))
+	req.Cookies = hide(b.located(bound, inCookie))
 	// After the headers, because the body's content type defers to a
 	// Content-Type the user set; before the credentials, which never set one.
 	req.Body = b.body(req)
@@ -270,6 +271,30 @@ func (b *binder) headers(bound map[string]string) []Pair {
 	}
 
 	return out
+}
+
+// hide marks every literal sitting under a credential-shaped name — the §5a
+// built-in list: Authorization, Cookie, Proxy-Authorization, *api*key*, *token*,
+// *secret* — as sensitive, so it renders `<redacted>` on every surface that
+// displays a Value while still going on the wire.
+//
+// The name is all there is to go on. talaria cannot tell a token the user typed
+// into --header from an ordinary string by looking at the string, and §5a's
+// answer is that it does not have to: the name decides, whether the value came
+// from a spec's security scheme, a profile, a bound parameter or the flag.
+func hide(pairs []Pair) []Pair {
+	// A nil *Redactor is the built-in list, which is the whole point here: the
+	// user-extensible patterns are a display concern the config file adds
+	// downstream, and this floor is not configurable.
+	var builtin *secret.Redactor
+
+	for i, p := range pairs {
+		if !p.Value.IsSecret() && builtin.IsSensitive(p.Name) {
+			pairs[i].Value = p.Value.Sensitive()
+		}
+	}
+
+	return pairs
 }
 
 // pairs parses repeatable name=value flags. Only the first = separates, because

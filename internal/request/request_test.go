@@ -456,6 +456,59 @@ func TestValueRendersLiteralsUnchanged(t *testing.T) {
 	}
 }
 
+func TestValueHidesASensitiveLiteralFromEveryDisplayForm(t *testing.T) {
+	v := Literal(canary).Sensitive()
+
+	for name, rendering := range map[string]string{
+		"String":   v.String(),
+		"Symbolic": v.Symbolic(),
+		"GoString": v.GoString(),
+		"%#v":      fmt.Sprintf("%#v", v),
+	} {
+		if strings.Contains(rendering, canary) {
+			t.Errorf("%s() = %q, want the value hidden", name, rendering)
+		}
+	}
+
+	// Hidden from display, not from the request: Reveal is what the config
+	// document is built from, and it is the only way back to the value.
+	if got := v.Reveal(); got != canary {
+		t.Errorf("Reveal() = %q, want the literal back", got)
+	}
+	if !v.IsSensitive() || v.IsSecret() {
+		t.Errorf("IsSensitive() = %v, IsSecret() = %v; want a sensitive literal, not a ref",
+			v.IsSensitive(), v.IsSecret())
+	}
+}
+
+func TestBuildHidesALiteralUnderACredentialShapedHeaderName(t *testing.T) {
+	in := inputs(t, "listPets")
+	in.Params = []string{"limit=10"}
+	in.Headers = []string{
+		"X-Api-Key=" + canary,
+		"Authorization=Bearer " + canary,
+		"X-Request-Id=trace-42",
+	}
+
+	req := build(t, in)
+
+	for _, name := range []string{"X-Api-Key", "Authorization"} {
+		value := find(t, req.Headers, name)
+		if got := value.String(); strings.Contains(got, canary) {
+			t.Errorf("header %s displays as %q; a literal under a credential-shaped name is redacted", name, got)
+		}
+		if !strings.Contains(value.Reveal(), canary) {
+			t.Errorf("header %s no longer carries the value it will send: %q", name, value.Reveal())
+		}
+	}
+
+	// Redaction is by name, so an ordinary header is left alone: a request whose
+	// every header read <redacted> would tell an agent nothing.
+	if got := find(t, req.Headers, "X-Request-Id").String(); got != "trace-42" {
+		t.Errorf("header X-Request-Id = %q, want trace-42", got)
+	}
+}
+
 func equal(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

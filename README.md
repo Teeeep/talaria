@@ -267,6 +267,12 @@ in the query string is symbolic there too; a `basic` scheme renders as curl's `-
 `<redacted:env:NAME>` — that field is read, not run. The real value goes on the wire and
 appears in no output surface at all.
 
+A credential you supply yourself is treated the same way. `--header "X-Api-Key: sk-live-…"`,
+a header from a profile, or a bound parameter whose name matches the redaction list all
+display as `<redacted>` in the request block *and* in the emitted curl, while still being sent
+verbatim. The name decides, not where the value came from — so the emitted command for a
+literal credential is deliberately not copy-pasteable, and there is no flag that makes it so.
+
 Alongside it, `response` carries the status, headers, timing and body; a JSON body is embedded
 as JSON rather than as a quoted string, so an agent parses the envelope once instead of twice.
 Pretty output prints the request line, the curl, and `200 OK in 143ms` — response headers stay
@@ -393,6 +399,13 @@ go build -ldflags "-X main.version=v0.1.0" -o talaria ./cmd/talaria
 ```
 
 Run the tests with `go test ./...`.
+
+`internal/canary` is the leak suite: it builds the binary, drives every auth mechanism —
+bearer, basic, and an API key in a header, a query parameter and a cookie — through every
+command and every output format, and greps every byte talaria emits or writes for the injected
+secret, raw, percent-encoded and base64. It is the check that gates a release, so a failure
+there is a redaction regression, not a flaky test. Run it alone with
+`go test ./internal/canary/...`.
 
 ## The name
 

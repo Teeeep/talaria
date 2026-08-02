@@ -262,7 +262,10 @@ func (d *document) cleanupWith(config []byte) func() {
 // feed the config document.
 func resolve(v request.Value) (string, error) {
 	if !v.IsSecret() {
-		return v.String(), nil
+		// Reveal rather than String: a literal the user typed under a
+		// credential-shaped name displays redacted everywhere else, and the
+		// wire is the one place it must not.
+		return v.Reveal(), nil
 	}
 
 	value, err := v.Ref().Resolve()
