@@ -1,7 +1,12 @@
 package main
 
 import (
+	"io"
+
 	"github.com/spf13/cobra"
+
+	"github.com/Teeeep/talaria/internal/clierr"
+	"github.com/Teeeep/talaria/internal/output"
 )
 
 // version is the binary's version string. It defaults to "dev" and is
@@ -32,7 +37,60 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().String("output", "",
 		"output format: json|pretty|tsv (default: pretty on a terminal, json when piped)")
 
+	// A bad flag is a bad invocation, not a failed request; without this it
+	// would reach the translator as a bare error and exit 1.
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return clierr.Usage("%s", err)
+	})
+
+	// Validated once for the whole tree, so an unusable --output fails before a
+	// command does any work — including on commands that ignore the format.
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		_, err := resolveFormat(cmd)
+		return err
+	}
+
 	root.AddCommand(newVersionCmd())
 
 	return root
+}
+
+// resolveFormat resolves --output for cmd against the TTY-ness of its stdout.
+// internal/output deliberately returns a bare error; it becomes a usage error
+// here, where the exit-code contract lives, carrying the valid values so an
+// agent can correct itself without reading the help text.
+func resolveFormat(cmd *cobra.Command) (output.Format, error) {
+	explicit, err := cmd.Flags().GetString("output")
+	if err != nil {
+		return "", clierr.Usage("%w", err)
+	}
+
+	format, err := output.Resolve(explicit, output.IsTTY(cmd.OutOrStdout()))
+	if err != nil {
+		return "", clierr.Usage("%w", err).WithAlternatives(output.Formats()...)
+	}
+	return format, nil
+}
+
+// run executes the talaria command tree and returns the process exit code.
+// It deliberately does not call os.Exit — main is the only place that does —
+// so every exit code in the CLI is assertable in-process.
+func run(args []string, stdout, stderr io.Writer) int {
+	root := newRootCmd()
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	root.SetArgs(args)
+
+	return exitCode(root.Execute(), stderr)
+}
+
+// exitCode renders err as structured JSON on stderr and returns the code to
+// exit with. An error that was never classified is a request failure (1).
+func exitCode(err error, stderr io.Writer) int {
+	if err == nil {
+		return int(clierr.CodeOK)
+	}
+
+	clierr.Render(stderr, err)
+	return int(clierr.From(err).Code)
 }

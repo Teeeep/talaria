@@ -1,0 +1,97 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/Teeeep/talaria/internal/clierr"
+)
+
+func TestExitCodeTranslatesErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"nil", nil, 0},
+		{"usage", clierr.Usage("unknown operation"), 2},
+		{"spec load", clierr.SpecLoad("parse error"), 3},
+		{"wrapped spec load", fmt.Errorf("context: %w", clierr.SpecLoad("parse error")), 3},
+		{"unrecognised", errors.New("something else went wrong"), 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stderr strings.Builder
+
+			if got := exitCode(tt.err, &stderr); got != tt.want {
+				t.Errorf("exitCode = %d, want %d", got, tt.want)
+			}
+
+			if tt.err == nil && stderr.Len() != 0 {
+				t.Errorf("a nil error wrote %q to stderr, want nothing", stderr.String())
+			}
+			if tt.err != nil && stderr.Len() == 0 {
+				t.Error("a non-nil error wrote nothing to stderr, want structured JSON")
+			}
+		})
+	}
+}
+
+func TestRunReturnsZeroOnSuccess(t *testing.T) {
+	var stdout, stderr strings.Builder
+
+	if got := run([]string{"version"}, &stdout, &stderr); got != 0 {
+		t.Errorf("run(version) = %d, want 0; stderr: %s", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "talaria") {
+		t.Errorf("run(version) stdout = %q, want the version line", stdout.String())
+	}
+}
+
+func TestRunRejectsAnUnknownOutputFormat(t *testing.T) {
+	// The other half of the internal/output parse-error assertion: the bare error
+	// that ParseFormat returns has to arrive here as a usage error, exit code 2,
+	// listing every valid value on stderr.
+	var stdout, stderr strings.Builder
+
+	if got := run([]string{"version", "--output", "xml"}, &stdout, &stderr); got != 2 {
+		t.Fatalf("run(--output xml) = %d, want 2; stderr: %s", got, stderr.String())
+	}
+
+	var payload struct {
+		Schema string `json:"schema"`
+		Error  struct {
+			Code         int      `json:"code"`
+			Message      string   `json:"message"`
+			Alternatives []string `json:"valid_alternatives"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(stderr.String()), &payload); err != nil {
+		t.Fatalf("stderr is not valid JSON: %v\ngot: %s", err, stderr.String())
+	}
+
+	if payload.Schema != "talaria/v1" {
+		t.Errorf("schema = %q, want talaria/v1", payload.Schema)
+	}
+	if payload.Error.Code != 2 {
+		t.Errorf("error.code = %d, want 2", payload.Error.Code)
+	}
+	if !strings.Contains(payload.Error.Message, "xml") {
+		t.Errorf("error.message = %q, want it to name the rejected value", payload.Error.Message)
+	}
+	if got := strings.Join(payload.Error.Alternatives, ","); got != "json,pretty,tsv" {
+		t.Errorf("error.valid_alternatives = %v, want [json pretty tsv]", payload.Error.Alternatives)
+	}
+}
+
+func TestRunTreatsAnUnknownFlagAsAUsageError(t *testing.T) {
+	var stdout, stderr strings.Builder
+
+	if got := run([]string{"version", "--nope"}, &stdout, &stderr); got != 2 {
+		t.Errorf("run(--nope) = %d, want 2; stderr: %s", got, stderr.String())
+	}
+}

@@ -44,6 +44,26 @@ prompts keep working; it only changes on a breaking change to the output shape. 
 deterministic — the same result renders byte-identically every time. `tsv` prints bare
 tab-separated rows with no header line, for `cut` and `awk`.
 
+## Errors and exit codes
+
+Failures go to stderr as a single line of JSON in the same versioned envelope, saying what
+failed, why, and — where there is a fixed set of right answers — what would have been valid:
+
+```json
+{"schema":"talaria/v1","error":{"code":2,"message":"unknown output format \"xml\": valid values are json, pretty, tsv","valid_alternatives":["json","pretty","tsv"]}}
+```
+
+Exit codes are deterministic, so agents can branch on them:
+
+| Code | Meaning |
+|---|---|
+| 0 | Success. An HTTP 4xx/5xx is still a successful *observation* for `call`; use `--fail-on-error` to change that |
+| 1 | The request could not be completed (network, curl failure) |
+| 2 | Usage error — unknown operation, missing required parameter, bad flag value |
+| 3 | Spec parse/load error |
+| 4 | Validation failure: the response violates the spec (only with `--fail-on-error` or `run`) |
+| 5 | A required security scheme has no credential — distinct from a usage error so an agent can ask a human to set `$NAME` |
+
 ## Building
 
 Requires Go 1.26+ and curl 7.70+ (curl is the execution engine; `--write-out '%{json}'` is

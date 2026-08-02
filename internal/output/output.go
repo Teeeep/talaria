@@ -27,6 +27,17 @@ const (
 // formats lists every valid Format in the order shown to users.
 var formats = []Format{FormatJSON, FormatPretty, FormatTSV}
 
+// Formats returns every valid --output value, in the order shown to users.
+// Callers rendering a structured usage error need the list as data, not as
+// prose inside ParseFormat's message. The returned slice is a copy.
+func Formats() []string {
+	valid := make([]string, len(formats))
+	for i, f := range formats {
+		valid[i] = string(f)
+	}
+	return valid
+}
+
 // ParseFormat converts a --output value into a Format. The error names every
 // valid value so an agent can correct itself without reading the help text.
 func ParseFormat(s string) (Format, error) {
@@ -36,11 +47,7 @@ func ParseFormat(s string) (Format, error) {
 		}
 	}
 
-	valid := make([]string, len(formats))
-	for i, f := range formats {
-		valid[i] = string(f)
-	}
-	return "", fmt.Errorf("unknown output format %q: valid values are %s", s, strings.Join(valid, ", "))
+	return "", fmt.Errorf("unknown output format %q: valid values are %s", s, strings.Join(Formats(), ", "))
 }
 
 // Resolve picks the output format. An explicit --output value always wins; with

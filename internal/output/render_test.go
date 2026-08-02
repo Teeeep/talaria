@@ -159,6 +159,21 @@ func TestParseFormatRejectsUnknownValueAndNamesValidOnes(t *testing.T) {
 	}
 }
 
+func TestFormatsListsEveryValidValue(t *testing.T) {
+	// Callers rendering a usage error need the valid values as data, not prose
+	// dug out of ParseFormat's message.
+	if got := strings.Join(Formats(), ","); got != "json,pretty,tsv" {
+		t.Errorf("Formats() = %v, want [json pretty tsv]", Formats())
+	}
+
+	// The slice must be a copy; a caller sorting or truncating it must not
+	// corrupt the package's own list.
+	Formats()[0] = "mutated"
+	if got := Formats()[0]; got != "json" {
+		t.Errorf("Formats() returned an aliased slice: first value is now %q", got)
+	}
+}
+
 func TestResolveDefaultsOnTTY(t *testing.T) {
 	tests := []struct {
 		name     string
