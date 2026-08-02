@@ -366,7 +366,10 @@ Entries are written **redacted, at write time**. The store is the highest-risk a
 produces, so un-redacted recording is not an option and there is no flag for it. It lives at
 `$XDG_STATE_HOME/talaria/history.jsonl` (falling back to `~/.local/state/talaria/`), directory
 `0700` and file `0600`, one JSON entry per line, keeping the most recent 1000 entries *per
-source* and truncating bodies at 64 KiB with an explicit `"truncated": true`.
+source* and truncating bodies at 64 KiB with an explicit `"truncated": true`. Concurrent
+talaria processes can share one history file: each append takes an exclusive advisory lock on
+a sibling `history.jsonl.lock` for the whole of the write and the retention trim, so an entry
+talaria reported as recorded is one you will find in the file.
 
 Recording is off for a profile that says so, and off everywhere when the environment says so:
 

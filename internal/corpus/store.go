@@ -20,6 +20,9 @@ const EnvHistory = "TALARIA_HISTORY"
 const (
 	// fileName is the store, one JSON entry per line, under the state directory.
 	fileName = "history.jsonl"
+	// lockSuffix names the sibling file appends hold their advisory lock on. It
+	// is a separate file so the lock outlives trim's rename of the store.
+	lockSuffix = ".lock"
 	// maxPerSource is the retention cap, applied per Source rather than over the
 	// whole file: a single `run` over a large spec would otherwise evict every
 	// interactive call a session had made.
@@ -80,8 +83,14 @@ func (s *Store) Recording() bool {
 
 // Append records one entry and applies the retention cap.
 //
-// With recording off it does nothing at all — no file, no directory. An opt-out
-// that still left a history file behind would not be one.
+// The write and the trim are one critical section. Trim rewrites the whole file
+// from a snapshot it read, so an entry appended between that read and the
+// rename would be dropped silently — Append had already returned nil for it, so
+// nothing would ever report it missing. Holding the lock across both is what
+// makes a nil return mean the entry is in the store.
+//
+// With recording off it does nothing at all — no file, no directory, no lock.
+// An opt-out that still left a history file behind would not be one.
 func (s *Store) Append(e Entry) error {
 	if !s.Recording() {
 		return nil
@@ -96,6 +105,12 @@ func (s *Store) Append(e Entry) error {
 	if err != nil {
 		return fmt.Errorf("cannot encode the history entry: %w", err)
 	}
+
+	unlock, err := lock(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	if err := write(path, append(line, '\n')); err != nil {
 		return err

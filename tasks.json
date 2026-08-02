@@ -42,7 +42,7 @@
       "title": "Serialise history appends so trim cannot destroy entries",
       "line_start": 197,
       "line_end": 227,
-      "done": false
+      "done": true
     },
     {
       "id": 6,

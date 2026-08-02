@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -281,6 +282,76 @@ func TestAppendTrimsOldestFirst(t *testing.T) {
 	}
 	if want := "https://api.example.com/pets/" + strconv.Itoa(maxPerSource+1); entries[len(entries)-1].URL != want {
 		t.Errorf("newest entry = %q, want %q", entries[len(entries)-1].URL, want)
+	}
+}
+
+func TestConcurrentAppendsKeepEveryEntryTheyAcknowledged(t *testing.T) {
+	store, _ := newStore(t)
+
+	// Seed to one below the cap so every concurrent append crosses it and takes
+	// the rewrite path. Below the cap trim returns early, so a test that stayed
+	// under it would exercise nothing.
+	for i := 0; i < maxPerSource-1; i++ {
+		entry := Entry{Source: SourceRun, Method: "GET", URL: "https://api.example.com/seed/" + strconv.Itoa(i)}
+		if err := store.Append(entry); err != nil {
+			t.Fatalf("seeding entry %d: %v", i, err)
+		}
+	}
+
+	const (
+		writers = 8
+		each    = 10
+	)
+
+	// Every Append opens its own descriptor, so these goroutines contend exactly
+	// as two talaria processes sharing a history file do.
+	var (
+		mu       sync.Mutex
+		recorded []string
+		wg       sync.WaitGroup
+	)
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+
+			for i := 0; i < each; i++ {
+				url := "https://api.example.com/pets/" + strconv.Itoa(w) + "-" + strconv.Itoa(i)
+				if err := store.Append(Entry{Source: SourceRun, Method: "GET", URL: url}); err != nil {
+					return
+				}
+				// Only entries Append reported as written are claimed: a returned
+				// error is the caller's cue to warn, and this test is about the
+				// entries it promised were recorded.
+				mu.Lock()
+				recorded = append(recorded, url)
+				mu.Unlock()
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	if len(recorded) != writers*each {
+		t.Fatalf("Append acknowledged %d entries, want %d", len(recorded), writers*each)
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	present := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		present[e.URL] = true
+	}
+	missing := 0
+	for _, url := range recorded {
+		if !present[url] {
+			missing++
+		}
+	}
+	if missing != 0 {
+		t.Errorf("Append returned nil for %d of %d entries that are not in the store", missing, len(recorded))
 	}
 }
 
