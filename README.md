@@ -4,8 +4,8 @@
 your credentials.*
 
 > **Status: early implementation.** `talaria version`, `talaria list`, `talaria describe`,
-> `talaria search`, `talaria uses` and `talaria call` work so far; the rest of the
-> command tree is scaffolded.
+> `talaria search`, `talaria uses`, `talaria call` and `talaria auth check` work so far;
+> the rest of the command tree is scaffolded.
 > The [design document](docs/design/DESIGN.md) is the source of truth.
 
 Every API client — Postman, Insomnia, Bruno, curl itself — assumes the operator is a human who
@@ -206,9 +206,32 @@ on top of the built-in `access_token`, `refresh_token` and `id_token`. `call` re
 whether or not you passed `--profile`, because a security setting that only takes effect when
 you happen to be using a profile is one that silently does not.
 
-Presence is checked without reading the value, which is what `talaria auth check` will report
-when it lands: which schemes have a credential, and which variable to set for the ones that do
-not.
+## Checking credentials without seeing them
+
+```sh
+talaria auth check ./openapi.yaml
+talaria auth check ./openapi.yaml --profile staging --output json
+```
+
+`auth check` answers the one question an agent must be able to ask about credentials: is one
+there? It reports every security scheme the spec declares, the variable it comes from, and
+whether that variable is set — never what it is set to.
+
+```json
+{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","present":true}
+```
+
+The source follows the same resolution `call` uses, so `--profile staging` reports the
+profile's variable (`env:STAGING_TOKEN`) rather than the convention's. Presence is tested with
+a lookup; the value is never read.
+
+It exits **5** when an operation in the spec has no credential to authenticate it with, naming
+each scheme and the variable to export. Exit 5 is distinct from a usage error on purpose: it is
+the one failure whose fix is "ask a human to set `$NAME`" rather than "correct the invocation".
+An operation that accepts several alternatives is satisfied by any one of them, and schemes
+talaria cannot supply at all (OAuth2, OpenID Connect) are left out rather than reported missing.
+The report is printed either way — a code 5 with nothing to read would say what failed but not
+what to do.
 
 ## Making a call
 

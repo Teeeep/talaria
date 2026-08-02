@@ -2,6 +2,7 @@ package config
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 
 	v3high "github.com/pb33f/libopenapi/datamodel/high/v3"
@@ -101,9 +102,42 @@ func Resolve(op operation.Operation, doc *spec.Document, prof *Profile) ([]Crede
 		operationName(op), strings.Join(unsupported, "; "))
 }
 
+// Schemes lists every security scheme the document declares that talaria can
+// satisfy, as the credential that would satisfy it, sorted by scheme name.
+//
+// Resolve answers "which credentials does this call use". This answers "which
+// credentials does this spec ask for at all", which is the question `auth
+// check` reports on. Schemes talaria has no way to supply — OAuth2, OpenID
+// Connect, an API key in a place a request does not have — are left out: there
+// is no variable to tell a human to set, so there is nothing to report (§5).
+func Schemes(doc *spec.Document, prof *Profile) ([]Credential, error) {
+	declared := securitySchemes(doc)
+
+	names := make([]string, 0, len(declared))
+	for name, scheme := range declared {
+		if schemeReason(name, scheme) == "" {
+			names = append(names, name)
+		}
+	}
+	// Sorted, because the map iteration behind it is not, and a report whose
+	// line order changes between runs is one no diff can be taken of.
+	sort.Strings(names)
+
+	out := make([]Credential, 0, len(names))
+	for _, name := range names {
+		cred, err := credentialFor(name, declared[name], prof)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, cred)
+	}
+
+	return out, nil
+}
+
 // unsupportedReason returns why this requirement cannot be satisfied, or "" if
-// it can. v1 covers bearer, basic and API keys; OAuth2 and OpenID Connect are
-// out of scope, and the caller is expected to bring a token for them (§5 Auth).
+// it can. A requirement's schemes apply together, so one unusable scheme makes
+// the whole alternative unusable.
 func unsupportedReason(req operation.SecurityRequirement, schemes map[string]*v3high.SecurityScheme) string {
 	for _, want := range req.Schemes {
 		scheme, ok := schemes[want.Name]
@@ -111,20 +145,31 @@ func unsupportedReason(req operation.SecurityRequirement, schemes map[string]*v3
 			return "scheme " + want.Name + " is not declared in components.securitySchemes"
 		}
 
-		switch {
-		case isHTTP(scheme, "bearer"), isHTTP(scheme, "basic"):
-		case strings.EqualFold(scheme.Type, "apiKey"):
-			switch scheme.In {
-			case InHeader, InQuery, InCookie:
-			default:
-				return "scheme " + want.Name + " puts its API key in " + scheme.In
-			}
-		default:
-			return "scheme " + want.Name + " is of unsupported type " + describeType(scheme)
+		if reason := schemeReason(want.Name, scheme); reason != "" {
+			return reason
 		}
 	}
 
 	return ""
+}
+
+// schemeReason returns why talaria cannot use one declared scheme, or "" if it
+// can. v1 covers bearer, basic and API keys; OAuth2 and OpenID Connect are out
+// of scope, and the caller is expected to bring a token for them (§5 Auth).
+func schemeReason(name string, scheme *v3high.SecurityScheme) string {
+	switch {
+	case isHTTP(scheme, "bearer"), isHTTP(scheme, "basic"):
+		return ""
+	case strings.EqualFold(scheme.Type, "apiKey"):
+		switch scheme.In {
+		case InHeader, InQuery, InCookie:
+			return ""
+		default:
+			return "scheme " + name + " puts its API key in " + scheme.In
+		}
+	default:
+		return "scheme " + name + " is of unsupported type " + describeType(scheme)
+	}
 }
 
 // credentials builds one Credential per scheme of a requirement already known
@@ -138,34 +183,43 @@ func credentials(
 ) ([]Credential, error) {
 	out := make([]Credential, 0, len(req.Schemes))
 	for _, want := range req.Schemes {
-		scheme := schemes[want.Name]
-
-		cred := Credential{Scheme: want.Name, In: InHeader, Name: "Authorization"}
-		switch {
-		case isHTTP(scheme, "bearer"):
-			cred.Kind, cred.Ref = KindBearer, secret.Env(EnvBearer)
-		case isHTTP(scheme, "basic"):
-			cred.Kind, cred.Ref = KindBasic, secret.Env(EnvBasic)
-		default:
-			cred.Kind = KindAPIKey
-			cred.In, cred.Name = scheme.In, scheme.Name
-			cred.Ref = secret.Env(EnvAPIKeyPrefix + envSuffix(want.Name))
-		}
-
-		// The profile is the more specific source and wins over the convention:
-		// it is how one machine talks to staging and production at once.
-		ref, err := profileRef(prof, want.Name)
+		cred, err := credentialFor(want.Name, schemes[want.Name], prof)
 		if err != nil {
 			return nil, err
-		}
-		if !ref.IsZero() {
-			cred.Ref = ref
 		}
 
 		out = append(out, cred)
 	}
 
 	return out, nil
+}
+
+// credentialFor builds the Credential for one supported scheme: where the value
+// goes on the request, and the name of the value that goes there.
+func credentialFor(name string, scheme *v3high.SecurityScheme, prof *Profile) (Credential, error) {
+	cred := Credential{Scheme: name, In: InHeader, Name: "Authorization"}
+	switch {
+	case isHTTP(scheme, "bearer"):
+		cred.Kind, cred.Ref = KindBearer, secret.Env(EnvBearer)
+	case isHTTP(scheme, "basic"):
+		cred.Kind, cred.Ref = KindBasic, secret.Env(EnvBasic)
+	default:
+		cred.Kind = KindAPIKey
+		cred.In, cred.Name = scheme.In, scheme.Name
+		cred.Ref = secret.Env(EnvAPIKeyPrefix + envSuffix(name))
+	}
+
+	// The profile is the more specific source and wins over the convention: it
+	// is how one machine talks to staging and production at once.
+	ref, err := profileRef(prof, name)
+	if err != nil {
+		return Credential{}, err
+	}
+	if !ref.IsZero() {
+		cred.Ref = ref
+	}
+
+	return cred, nil
 }
 
 // envRef matches a profile auth entry: ${VAR} or $VAR, and nothing else.

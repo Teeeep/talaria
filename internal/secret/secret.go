@@ -40,7 +40,13 @@ func Env(name string) SecretRef { return SecretRef{Source: SourceEnv, Name: name
 // String returns the display form, <redacted:env:NAME>. Defining it on the
 // value receiver is deliberate: fmt then uses it for a SecretRef, a *SecretRef,
 // and a SecretRef held as a field of some larger struct printed with %v.
-func (r SecretRef) String() string { return "<redacted:" + r.Source + ":" + r.Name + ">" }
+func (r SecretRef) String() string { return "<redacted:" + r.Location() + ">" }
+
+// Location is where the value will be read from and under which name, `env:NAME`.
+// It is what `auth check` reports as a credential's source (§4), without the
+// <redacted:...> framing: nothing is being withheld here, because the answer
+// *is* the name — it is what an agent asks a human to export.
+func (r SecretRef) Location() string { return r.Source + ":" + r.Name }
 
 // GoString returns the same redacted form, so %#v — the verb reached for when
 // debugging, i.e. exactly when a leak would be least expected — is safe too.
