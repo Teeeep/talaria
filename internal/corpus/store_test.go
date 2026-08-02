@@ -158,6 +158,116 @@ func TestAppendWritesAnRFC3339Timestamp(t *testing.T) {
 	}
 }
 
+func TestAppendGivesEveryEntryAStableID(t *testing.T) {
+	store, _ := newStore(t)
+
+	for i := 0; i < 3; i++ {
+		if err := store.Append(NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("read %d entries, want 3", len(entries))
+	}
+
+	seen := map[string]bool{}
+	for i, entry := range entries {
+		if entry.ID == "" {
+			t.Fatalf("entry %d has no id", i)
+		}
+		if seen[entry.ID] {
+			t.Errorf("entry %d reuses id %q", i, entry.ID)
+		}
+		seen[entry.ID] = true
+		if want := entry.Timestamp.UTC().Format(time.RFC3339Nano); entry.ID != want {
+			t.Errorf("entry %d id = %q, want its timestamp %q", i, entry.ID, want)
+		}
+	}
+
+	// The point of the id is that a second read returns the same handles: the
+	// positional index does not, because every append shifts it.
+	again, err := store.Read()
+	if err != nil {
+		t.Fatalf("second Read: %v", err)
+	}
+	for i, entry := range again {
+		if entry.ID != entries[i].ID {
+			t.Errorf("entry %d id changed between reads: %q then %q", i, entries[i].ID, entry.ID)
+		}
+	}
+}
+
+func TestAppendDisambiguatesEntriesSharingATimestamp(t *testing.T) {
+	store, _ := newStore(t)
+
+	// One instant, three entries: the clock is the id, so this is the case that
+	// would otherwise put the same handle on all three.
+	stamp := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		entry := NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})
+		entry.Timestamp = stamp
+		if err := store.Append(entry); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for i, entry := range entries {
+		if entry.ID == "" {
+			t.Fatalf("entry %d has no id", i)
+		}
+		if seen[entry.ID] {
+			t.Fatalf("entry %d reuses id %q: a duplicate id resolves to the wrong entry", i, entry.ID)
+		}
+		seen[entry.ID] = true
+	}
+}
+
+func TestReadKeepsEntriesWrittenBeforeIDsExisted(t *testing.T) {
+	store, path := newStore(t)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	old := `{"source":"call","method":"GET","url":"https://api.example.com/pets/1"}` + "\n"
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatalf("writing the store: %v", err)
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("read %d entries, want the 1 an older talaria wrote", len(entries))
+	}
+	if entries[0].ID != "" {
+		t.Errorf("entry id = %q, want it empty rather than invented", entries[0].ID)
+	}
+
+	// A new entry alongside it still gets an id, and the old line keeps none.
+	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	entries, err = store.Read()
+	if err != nil {
+		t.Fatalf("Read after Append: %v", err)
+	}
+	if len(entries) != 2 || entries[0].ID != "" || entries[1].ID == "" {
+		t.Errorf("ids after appending to an old store = %q, %q", entries[0].ID, entries[1].ID)
+	}
+}
+
 func TestAppendRedactsAtWriteTime(t *testing.T) {
 	store, path := newStore(t)
 

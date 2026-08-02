@@ -41,8 +41,8 @@ one, the argument is the operationId.
 | `talaria run [spec] [--tag t] [--operation id]` | smoke-test many operations at once and report one line each |
 | `talaria auth check [spec]` | which credentials the spec needs and whether they are set |
 | `talaria history [--operation id] [--since 1h] [--status 4xx] [--source call\|run\|replay]` | what has already been called |
-| `talaria history show <n>` | one recorded request/response in full |
-| `talaria history replay <n>` | send a recorded request again |
+| `talaria history show <id\|n>` | one recorded request/response in full |
+| `talaria history replay <id\|n>` | send a recorded request again |
 | `talaria version` | the binary's version |
 
 Operations the spec did not name get a synthesised operationId (`GET /pets/{petId}` →
@@ -224,11 +224,17 @@ request to remember what happened:
 
 ```sh
 talaria history --operation getPet --status 4xx
-talaria history show 3
+talaria history show 2026-08-02T21:40:11.183204Z
 ```
 
-The index `history` prints is the entry's position in the whole store, so it stays valid under
-filters. `talaria history replay <n>` re-sends an entry and records the result as a new one;
+Each entry has an `id` and an index, and `show` and `replay` take either. **Use the id.** The
+index is the entry's position in the store, counted fresh on every read, so it shifts every time
+anything is recorded — and `call`, `run` and `replay` all record, replay included. Two replays in
+a row by index re-issue the same entry twice; two by id re-issue the two you asked for. The index
+is stable only under filters, which do not renumber it. An entry recorded by an older talaria has
+no id and lists as `-`; only its index can name it.
+
+`talaria history replay <id|n>` re-sends an entry and records the result as a new one;
 replaying a mutation needs `--allow-mutations` too. Dry runs are never recorded. Recording is off
 where a profile says so, or everywhere under `TALARIA_HISTORY=off` — if history is empty, that is
 usually why.

@@ -23,6 +23,7 @@ type historyListJSON struct {
 	Schema  string `json:"schema"`
 	Entries []struct {
 		Index       int    `json:"index"`
+		ID          string `json:"id"`
 		Timestamp   string `json:"timestamp"`
 		Source      string `json:"source"`
 		OperationID string `json:"operation_id"`
@@ -310,6 +311,99 @@ func TestHistoryListsNewestFirstWithIndexTimestampMethodPathAndStatus(t *testing
 		if !strings.Contains(pretty, want) {
 			t.Errorf("pretty history does not contain %q:\n%s", want, pretty)
 		}
+	}
+}
+
+func TestHistoryListsAStableIDAlongsideTheIndex(t *testing.T) {
+	isolateHistory(t)
+	seedHistory(t,
+		seedEntry(corpus.SourceCall, 2*time.Minute, "getPublic", "GET", "https://api.test/public", 200),
+		seedEntry(corpus.SourceCall, time.Minute, "getPet", "GET", "https://api.test/pets/42", 404),
+	)
+
+	code, stdout, stderr := runHistory(t, "--output", "json")
+	if code != 0 {
+		t.Fatalf("history = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	got := decodeHistoryList(t, stdout)
+	if len(got.Entries) != 2 {
+		t.Fatalf("history listed %d entries, want 2:\n%s", len(got.Entries), stdout)
+	}
+	for _, entry := range got.Entries {
+		if entry.ID == "" {
+			t.Fatalf("entry %d has no id in the list:\n%s", entry.Index, stdout)
+		}
+	}
+	if got.Entries[0].ID == got.Entries[1].ID {
+		t.Errorf("both entries list id %q", got.Entries[0].ID)
+	}
+
+	// The id has to reach a human too, or nobody can type it back in.
+	newest := got.Entries[0].ID
+	code, pretty, stderr := runHistory(t, "--output", "pretty")
+	if code != 0 {
+		t.Fatalf("history --output pretty = %d, want 0; stderr: %s", code, stderr)
+	}
+	if !strings.Contains(pretty, newest) {
+		t.Errorf("pretty history does not show the id %q:\n%s", newest, pretty)
+	}
+
+	// An append renumbers the index; the id is the handle that survives it.
+	seedHistory(t, seedEntry(corpus.SourceCall, 0, "getKeyed", "GET", "https://api.test/keyed", 200))
+
+	code, stdout, stderr = runHistory(t, "--output", "json")
+	if code != 0 {
+		t.Fatalf("history after an append = %d, want 0; stderr: %s", code, stderr)
+	}
+	after := decodeHistoryList(t, stdout)
+	if len(after.Entries) != 3 {
+		t.Fatalf("history listed %d entries, want 3", len(after.Entries))
+	}
+	if after.Entries[1].ID != newest {
+		t.Errorf("the entry at index 2 has id %q, want the unchanged %q", after.Entries[1].ID, newest)
+	}
+	if after.Entries[1].Index == got.Entries[0].Index {
+		t.Errorf("index %d did not shift after an append, so this test proves nothing", after.Entries[1].Index)
+	}
+}
+
+func TestHistoryShowAcceptsAnIDAsWellAsAnIndex(t *testing.T) {
+	isolateHistory(t)
+	seedHistory(t,
+		seedEntry(corpus.SourceCall, 2*time.Minute, "getPublic", "GET", "https://api.test/public", 200),
+		seedEntry(corpus.SourceCall, time.Minute, "getPet", "GET", "https://api.test/pets/42", 404),
+	)
+
+	code, stdout, stderr := runHistory(t, "--output", "json")
+	if code != 0 {
+		t.Fatalf("history = %d, want 0; stderr: %s", code, stderr)
+	}
+	oldest := decodeHistoryList(t, stdout).Entries[1]
+
+	code, stdout, stderr = runHistory(t, "show", oldest.ID, "--output", "json")
+	if code != 0 {
+		t.Fatalf("history show <id> = %d, want 0; stderr: %s", code, stderr)
+	}
+	if got := decodeHistoryShow(t, stdout); got.Entry.OperationID != "getPublic" {
+		t.Errorf("history show %q showed %q, want getPublic", oldest.ID, got.Entry.OperationID)
+	}
+
+	// The documented positional form keeps working.
+	code, stdout, stderr = runHistory(t, "show", "2", "--output", "json")
+	if code != 0 {
+		t.Fatalf("history show 2 = %d, want 0; stderr: %s", code, stderr)
+	}
+	if got := decodeHistoryShow(t, stdout); got.Entry.OperationID != "getPublic" {
+		t.Errorf("history show 2 showed %q, want getPublic", got.Entry.OperationID)
+	}
+
+	code, _, stderr = runHistory(t, "show", "no-such-entry")
+	if code != 2 {
+		t.Fatalf("history show of an unknown handle = %d, want 2; stderr: %s", code, stderr)
+	}
+	if msg := decodeErr(t, stderr).Error.Message; !strings.Contains(msg, "no-such-entry") {
+		t.Errorf("error message %q does not name the handle asked for", msg)
 	}
 }
 
@@ -606,6 +700,65 @@ func TestHistoryReplayReissuesTheCallAndRecordsANewEntry(t *testing.T) {
 	}
 	if entries[1].OperationID != "getPet" {
 		t.Errorf("the new entry's operation_id = %q, want getPet", entries[1].OperationID)
+	}
+}
+
+// Two replays in a row is ordinary agent behaviour, and it is where the
+// positional index breaks: replay appends, so every index printed by the
+// listing the agent is reading has already shifted by the time it issues the
+// second command. The ids are the same two handles before and after.
+func TestReplayingTwoIDsInARowReissuesTwoDifferentEntries(t *testing.T) {
+	isolateHistory(t)
+	srv := newCallServer(t, jsonPet)
+
+	code, _, stderr := runCall(t,
+		"testdata/call.yaml", "getPet", "--param", "petId=42",
+		"--base-url", srv.URL, "--output", "json")
+	if code != 0 {
+		t.Fatalf("call getPet = %d, want 0; stderr: %s", code, stderr)
+	}
+	code, _, stderr = runCall(t,
+		"testdata/call.yaml", "getPublic", "--base-url", srv.URL, "--output", "json")
+	if code != 0 {
+		t.Fatalf("call getPublic = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	code, stdout, stderr := runHistory(t, "--output", "json")
+	if code != 0 {
+		t.Fatalf("history = %d, want 0; stderr: %s", code, stderr)
+	}
+	listed := decodeHistoryList(t, stdout)
+	if len(listed.Entries) != 2 {
+		t.Fatalf("history listed %d entries, want 2:\n%s", len(listed.Entries), stdout)
+	}
+	public, pet := listed.Entries[0], listed.Entries[1]
+	if public.OperationID != "getPublic" || pet.OperationID != "getPet" {
+		t.Fatalf("history listed %q then %q, want getPublic then getPet", public.OperationID, pet.OperationID)
+	}
+
+	code, _, stderr = runHistory(t, "replay", public.ID, "--output", "json")
+	if code != 0 {
+		t.Fatalf("replay of the getPublic id = %d, want 0; stderr: %s", code, stderr)
+	}
+	if got := srv.received().Path; got != "/public" {
+		t.Fatalf("the first replay sent %q, want /public", got)
+	}
+
+	code, _, stderr = runHistory(t, "replay", pet.ID, "--output", "json")
+	if code != 0 {
+		t.Fatalf("replay of the getPet id = %d, want 0; stderr: %s", code, stderr)
+	}
+	if got := srv.received().Path; got != "/pets/42" {
+		t.Errorf("the second replay sent %q, want /pets/42: the handle resolved to the wrong entry", got)
+	}
+
+	entries := readHistory(t)
+	if len(entries) != 4 {
+		t.Fatalf("history holds %d entries after two replays, want 4", len(entries))
+	}
+	if entries[0].ID != pet.ID || entries[1].ID != public.ID {
+		t.Errorf("the original ids became %q and %q; replaying must not rewrite them",
+			entries[0].ID, entries[1].ID)
 	}
 }
 

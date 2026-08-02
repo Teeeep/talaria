@@ -28,7 +28,12 @@ type historyEntryView struct {
 	// 1-based. It is *not* its position in a filtered list: it is the number
 	// `history show` and `history replay` take, so filtering must not renumber
 	// it.
-	Index       int       `json:"index"`
+	Index int `json:"index"`
+	// ID is the entry's stable handle, which `show` and `replay` also take. It
+	// is what an agent should keep hold of: unlike Index it does not shift when
+	// something appends, and every one of those three commands appends. An entry
+	// recorded before ids existed has none.
+	ID          string    `json:"id"`
 	Timestamp   time.Time `json:"timestamp"`
 	Source      string    `json:"source"`
 	OperationID string    `json:"operation_id,omitempty"`
@@ -127,10 +132,12 @@ func newHistoryCmd() *cobra.Command {
 
 func newHistoryShowCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "show <n>",
+		Use:   "show <id|n>",
 		Short: "Print one recorded request and response in full",
 		Long: "Print the whole of one entry: the request as it was sent and the response\n" +
-			"as it came back, both redacted. The index is the one `history` prints.",
+			"as it came back, both redacted. Name the entry by the id `history` prints,\n" +
+			"which is stable, or by its index, which shifts every time anything is\n" +
+			"recorded.",
 		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, err := resolveFormat(cmd)
@@ -157,12 +164,13 @@ func newHistoryReplayCmd() *cobra.Command {
 	var allowMutations bool
 
 	cmd := &cobra.Command{
-		Use:   "replay <n>",
+		Use:   "replay <id|n>",
 		Short: "Re-issue a recorded call",
 		Long: "Send a recorded request again, to the URL it went to, and record the\n" +
 			"result as a new entry. Credentials are resolved from the environment as\n" +
 			"they were the first time — history holds their names, never their values,\n" +
-			"so there is nothing there to read back.",
+			"so there is nothing there to read back. Name the entry by its id: a replay\n" +
+			"is itself recorded, so every index shifts as soon as one runs.",
 		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, err := resolveFormat(cmd)
@@ -272,6 +280,7 @@ func historyPayload(entries []corpus.Entry, filter historyFilter) output.Payload
 		view.Entries = append(view.Entries, line)
 		rows = append(rows, []string{
 			strconv.Itoa(line.Index),
+			idCell(line.ID),
 			line.Timestamp.Format(time.RFC3339),
 			string(line.Source),
 			line.Method,
@@ -284,7 +293,7 @@ func historyPayload(entries []corpus.Entry, filter historyFilter) output.Payload
 	return output.Payload{
 		Data: view,
 		Table: output.Table{
-			Headers: []string{"#", "WHEN", "SOURCE", "METHOD", "PATH", "STATUS", "OPERATION"},
+			Headers: []string{"#", "ID", "WHEN", "SOURCE", "METHOD", "PATH", "STATUS", "OPERATION"},
 			Rows:    rows,
 		},
 	}
@@ -293,6 +302,7 @@ func historyPayload(entries []corpus.Entry, filter historyFilter) output.Payload
 func newHistoryEntryView(index int, entry corpus.Entry) historyEntryView {
 	view := historyEntryView{
 		Index:       index,
+		ID:          entry.ID,
 		Timestamp:   entry.Timestamp,
 		Source:      string(entry.Source),
 		OperationID: entry.OperationID,
@@ -359,6 +369,17 @@ func statusCell(status int) string {
 	return strconv.Itoa(status)
 }
 
+// idCell renders the id column. An entry recorded before ids existed has none,
+// and prints as the same dash an absent status does rather than as a blank cell
+// a reader could mistake for a column that failed to render.
+func idCell(id string) string {
+	if id == "" {
+		return "-"
+	}
+
+	return id
+}
+
 // urlPath is the path component of a recorded URL, for the list's path column.
 // A URL that will not parse — nothing writes one, but the store is a file on
 // disk — degrades to itself rather than to nothing.
@@ -371,15 +392,34 @@ func urlPath(raw string) string {
 	return parsed.EscapedPath()
 }
 
-// selectEntry resolves a 1-based, newest-first index against the store.
+// selectEntry resolves what `show` and `replay` are given: an entry's stable id,
+// or a 1-based, newest-first positional index.
 //
-// Both failures are usage errors carrying what the caller can do instead: the
+// The id is tried first and wins outright. An index is recomputed on every read
+// and shifts as soon as anything appends — and `call`, `run` and `replay` all
+// append, replay included — so `replay 2` followed by `replay 1` re-issues the
+// same entry twice. The id is what makes two commands in a row mean two entries.
+// The index stays supported because it is documented and is what a human reads
+// off the list.
+//
+// Every failure is a usage error carrying what the caller can do instead: the
 // valid range, or the fact that there is no history yet. An agent that guessed
-// an index corrects itself from the message without a second command.
+// corrects itself from the message without a second command.
 func selectEntry(entries []corpus.Entry, arg string) (int, corpus.Entry, error) {
+	// Newest first, so an id that a hand-edited store repeats resolves to the
+	// same entry the index would.
+	if arg != "" {
+		for i := len(entries) - 1; i >= 0; i-- {
+			if entries[i].ID == arg {
+				return len(entries) - i, entries[i], nil
+			}
+		}
+	}
+
 	index, err := strconv.Atoi(arg)
 	if err != nil {
-		return 0, corpus.Entry{}, clierr.Usage("history index %q is not a number", arg)
+		return 0, corpus.Entry{}, clierr.Usage(
+			"no history entry %q: give an id from the ID column, or an entry's 1-based index", arg)
 	}
 
 	if len(entries) == 0 {

@@ -8,7 +8,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // EnvHistory switches recording off wherever talaria runs. It is read here
@@ -81,13 +83,16 @@ func (s *Store) Recording() bool {
 	return !off(os.Getenv(EnvHistory))
 }
 
-// Append records one entry and applies the retention cap.
+// Append records one entry, gives it its stable id, and applies the retention
+// cap.
 //
-// The write and the trim are one critical section. Trim rewrites the whole file
-// from a snapshot it read, so an entry appended between that read and the
-// rename would be dropped silently — Append had already returned nil for it, so
-// nothing would ever report it missing. Holding the lock across both is what
-// makes a nil return mean the entry is in the store.
+// The id, the write and the trim are one critical section. Trim rewrites the
+// whole file from a snapshot it read, so an entry appended between that read and
+// the rename would be dropped silently — Append had already returned nil for it,
+// so nothing would ever report it missing. The id is chosen against the same
+// snapshot for the same reason: two processes that picked one concurrently could
+// pick the same one. Holding the lock across all three is what makes a nil
+// return mean the entry is in the store under an id nothing else holds.
 //
 // With recording off it does nothing at all — no file, no directory, no lock.
 // An opt-out that still left a history file behind would not be one.
@@ -101,22 +106,71 @@ func (s *Store) Append(e Entry) error {
 		return err
 	}
 
-	line, err := json.Marshal(e)
-	if err != nil {
-		return fmt.Errorf("cannot encode the history entry: %w", err)
-	}
-
 	unlock, err := lock(path)
 	if err != nil {
 		return err
 	}
 	defer unlock()
 
+	e.ID = uniqueID(path, e)
+
+	line, err := json.Marshal(e)
+	if err != nil {
+		return fmt.Errorf("cannot encode the history entry: %w", err)
+	}
+
 	if err := write(path, append(line, '\n')); err != nil {
 		return err
 	}
 
 	return trim(path)
+}
+
+// uniqueID is the id the entry goes to disk under. The caller holds the append
+// lock, so what this reads off the store cannot change under it.
+//
+// The timestamp is the id: it needs no counter kept anywhere, it is already in
+// append order, and trim rewriting the file around it cannot change it. Two
+// entries can still land on the same instant — a second process, or a clock with
+// less than nanosecond resolution — and a duplicate id would resolve to whichever
+// entry came first and silently replay the wrong request, which is the thing the
+// field exists to stop. So a taken id gets a counting suffix instead.
+func uniqueID(path string, e Entry) string {
+	candidate := e.ID
+	if candidate == "" {
+		candidate = e.Timestamp.UTC().Format(time.RFC3339Nano)
+	}
+
+	taken := storedIDs(path)
+	if !taken[candidate] {
+		return candidate
+	}
+	for n := 2; ; n++ {
+		suffixed := candidate + "#" + strconv.Itoa(n)
+		if !taken[suffixed] {
+			return suffixed
+		}
+	}
+}
+
+// storedIDs is the set of ids already in the store. A file that cannot be read —
+// it usually does not exist yet — holds no ids, which makes every candidate
+// free. Lines written before ids existed contribute none, so an old store's
+// entries never make a new id look taken.
+func storedIDs(path string) map[string]bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+
+	ids := map[string]bool{}
+	for _, line := range lines(data) {
+		if head, ok := lineHead(line); ok && head.ID != "" {
+			ids[head.ID] = true
+		}
+	}
+
+	return ids
 }
 
 // Read returns every readable entry, oldest first.
@@ -201,10 +255,10 @@ func trim(path string) error {
 	readable := make([]bool, len(all))
 	counts := map[Source]int{}
 	for i, line := range all {
-		source, ok := lineSource(line)
-		sources[i], readable[i] = source, ok
+		head, ok := lineHead(line)
+		sources[i], readable[i] = head.Source, ok
 		if ok {
-			counts[source]++
+			counts[head.Source]++
 		}
 	}
 
@@ -273,18 +327,23 @@ func replace(path string, data []byte) error {
 	return nil
 }
 
-// lineSource reads just the source off a stored line, reporting whether the
-// line parses at all. Trimming works from the raw bytes rather than from decoded
-// entries so a rewrite reproduces what was written, byte for byte.
-func lineSource(line []byte) (Source, bool) {
-	var head struct {
-		Source Source `json:"source"`
-	}
+// entryHead is the part of a stored line the store itself consults: the source
+// the retention cap counts by, and the id a new one must not collide with.
+type entryHead struct {
+	ID     string `json:"id"`
+	Source Source `json:"source"`
+}
+
+// lineHead reads that head off a stored line, reporting whether the line parses
+// at all. Trimming and id assignment work from the raw bytes rather than from
+// decoded entries so a rewrite reproduces what was written, byte for byte.
+func lineHead(line []byte) (entryHead, bool) {
+	var head entryHead
 	if err := json.Unmarshal(line, &head); err != nil {
-		return "", false
+		return entryHead{}, false
 	}
 
-	return head.Source, true
+	return head, true
 }
 
 // lines splits the store into its non-empty lines.

@@ -366,14 +366,16 @@ talaria history show 3
 talaria history replay 3
 ```
 
-`history` lists the store newest first: index, time, source, method, path, status, operation.
+`history` lists the store newest first: index, id, time, source, method, path, status, operation.
 `--operation` filters by operationId, `--since` takes a duration (`30m`, `1h`, `168h`),
 `--status` takes an exact code (`404`) or a class (`4xx`), and `--source` takes `call`, `run`
 or `replay` — so a smoke run over a large spec does not bury the calls you made by hand. The
-index is an entry's position in the whole store, not in the filtered list, so it stays the
-number `show` and `replay` take.
+index is an entry's position in the whole store, not in the filtered list, so a filter does not
+renumber it — but a *write* does, and `call`, `run` and `replay` all write. The id is the handle
+that does not move: it is assigned once, at record time, and both `show` and `replay` prefer it
+over an index. Entries written before ids existed have none and list as `-`.
 
-`history show <n>` prints one entry in full; `history replay <n>` sends it again and records
+`history show <id|n>` prints one entry in full; `history replay <id|n>` sends it again and records
 the result as a new entry, leaving the original alone. Replay resolves credentials from the
 environment exactly as the original call did — history holds their *names*, so there is nothing
 in the file to read back. It is gated the same way `call` is: replaying a `POST` needs

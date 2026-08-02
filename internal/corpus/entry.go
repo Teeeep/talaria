@@ -53,6 +53,16 @@ const (
 // call whose connection failed — which is still worth recording as something
 // that was tried.
 type Entry struct {
+	// ID is the entry's stable handle, assigned by Store.Append. A positional
+	// index is recomputed on every read, and `call`, `run` and `replay` all
+	// append, so the index printed by one command has already shifted by the time
+	// the next one runs; the id is what lets `history show` and `history replay`
+	// name the same entry twice in a row.
+	//
+	// An entry written by an older talaria has none. It stays empty rather than
+	// being invented at read time, because an id derived on the way out would
+	// differ between two reads and could collide with an assigned one.
+	ID          string    `json:"id,omitempty"`
 	Timestamp   time.Time `json:"timestamp"`
 	Source      Source    `json:"source"`
 	OperationID string    `json:"operation_id,omitempty"`
