@@ -1,0 +1,8 @@
+openapi: 3.0.3
+info:
+  title: "Unterminated quote
+  version: 1.0.0
+ paths:
+    - this: is
+   badly: indented
+	and: mixes tabs with spaces
