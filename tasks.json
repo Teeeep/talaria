@@ -1,7 +1,7 @@
 {
   "plan_file": "IMPLEMENTATION_PLAN.md",
   "spec_file": "docs/design/DESIGN.md",
-  "generated_at": "2026-08-02T16:13:52+00:00",
+  "generated_at": "2026-08-02T16:34:00+00:00",
   "total_tasks": 33,
   "tasks": [
     {
@@ -17,255 +17,255 @@
       "section": "2",
       "title": "Output envelope and json/pretty/tsv renderers",
       "line_start": 198,
-      "line_end": 235,
+      "line_end": 237,
       "done": false
     },
     {
       "id": 3,
       "section": "3",
       "title": "Structured errors and the exit-code contract",
-      "line_start": 239,
-      "line_end": 269,
+      "line_start": 241,
+      "line_end": 280,
       "done": false
     },
     {
       "id": 4,
       "section": "4",
       "title": "Load OpenAPI 3.x specs from bytes and files",
-      "line_start": 273,
-      "line_end": 306,
+      "line_start": 284,
+      "line_end": 317,
       "done": false
     },
     {
       "id": 5,
       "section": "5",
-      "title": "Swagger 2.0 \u2192 OpenAPI 3.x conversion at load time",
-      "line_start": 310,
-      "line_end": 357,
+      "title": "Swagger 2.0 → OpenAPI 3.x conversion at load time",
+      "line_start": 321,
+      "line_end": 368,
       "done": false
     },
     {
       "id": 6,
       "section": "6",
       "title": "Spec source resolution, URL fetch, and local cache",
-      "line_start": 361,
-      "line_end": 390,
+      "line_start": 372,
+      "line_end": 401,
       "done": false
     },
     {
       "id": 7,
       "section": "7",
       "title": "The operation model",
-      "line_start": 394,
-      "line_end": 428,
+      "line_start": 405,
+      "line_end": 439,
       "done": false
     },
     {
       "id": 8,
       "section": "8",
       "title": "OperationId synthesis and lookup index",
-      "line_start": 432,
-      "line_end": 462,
+      "line_start": 443,
+      "line_end": 473,
       "done": false
     },
     {
       "id": 9,
       "section": "9",
       "title": "`talaria list`",
-      "line_start": 466,
-      "line_end": 495,
+      "line_start": 477,
+      "line_end": 506,
       "done": false
     },
     {
       "id": 10,
       "section": "10",
       "title": "`talaria describe` and the compact schema renderer",
-      "line_start": 499,
-      "line_end": 534,
+      "line_start": 510,
+      "line_end": 545,
       "done": false
     },
     {
       "id": 11,
       "section": "11",
       "title": "`talaria search` and `talaria uses`",
-      "line_start": 538,
-      "line_end": 574,
+      "line_start": 549,
+      "line_end": 585,
       "done": false
     },
     {
       "id": 12,
       "section": "12",
-      "title": "`internal/secret` \u2014 SecretRef and redaction",
-      "line_start": 578,
-      "line_end": 615,
+      "title": "`internal/secret` — SecretRef and redaction",
+      "line_start": 589,
+      "line_end": 626,
       "done": false
     },
     {
       "id": 13,
       "section": "13",
-      "title": "`internal/config` \u2014 profiles and env-var auth mapping",
-      "line_start": 619,
-      "line_end": 663,
+      "title": "`internal/config` — profiles and env-var auth mapping",
+      "line_start": 630,
+      "line_end": 674,
       "done": false
     },
     {
       "id": 14,
       "section": "14",
       "title": "Request construction and parameter binding",
-      "line_start": 667,
-      "line_end": 702,
+      "line_start": 678,
+      "line_end": 713,
       "done": false
     },
     {
       "id": 15,
       "section": "15",
       "title": "Symbolic curl rendering, `call --dry-run`, and mutation gating",
-      "line_start": 706,
-      "line_end": 742,
+      "line_start": 717,
+      "line_end": 753,
       "done": false
     },
     {
       "id": 16,
       "section": "16",
       "title": "The curl config document (`-K -`) builder",
-      "line_start": 746,
-      "line_end": 785,
+      "line_start": 757,
+      "line_end": 796,
       "done": false
     },
     {
       "id": 17,
       "section": "17",
       "title": "The curl executor",
-      "line_start": 789,
-      "line_end": 832,
+      "line_start": 800,
+      "line_end": 843,
       "done": false
     },
     {
       "id": 18,
       "section": "18",
       "title": "Request bodies from flag, file, and stdin",
-      "line_start": 836,
-      "line_end": 866,
+      "line_start": 847,
+      "line_end": 877,
       "done": false
     },
     {
       "id": 19,
       "section": "19",
-      "title": "`talaria call` \u2014 real execution",
-      "line_start": 870,
-      "line_end": 899,
+      "title": "`talaria call` — real execution",
+      "line_start": 881,
+      "line_end": 910,
       "done": false
     },
     {
       "id": 20,
       "section": "20",
       "title": "Response redaction and query-key warning",
-      "line_start": 903,
-      "line_end": 933,
+      "line_start": 914,
+      "line_end": 944,
       "done": false
     },
     {
       "id": 21,
       "section": "21",
       "title": "`talaria auth check` and exit code 5",
-      "line_start": 937,
-      "line_end": 965,
+      "line_start": 948,
+      "line_end": 976,
       "done": false
     },
     {
       "id": 22,
       "section": "22",
-      "title": "`internal/corpus` \u2014 the history store",
-      "line_start": 969,
-      "line_end": 1010,
+      "title": "`internal/corpus` — the history store",
+      "line_start": 980,
+      "line_end": 1021,
       "done": false
     },
     {
       "id": 23,
       "section": "23",
-      "title": "`talaria history` \u2014 list, show, replay",
-      "line_start": 1014,
-      "line_end": 1054,
+      "title": "`talaria history` — list, show, replay",
+      "line_start": 1025,
+      "line_end": 1065,
       "done": false
     },
     {
       "id": 24,
       "section": "24",
       "title": "The canary-secret leak suite",
-      "line_start": 1058,
-      "line_end": 1095,
+      "line_start": 1069,
+      "line_end": 1106,
       "done": false
     },
     {
       "id": 25,
       "section": "25",
       "title": "`AGENT.md` v1",
-      "line_start": 1099,
-      "line_end": 1127,
+      "line_start": 1110,
+      "line_end": 1138,
       "done": false
     },
     {
       "id": 26,
       "section": "26",
-      "title": "`internal/validate` \u2014 response validation",
-      "line_start": 1131,
-      "line_end": 1177,
+      "title": "`internal/validate` — response validation",
+      "line_start": 1142,
+      "line_end": 1188,
       "done": false
     },
     {
       "id": 27,
       "section": "27",
       "title": "`call` validation block and `--fail-on-error`",
-      "line_start": 1181,
-      "line_end": 1205,
+      "line_start": 1192,
+      "line_end": 1216,
       "done": false
     },
     {
       "id": 28,
       "section": "28",
-      "title": "`internal/gen` \u2014 schema-based data generation",
-      "line_start": 1209,
-      "line_end": 1241,
+      "title": "`internal/gen` — schema-based data generation",
+      "line_start": 1220,
+      "line_end": 1252,
       "done": false
     },
     {
       "id": 29,
       "section": "29",
       "title": "Fixtures and the test-data priority chain",
-      "line_start": 1245,
-      "line_end": 1273,
+      "line_start": 1256,
+      "line_end": 1284,
       "done": false
     },
     {
       "id": 30,
       "section": "30",
-      "title": "`talaria run` \u2014 smoke testing",
-      "line_start": 1277,
-      "line_end": 1318,
+      "title": "`talaria run` — smoke testing",
+      "line_start": 1288,
+      "line_end": 1337,
       "done": false
     },
     {
       "id": 31,
       "section": "31",
       "title": "JUnit report output",
-      "line_start": 1322,
-      "line_end": 1350,
+      "line_start": 1341,
+      "line_end": 1369,
       "done": false
     },
     {
       "id": 32,
       "section": "32",
       "title": "End-to-end integration across the whole loop",
-      "line_start": 1354,
-      "line_end": 1399,
+      "line_start": 1373,
+      "line_end": 1418,
       "done": false
     },
     {
       "id": 33,
       "section": "33",
       "title": "CI workflow running the test suite",
-      "line_start": 1403,
-      "line_end": 1437,
+      "line_start": 1422,
+      "line_end": 1456,
       "done": false
     }
   ]

@@ -218,7 +218,9 @@ cannot run at all until `go mod init` happens — this task unblocks the entire 
 5. `--output` is registered **once** as a persistent flag on the root command, so every
    subcommand accepts it (§3.1: "`--output json` on every command"). Assert by looking the flag
    up on a freshly built child command, not by re-registering it per command.
-6. An invalid `--output xml` exits 2 with the three valid values listed.
+6. Parsing an invalid format (`xml`) returns an error naming all three valid values. Assert on
+   the returned error, **not** on an exit code — `internal/clierr` does not exist yet, and Task 3
+   (which owns exit codes) depends on this task. Task 3 wires this error to exit 2.
 
 **Green — minimal implementation:**
 1. `Format` enum (`json`, `pretty`, `tsv`) with parsing and an `Unknown format` error listing
@@ -242,6 +244,7 @@ command from inventing its own shape.
 
 **Test files:**
 - `internal/clierr/clierr_test.go` (create) — code mapping and stderr JSON shape
+- `cmd/talaria/exitcode_test.go` (create) — the root command's error → exit code translation
 
 **Implementation files:**
 - `internal/clierr/clierr.go` (create) — error type carrying an exit code and alternatives
@@ -255,12 +258,20 @@ command from inventing its own shape.
 3. An error carrying a list of valid operationIds renders them in `valid_alternatives`.
 4. Wrapping an error with `errors.Is`/`errors.As` preserves the exit code through one level of
    `fmt.Errorf("%w")`.
+5. The root command's execute function **returns** an exit code rather than calling `os.Exit`
+   itself, so the mapping is assertable in-process: a `clierr.Usage` error yields 2, a
+   `clierr.SpecLoad` error yields 3, an unrecognised error yields 1, and a nil error yields 0.
+6. An invalid `--output xml` — the parse error Task 2 deliberately left as a bare error — reaches
+   this translator and yields exit code 2 with the three valid values in the stderr JSON. This
+   assertion is the other half of Task 2's assertion 6; neither task can hold both halves.
 
 **Green — minimal implementation:**
 1. Exported code constants and an `Error` struct implementing `error` plus `Unwrap`.
 2. Constructors: `Usage`, `SpecLoad`, `Validation`, `CredentialMissing`, `RequestFailed`.
-3. In root command execution, type-assert to `*clierr.Error`, render JSON to stderr, and
-   `os.Exit` with its code; anything else exits 1.
+3. Root command execution returns `(code int)`: type-assert to `*clierr.Error`, render its JSON
+   to stderr, return its code; anything else non-nil returns 1. **`main.go` (Task 1) stays the
+   only place that calls `os.Exit`** — keeping it out of the run path is what makes assertions 5
+   and 6 testable at all, and every later `cmd/` test asserting an exit code depends on it.
 
 **Verify:** `go test ./internal/clierr/... ./cmd/...`
 
@@ -1282,7 +1293,7 @@ operations whose generated data would be nonsense (real ids, valid foreign keys)
 - `cmd/talaria/run_test.go` (create) — filters, execution, reporting, exit codes
 
 **Implementation files:**
-- `cmd/talaria/run.go` (create) — the `run` command
+- `cmd/talaria/run.go` (create) — the `run` command, including its `--fixtures` flag
 
 **Red — write failing tests:**
 1. `run <spec>` executes every read-only operation against an `httptest` server and reports one
@@ -1303,9 +1314,17 @@ operations whose generated data would be nonsense (real ids, valid foreign keys)
    --source call` excludes them. A `run` over a large spec must not make `history` useless by
    evicting a session's worth of `call` entries under the 1000-entry cap — assert that after a
    `run` of N operations, prior `call` entries are still retrievable.
+9. `--fixtures <dir>` is registered on `run` and reaches the Task 29 priority chain: with a
+   fixture file present for an operation, that operation's request body is the fixture's; drop the
+   flag and the same run falls through to generation. A non-existent directory exits 2. DESIGN.md
+   §5a names `--fixtures dir/`, and Task 29 builds the loader, but **this is the only task that
+   registers the flag** — without it the whole fixture path is unreachable from the CLI and Task
+   29 ships dead code. It is `run`'s own flag, not a persistent one; no other command takes it.
 
 **Green — minimal implementation:**
 1. Resolve → filter → for each operation build data, build request, exec, validate, collect.
+   Construct the Task 29 `DataFor` chain once from `--fixtures` (empty when the flag is unset) and
+   reuse it across operations, so the priority order is decided in one place.
 2. Sequential execution in spec order; no concurrency in v1 (determinism beats speed here, and
    parallel calls against a real API are a surprise nobody asked for).
 3. Every call goes through the same corpus writer as `call`, with `Source: "run"`. The field, the
