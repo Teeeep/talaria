@@ -1,0 +1,25 @@
+# Binaries
+/any-api
+/anyapi
+/dist/
+*.exe
+*.test
+
+# Go
+/vendor/
+go.work
+go.work.sum
+
+# Coverage
+*.out
+coverage.*
+
+# Recorded API traffic — may contain real data even after redaction.
+# Commit a corpus only after reviewing it; never by accident.
+/twin-data/
+*.corpus/
+
+# Local config that may hold credentials
+.env
+.env.*
+config.local.yaml
