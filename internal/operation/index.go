@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"github.com/Teeeep/talaria/internal/clierr"
+	"github.com/Teeeep/talaria/internal/spec"
 )
 
 // maxAlternatives caps the suggestion list on a failed lookup. The point of
@@ -22,17 +23,40 @@ type Index struct {
 	ops  []Operation
 	byID map[string]int
 	ids  []string
+	// schemas are the document's component schemas in spec order. They are
+	// empty for an index built from operations alone, which is all list and
+	// describe need; search and uses go through NewIndexFor to get them.
+	schemas []NamedSchema
+	// elements and reachable are the search structures, built on first use.
+	// See searchElements and reachability for why they are not built here.
+	elements  []element
+	reachable map[string]map[string]bool
 }
 
 // NewIndex assigns every operation an id and indexes them. Operations that
 // already carry an operationId keep it — an author's id is part of the API's
 // contract and is never rewritten, even when a synthesised id wants it. The
 // input slice is left untouched.
+//
+// An index built this way knows nothing about component schemas, so Uses and
+// `search --kind schema` have nothing to report; use NewIndexFor for those.
 func NewIndex(ops []Operation) *Index {
+	return newIndex(ops, nil)
+}
+
+// NewIndexFor indexes a whole document: its operations and the component
+// schemas that search and uses read. It is what every spec-reading command
+// builds, so a spec loaded once answers every question about it.
+func NewIndexFor(doc *spec.Document) *Index {
+	return newIndex(Extract(doc), componentSchemas(doc))
+}
+
+func newIndex(ops []Operation, schemas []NamedSchema) *Index {
 	ix := &Index{
-		ops:  make([]Operation, len(ops)),
-		byID: make(map[string]int, len(ops)),
-		ids:  make([]string, 0, len(ops)),
+		schemas: schemas,
+		ops:     make([]Operation, len(ops)),
+		byID:    make(map[string]int, len(ops)),
+		ids:     make([]string, 0, len(ops)),
 	}
 	copy(ix.ops, ops)
 
@@ -90,7 +114,7 @@ func (ix *Index) Lookup(id string) (Operation, error) {
 	}
 
 	return Operation{}, clierr.Usage("unknown operation %q", id).
-		WithAlternatives(ix.closest(id)...)
+		WithAlternatives(closest(id, ix.ids)...)
 }
 
 // ByTag returns the operations carrying tag, in spec order. Tags are compared
@@ -110,18 +134,19 @@ func (ix *Index) ByTag(tag string) []Operation {
 	return out
 }
 
-// closest ranks every id by edit distance to the query and returns the best few.
-// Distance is measured on the lower-cased forms so a casing-only mistake scores
-// zero and leads the list; ties break on the id itself to keep output stable.
-func (ix *Index) closest(id string) []string {
+// closest ranks candidates by edit distance to the query and returns the best
+// few. Distance is measured on the lower-cased forms so a casing-only mistake
+// scores zero and leads the list; ties break on the candidate itself to keep
+// output stable.
+func closest(query string, candidates []string) []string {
 	type scored struct {
 		id   string
 		dist int
 	}
 
-	query := strings.ToLower(id)
-	ranked := make([]scored, 0, len(ix.ids))
-	for _, candidate := range ix.ids {
+	query = strings.ToLower(query)
+	ranked := make([]scored, 0, len(candidates))
+	for _, candidate := range candidates {
 		ranked = append(ranked, scored{id: candidate, dist: distance(query, strings.ToLower(candidate))})
 	}
 	sort.Slice(ranked, func(i, j int) bool {

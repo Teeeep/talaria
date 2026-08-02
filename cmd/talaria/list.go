@@ -179,5 +179,5 @@ func loadIndex(cmd *cobra.Command, args []string) (*operation.Index, error) {
 		return nil, err
 	}
 
-	return operation.NewIndex(operation.Extract(doc)), nil
+	return operation.NewIndexFor(doc), nil
 }

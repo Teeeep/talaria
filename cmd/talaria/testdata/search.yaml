@@ -1,0 +1,156 @@
+openapi: 3.0.3
+info:
+  title: Billing and pets
+  version: 1.0.0
+paths:
+  /invoices:
+    get:
+      operationId: listInvoices
+      summary: List invoices
+      tags:
+        - billing
+      parameters:
+        - name: invoiceStatus
+          in: query
+          description: Filter by invoice status
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The invoices
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvoiceList"
+  # Matches "invoice" only through its path, and only through the templated
+  # segment at that.
+  /invoices/{invoiceId}/void:
+    post:
+      operationId: voidDocument
+      summary: Void a document
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Voided
+  # Matches "invoice" only through its description.
+  /billing/documents:
+    post:
+      operationId: createDocument
+      summary: Create a billing document
+      description: Creates an invoice for the given customer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Invoice"
+      responses:
+        "201":
+          description: Created
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      responses:
+        "200":
+          description: The pets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PetList"
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      summary: Get one pet
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          description: The pet's identifier
+          schema:
+            $ref: "#/components/schemas/PetId"
+      responses:
+        "200":
+          description: The pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /owners:
+    get:
+      operationId: listOwners
+      summary: List owners
+      responses:
+        "200":
+          description: The owners
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Owner"
+components:
+  schemas:
+    Invoice:
+      type: object
+      description: A customer invoice
+      properties:
+        id:
+          type: string
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/InvoiceLine"
+    InvoiceLine:
+      type: object
+      properties:
+        amount:
+          type: number
+    InvoiceList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Invoice"
+    Pet:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        owner:
+          $ref: "#/components/schemas/Owner"
+    PetList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Pet"
+    PetId:
+      type: string
+      description: A pet's identifier
+    # Declared but referenced by nothing, which is common in real specs.
+    AuditEntry:
+      type: object
+      properties:
+        at:
+          type: string
+    # Owner refers back to Pet, so the reference graph has a cycle in it.
+    Owner:
+      type: object
+      description: Whoever owns the pet
+      properties:
+        name:
+          type: string
+        pets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Pet"

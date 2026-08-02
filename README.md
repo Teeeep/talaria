@@ -3,9 +3,9 @@
 *Postman for agents. Point it at any API doc; your agent works the API and never sees
 your credentials.*
 
-> **Status: early implementation.** `talaria version`, `talaria list` and `talaria describe`
-> work so far; the rest of the command tree is scaffolded. The [design document](docs/design/DESIGN.md) is the source
-> of truth.
+> **Status: early implementation.** `talaria version`, `talaria list`, `talaria describe`,
+> `talaria search` and `talaria uses` work so far; the rest of the command tree is scaffolded.
+> The [design document](docs/design/DESIGN.md) is the source of truth.
 
 Every API client — Postman, Insomnia, Bruno, curl itself — assumes the operator is a human who
 is entitled to see their own secrets. Hand an agent a Postman collection with an environment, a
@@ -107,6 +107,48 @@ schema nested deeper than `--depth` (6 by default) ends at `[max depth]`, so a t
 is visibly truncated rather than silently absent.
 
 `--output json` returns the same information as a structured tree, not the rendered string.
+
+## Searching a spec
+
+```sh
+talaria search ./openapi.yaml invoice
+talaria search ./openapi.yaml invoice --kind schema
+```
+
+`list` assumes you know roughly what you are looking at. `search` is for when you know the
+concept but not the endpoint. It matches a substring, case-insensitively, against three kinds of
+thing at once, and labels each result with the kind it is:
+
+| Kind | Matched against | `where` reports |
+|------|-----------------|-----------------|
+| `operation` | operationId, path, summary, description | `GET /invoices` |
+| `schema` | component schema name and description | `#/components/schemas/Invoice` |
+| `param` | parameter name and description | the location: `query`, `path`, … |
+
+`--kind` restricts the search to one of them. Results are ranked with name matches first, then
+path matches, then prose, so the endpoint actually named after the concept leads. A term that
+matches nothing prints an empty result set and exits 0 — an agent probing for a concept the API
+does not have has not made a usage error.
+
+## Finding what uses a schema
+
+```sh
+talaria uses ./openapi.yaml Pet
+```
+
+The reverse lookup: every operation that touches a schema, and where — in a parameter, in the
+request body, or in a response.
+
+```
+GET  /pets          listPets    response:200  indirect
+GET  /pets/{petId}  getPet      response:200  direct
+```
+
+References are followed, so an operation returning a `PetList` that contains an array of `Pet` is
+reported for `Pet` and marked `indirect` — the cue that the fields will not be at the top level of
+the response. Reference cycles are handled; `Pet` referring to `Owner` referring back to `Pet` is
+ordinary in real specs. A schema name the spec does not define exits 2 with the closest valid
+names; a schema nothing references exits 0 with no operations.
 
 ## Output
 

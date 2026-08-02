@@ -592,6 +592,25 @@ which is what makes the max depth "configurable" from outside the package.
 ("what touches `Invoice`?"), rarely an operationId, and `list` on a large spec is exactly the
 context dump this tool avoids. Both commands are adopted from phyllotaxis (docs/research §6).
 
+**Divergence from the plan.** Three, all in the same direction.
+
+`uses` follows *every* level of indirection, not one. Stopping at one is arbitrary — an
+`InvoiceList` wrapping an `Invoice` wrapping an `InvoiceLine` is two levels and completely
+ordinary — and the memoisation the plan already asks for is what makes the full walk cheap.
+The closure over the component-schema reference graph is computed by iterating to a fixpoint
+rather than by a memoised recursion, because a fixpoint terminates on a reference cycle
+(`Pet` → `Owner` → `Pet`) without any cycle bookkeeping at all. Each reported operation carries
+`direct`, which says whether the schema is named at the site itself or only reached through
+another schema; without it "listPets uses Pet" is misleading about where the fields will be.
+
+The haystacks are built on first search rather than at index construction. `NewIndexFor` is now
+what every spec-reading command builds, and resolving every component schema in a large spec on
+every `list` would be a real cost for something `list` never reads.
+
+Also beyond the plan: `search` results carry a `where` field locating each hit (`GET /invoices`,
+`#/components/schemas/Invoice`, `query`), so the result is directly actionable as the argument to
+the next command rather than just a name to go looking for.
+
 ---
 
 ### Task 12: `internal/secret` — SecretRef and redaction
