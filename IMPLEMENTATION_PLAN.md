@@ -1573,6 +1573,15 @@ after the canary suite rather than being bolted on later.
 1. Table-driven sequence with `t.TempDir()` for history and cache so the suite is hermetic.
 2. Drive the real cobra commands in-process with captured writers — not a mocked layer.
 
+**Divergence from step 2, as built:** the suite builds the binary in `TestMain` and drives it as
+a subprocess instead of calling the command tree in-process. The tree lives in `package main`,
+which Go cannot import, so in-process was never available from `internal/e2e` — `internal/canary`
+hit the same wall and resolved it the same way. It is also the stronger reading of both goals
+here: the exit codes asserted are the ones a shell sees, and assertion 2 greps every byte the
+process emitted rather than only the writers a test handed it. The cost is that `go test` cannot
+see the dependency on the code under test, so `readSources` reads every `.go` file in the module
+to keep the test cache honest.
+
 **Verify:** `go test ./...` and `test -z "$(gofmt -l .)" && go vet ./...`
 
 **Why:** Every prior task tests one component against its own fixtures. This is the only task
