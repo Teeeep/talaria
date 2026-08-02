@@ -25,6 +25,21 @@ func newRootCmd() *cobra.Command {
 			"spec-driven tester, and a digital twin — without exposing credentials to\n" +
 			"the agent driving it.",
 		Version: version,
+		// Args and RunE work together to give a typo exit 2 instead of 1. Left
+		// to itself cobra reports an unknown command from Find, as a bare error
+		// that exitCode can only read as a request failure — and exit 1 is the
+		// code AGENT.md calls transient and worth retrying, so a typo would send
+		// an agent into a retry loop. Rejecting the argument in Args instead
+		// classifies it, but cobra reaches ValidateArgs only on a *runnable*
+		// command, so the root needs a RunE it would otherwise do without.
+		Args: unknownCommand,
+		// SuggestionsFor, unlike cobra's own unknown-command path, does not
+		// default this: left at 0 it would only ever suggest by prefix, and
+		// `talaria vrsion` — the shape of a typo — would get nothing back.
+		SuggestionsMinimumDistance: 2,
+		// What the non-runnable root used to get for free: bare `talaria` prints
+		// the help and exits 0. That is how a human finds the commands.
+		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 		// Agents parse stderr. Cobra's default behaviour of dumping the usage
 		// block on every error, and of printing the error itself on top of the
 		// caller doing so, is noise.
@@ -80,6 +95,20 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newHistoryCmd())
 
 	return root
+}
+
+// unknownCommand rejects any positional argument on the root command, which by
+// then can only be a command that does not exist. It reproduces cobra's own
+// wording, and carries the near misses as structured alternatives rather than
+// as prose appended to the message (§3.1: "what failed, why, valid
+// alternatives") — a typo is the one error an agent can correct unaided.
+func unknownCommand(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+
+	return clierr.Usage("unknown command %q for %q", args[0], cmd.CommandPath()).
+		WithAlternatives(cmd.SuggestionsFor(args[0])...)
 }
 
 // usageArgs wraps a positional-argument validator so a wrong argument count

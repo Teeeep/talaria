@@ -204,7 +204,7 @@ than guessing again.
 |---|---|---|
 | 0 | Success. A 4xx/5xx response is still success | read `response.status` |
 | 1 | The request could not be completed: network, TLS, curl itself | check the host and `--base-url`; retrying once is reasonable |
-| 2 | Usage error: unknown operation, missing parameter, bad flag, or a mutation without `--allow-mutations` | fix the invocation using `valid_alternatives` and the message |
+| 2 | Usage error: unknown command or operation, missing parameter, bad flag, or a mutation without `--allow-mutations` | fix the invocation using `valid_alternatives` and the message |
 | 3 | The spec could not be read or parsed | check the path or URL; do not retry unchanged |
 | 4 | With `--fail-on-error`: the response was an HTTP error or violated the spec | read the `validation` block and `response.status` on stdout; report what failed |
 | 5 | A required credential is not set | tell a human which variable to export; do not retry until they have |

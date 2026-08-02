@@ -66,7 +66,7 @@
       "title": "Restore the CLI contract — usage exit code for unknown commands, JSON envelope for `version`",
       "line_start": 298,
       "line_end": 330,
-      "done": false
+      "done": true
     },
     {
       "id": 9,

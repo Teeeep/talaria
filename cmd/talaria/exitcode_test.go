@@ -88,6 +88,76 @@ func TestRunRejectsAnUnknownOutputFormat(t *testing.T) {
 	}
 }
 
+func TestRunTreatsAnUnknownCommandAsAUsageError(t *testing.T) {
+	// A typo is a bad invocation, not a failed request. Exit 1 is the code
+	// AGENT.md tells an agent is transient and worth retrying, so an
+	// unclassified "unknown command" sends it into a retry loop; DESIGN.md §4
+	// assigns 2.
+	var stdout, stderr strings.Builder
+
+	if got := run([]string{"bogus"}, &stdout, &stderr); got != 2 {
+		t.Fatalf("run(bogus) = %d, want 2; stderr: %s", got, stderr.String())
+	}
+
+	var payload struct {
+		Schema string `json:"schema"`
+		Error  struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(stderr.String()), &payload); err != nil {
+		t.Fatalf("stderr is not valid JSON: %v\ngot: %s", err, stderr.String())
+	}
+
+	if payload.Schema != "talaria/v1" {
+		t.Errorf("schema = %q, want talaria/v1", payload.Schema)
+	}
+	if payload.Error.Code != 2 {
+		t.Errorf("error.code = %d, want 2", payload.Error.Code)
+	}
+	if !strings.Contains(payload.Error.Message, "bogus") {
+		t.Errorf("error.message = %q, want it to name the unknown command", payload.Error.Message)
+	}
+}
+
+func TestRunOffersTheNearMissForAMistypedCommand(t *testing.T) {
+	var stdout, stderr strings.Builder
+
+	if got := run([]string{"vrsion"}, &stdout, &stderr); got != 2 {
+		t.Fatalf("run(vrsion) = %d, want 2; stderr: %s", got, stderr.String())
+	}
+
+	var payload struct {
+		Error struct {
+			Alternatives []string `json:"valid_alternatives"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(stderr.String()), &payload); err != nil {
+		t.Fatalf("stderr is not valid JSON: %v\ngot: %s", err, stderr.String())
+	}
+
+	if got := strings.Join(payload.Error.Alternatives, ","); got != "version" {
+		t.Errorf("error.valid_alternatives = %v, want [version]", payload.Error.Alternatives)
+	}
+}
+
+func TestRunWithNoArgumentsPrintsHelpAndSucceeds(t *testing.T) {
+	// Classifying the unknown-command case must not turn the bare invocation
+	// into an error: `talaria` on its own is how a human finds the commands.
+	var stdout, stderr strings.Builder
+
+	if got := run(nil, &stdout, &stderr); got != 0 {
+		t.Fatalf("run() = %d, want 0; stderr: %s", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Available Commands:") {
+		t.Errorf("run() stdout = %q, want the help text", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("run() wrote %q to stderr, want nothing", stderr.String())
+	}
+}
+
 func TestRunTreatsAnUnknownFlagAsAUsageError(t *testing.T) {
 	var stdout, stderr strings.Builder
 
