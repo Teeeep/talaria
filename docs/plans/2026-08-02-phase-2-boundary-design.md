@@ -32,7 +32,7 @@ DESIGN.md v0.4, which the build amended in flight.
 
 ## 1. Where the build actually landed
 
-All 33 tasks of [IMPLEMENTATION_PLAN.md](../../IMPLEMENTATION_PLAN.md) completed, 15 packages,
+All 33 tasks of [`docs/plans/archive/2026-08-03-review-fix-plan.md`](archive/2026-08-03-review-fix-plan.md) completed, 15 packages,
 `go test ./...` green, `AGENT.md` shipped. Merged to `main` as `3a672e1`.
 
 Two things happened that the plan did not anticipate:
@@ -40,7 +40,7 @@ Two things happened that the plan did not anticipate:
 1. **DESIGN.md was amended to v0.4 mid-build** (`58af63c`), adding the *credentials bind to hosts*
    invariant and the *history is untrusted input on read* rule.
 2. **A review loop produced 32 findings — 8 CRIT — and escalated to a human** rather than
-   converging. The findings are in [REVIEW_FINDINGS.md](../../REVIEW_FINDINGS.md); each names a
+   converging. The findings are in [`docs/review/2026-08-03-review-findings.md`](../review/2026-08-03-review-findings.md); each names a
    file, a line, and an empirical reproduction. They are not speculative.
 
 **The design is ahead of the code.** v0.4's host-binding invariant is entirely unimplemented —

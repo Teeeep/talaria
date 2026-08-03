@@ -17,10 +17,10 @@ talaria is an OpenAPI CLI an agent drives without seeing credentials. `docs/desi
 
 An autonomous build completed all 33 planned tasks and merged. A four-reviewer pass then found
 32 defects — 8 critical — and escalated rather than converging. Each finding in
-**`REVIEW_FINDINGS.md`** names a file, a line, and an empirical reproduction; they are verified,
+**`docs/review/2026-08-03-review-findings.md`** names a file, a line, and an empirical reproduction; they are verified,
 not speculative.
 
-**`REVIEW_FINDINGS.md` is the source of fix detail for this phase.** This document says what is
+**`docs/review/2026-08-03-review-findings.md` is the source of fix detail for this phase.** This document says what is
 in scope, in what order, and why. That file says exactly what is broken and where. Read the
 finding before writing the fix.
 
