@@ -1,0 +1,39 @@
+openapi: 3.0.3
+info:
+  title: Petstore
+  version: 1.0.0
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List all pets
+      tags:
+        - pets
+      responses:
+        "200":
+          description: A list of pets
+    post:
+      operationId: createPet
+      # Deliberately long: the pretty renderer has to truncate this rather than
+      # wrap it, and the truncation is asserted on.
+      summary: Create a pet in the store, assigning it an identifier, a name, a tag and a home
+      tags:
+        - pets
+      responses:
+        "201":
+          description: Created
+  /stores/{storeId}:
+    get:
+      operationId: getStore
+      summary: Get one store
+      tags:
+        - stores
+      responses:
+        "200":
+          description: A store
+  # No operationId, no tags, no summary: list still has to render a row for it.
+  /health:
+    get:
+      responses:
+        "200":
+          description: OK

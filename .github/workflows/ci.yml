@@ -1,0 +1,39 @@
+# Build, lint and test on every push and pull request.
+#
+# The commands below are the ones recorded in .ralph/stack.json, verbatim;
+# internal/ci/workflow_test.go fails if this file drifts from them. Running the
+# whole suite is what makes internal/canary a build gate, as DESIGN.md §5a
+# requires: a redaction regression fails CI rather than waiting for someone to
+# remember the suite exists.
+#
+# curl is preinstalled on ubuntu-latest and is well above the 7.70 floor, so
+# there is no install step; internal/curl's preflight covers hosts where it is
+# missing or too old.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.0"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Lint
+        run: 'test -z "$(gofmt -l .)" && go vet ./...'
+
+      - name: Test
+        run: go test ./...

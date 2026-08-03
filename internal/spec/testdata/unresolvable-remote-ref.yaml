@@ -1,0 +1,11 @@
+openapi: 3.1.0
+info:
+  title: Unresolvable Remote Ref
+  version: "1"
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        "200":
+          $ref: "https://talaria.invalid/shared.yaml#/components/responses/Pets"

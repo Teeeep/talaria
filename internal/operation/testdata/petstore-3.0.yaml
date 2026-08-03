@@ -1,0 +1,138 @@
+openapi: 3.0.3
+info:
+  title: Petstore
+  version: 1.0.0
+servers:
+  - url: https://api.example.com/v1
+security:
+  - apiKey: []
+paths:
+  /pets:
+    parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+    get:
+      operationId: listPets
+      summary: List all pets
+      tags:
+        - pets
+      parameters:
+        # Same (name, in) as the path-item entry above: the operation wins.
+        - name: limit
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: A list of pets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Pet"
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: createPet
+      summary: Create a pet
+      tags:
+        - pets
+      security:
+        - oauth2:
+            - "pets:write"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Pet"
+      responses:
+        "201":
+          description: Created
+    head:
+      operationId: headPets
+      summary: Pet collection headers
+      tags:
+        - pets
+      responses:
+        "200":
+          description: OK
+    options:
+      operationId: optionsPets
+      summary: Pet collection options
+      tags:
+        - pets
+      # Explicitly no auth, overriding the document-level requirement.
+      security: []
+      responses:
+        "204":
+          description: No content
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      summary: Get one pet
+      tags:
+        - pets
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: session
+          in: cookie
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    oauth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.example.com/token
+          scopes:
+            "pets:write": modify pets
+  schemas:
+    Pet:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        tag:
+          type: string
+    Error:
+      type: object
+      properties:
+        message:
+          type: string

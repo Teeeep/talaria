@@ -1,0 +1,56 @@
+{
+  "plan_file": "IMPLEMENTATION_PLAN.md",
+  "spec_file": "docs/design/DESIGN.md",
+  "generated_at": "2026-08-03T06:20:00+00:00",
+  "total_tasks": 6,
+  "tasks": [
+    {
+      "id": 1,
+      "section": "1",
+      "title": "Reject CR/LF in header, cookie and method values before they reach the wire",
+      "line_start": 22,
+      "line_end": 58,
+      "done": true
+    },
+    {
+      "id": 2,
+      "section": "2",
+      "title": "Emit `-X GET` in the rendered curl when the request carries a body",
+      "line_start": 61,
+      "line_end": 91,
+      "done": true
+    },
+    {
+      "id": 3,
+      "section": "3",
+      "title": "Make `auth check` and `call`/`run` agree on which requirement is chosen",
+      "line_start": 94,
+      "line_end": 124,
+      "done": true
+    },
+    {
+      "id": 4,
+      "section": "4",
+      "title": "Stop `run` from fabricating failures and history when cancelled",
+      "line_start": 127,
+      "line_end": 156,
+      "done": true
+    },
+    {
+      "id": 5,
+      "section": "5",
+      "title": "Scrub sensitive literals, not just resolved credentials, from curl's stderr",
+      "line_start": 159,
+      "line_end": 186,
+      "done": true
+    },
+    {
+      "id": 6,
+      "section": "6",
+      "title": "Restrict `history replay` to credentials inside the auth namespace",
+      "line_start": 189,
+      "line_end": 218,
+      "done": true
+    }
+  ]
+}

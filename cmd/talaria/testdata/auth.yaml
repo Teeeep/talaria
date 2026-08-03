@@ -1,0 +1,25 @@
+openapi: 3.0.3
+info:
+  title: Auth Fixture
+  version: 1.0.0
+servers:
+  # Deliberately unroutable: `auth check` reads the spec and asks the
+  # environment a question, so a test that reached the network is a bug.
+  - url: https://api.invalid/v1
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+# Document-level, and the only scheme in the file: the credential is required
+# for every operation, which is what makes an unset variable exit 5.
+security:
+  - bearerAuth: []
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      responses:
+        "200":
+          description: Pets

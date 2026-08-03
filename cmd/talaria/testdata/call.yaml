@@ -1,0 +1,69 @@
+openapi: 3.0.3
+info:
+  title: Call Fixture
+  version: 1.0.0
+servers:
+  # Deliberately unroutable: a dry-run that reached the network would hang or
+  # fail here rather than quietly passing.
+  - url: https://api.invalid/v1
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    petKey:
+      type: apiKey
+      in: query
+      name: api_key
+# Document-level security, so every operation below is authenticated unless it
+# says otherwise.
+security:
+  - bearerAuth: []
+paths:
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      summary: Fetch one pet
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: verbose
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: A pet
+  /pets:
+    post:
+      operationId: createPet
+      summary: Create a pet
+      responses:
+        "201":
+          description: Created
+    delete:
+      operationId: deleteAllPets
+      summary: Delete every pet
+      responses:
+        "204":
+          description: Gone
+  /public:
+    get:
+      operationId: getPublic
+      summary: An unauthenticated endpoint
+      security: []
+      responses:
+        "200":
+          description: OK
+  /keyed:
+    get:
+      operationId: getKeyed
+      summary: Authenticated with a query-string API key
+      security:
+        - petKey: []
+      responses:
+        "200":
+          description: OK

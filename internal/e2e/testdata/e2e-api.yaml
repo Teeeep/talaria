@@ -1,0 +1,113 @@
+openapi: 3.0.3
+info:
+  title: Talaria E2E API
+  version: 1.0.0
+servers:
+  # Unroutable on purpose: every case passes --base-url at the test server, so
+  # a step that ignored it would fail here rather than reach the network.
+  - url: https://api.invalid/v1
+components:
+  schemas:
+    Pet:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    secureKey:
+      type: apiKey
+      in: header
+      name: X-Secure-Key
+# Document-level, so every operation below needs the bearer token unless it
+# names its own scheme. The canary rides in on this one.
+security:
+  - bearerAuth: []
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List every pet in the store
+      tags: [pets]
+      responses:
+        "200":
+          description: The pets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Pet"
+    post:
+      operationId: createPet
+      summary: Create a pet
+      tags: [pets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      summary: Fetch one pet by id
+      tags: [pets]
+      parameters:
+        # The example is what `run` fills the path template with; without it
+        # the operation would be skipped rather than called.
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "42"
+      responses:
+        "200":
+          description: The pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /broken:
+    get:
+      operationId: getBroken
+      summary: Answers 200 with a body that violates the contract
+      tags: [ops]
+      responses:
+        "200":
+          description: A pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /secure:
+    get:
+      operationId: getSecure
+      summary: Needs a credential this suite never sets
+      tags: [secure]
+      security:
+        - secureKey: []
+      responses:
+        "200":
+          description: A pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"

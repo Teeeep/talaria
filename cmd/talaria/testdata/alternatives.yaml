@@ -1,0 +1,31 @@
+openapi: 3.0.3
+info:
+  title: Alternatives Fixture
+  version: 1.0.0
+servers:
+  # Deliberately unroutable: the tests on this fixture are dry runs and
+  # pre-flight checks, so anything that reached the network is a bug.
+  - url: https://api.invalid/v1
+components:
+  securitySchemes:
+    keyA:
+      type: apiKey
+      in: header
+      name: X-A
+    keyB:
+      type: apiKey
+      in: header
+      name: X-B
+paths:
+  /either:
+    get:
+      operationId: getEither
+      summary: Authenticated with either API key
+      # Two alternatives talaria can supply both of. `auth check` and `call`
+      # must pick the same one, which is the one whose variable is exported.
+      security:
+        - keyA: []
+        - keyB: []
+      responses:
+        "200":
+          description: OK

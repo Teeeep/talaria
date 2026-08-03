@@ -1,0 +1,88 @@
+// Package output renders command results in the three shapes talaria speaks:
+// machine-readable JSON carrying a versioned schema field, aligned pretty text
+// for humans, and bare TSV for shell pipelines (DESIGN.md §3.1).
+package output
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"strings"
+)
+
+// SchemaVersion is the value of the top-level "schema" field on every JSON
+// payload. Agent prompts key off it, so it changes only on a breaking change to
+// the output shape.
+const SchemaVersion = "talaria/v1"
+
+// Format is an output rendering mode selected by --output.
+type Format string
+
+const (
+	FormatJSON   Format = "json"
+	FormatPretty Format = "pretty"
+	FormatTSV    Format = "tsv"
+)
+
+// formats lists every valid Format in the order shown to users.
+var formats = []Format{FormatJSON, FormatPretty, FormatTSV}
+
+// Formats returns every valid --output value, in the order shown to users.
+// Callers rendering a structured usage error need the list as data, not as
+// prose inside ParseFormat's message. The returned slice is a copy.
+func Formats() []string { return names(formats) }
+
+// names renders a list of formats as the strings a user types.
+func names(fs []Format) []string {
+	valid := make([]string, len(fs))
+	for i, f := range fs {
+		valid[i] = string(f)
+	}
+	return valid
+}
+
+// ParseFormat converts a --output value into a Format. The error names every
+// valid value so an agent can correct itself without reading the help text.
+func ParseFormat(s string) (Format, error) { return parseFormat("output", s, formats) }
+
+// parseFormat resolves s against valid. Kind names the flag being parsed, so a
+// rejected --report says "report format" and points at the values --report
+// takes rather than at --output's shorter list.
+func parseFormat(kind, s string, valid []Format) (Format, error) {
+	for _, f := range valid {
+		if Format(s) == f {
+			return f, nil
+		}
+	}
+
+	return "", fmt.Errorf("unknown %s format %q: valid values are %s", kind, s, strings.Join(names(valid), ", "))
+}
+
+// Resolve picks the output format. An explicit --output value always wins; with
+// no explicit value the default is pretty on a terminal and JSON when piped,
+// because piped output is being read by a program.
+func Resolve(explicit string, isTTY bool) (Format, error) {
+	if explicit != "" {
+		return ParseFormat(explicit)
+	}
+	if isTTY {
+		return FormatPretty, nil
+	}
+	return FormatJSON, nil
+}
+
+// IsTTY reports whether w is a character device, i.e. an interactive terminal.
+// A writer that is not an *os.File (a test buffer, a pipe wrapper) is never a
+// TTY, so tests and pipelines both land on the machine-readable default.
+func IsTTY(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}

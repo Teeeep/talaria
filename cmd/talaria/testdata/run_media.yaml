@@ -1,0 +1,45 @@
+openapi: 3.0.3
+info:
+  title: Media Type Fixture
+  version: 1.0.0
+servers:
+  # Deliberately unroutable: every test passes --base-url.
+  - url: https://api.invalid/v1
+paths:
+  /pets:
+    post:
+      operationId: createPet
+      summary: Create a pet, declaring XML before JSON
+      tags: [pets]
+      requestBody:
+        required: true
+        # XML first on purpose: generation produces JSON, so the media type the
+        # request carries has to come from the schema that was generated from
+        # and not from whichever entry the document happens to list first.
+        content:
+          application/xml:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
