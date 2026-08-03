@@ -439,6 +439,87 @@ func TestBuildConfigRendersBasicAuthAsTheUserDirective(t *testing.T) {
 	}
 }
 
+// TestBuildConfigRejectsCRLFThatWouldSplitTheRequest is the last gate, and it
+// is not redundant with the binder's: not every Request comes from
+// request.Build — `history replay` rebuilds one from a stored entry, which is
+// untrusted input read back off disk. Escaping is not the answer here, because
+// escapeDirective only protects curl's own parser: curl un-escapes \r\n back to
+// the two bytes and writes them to the socket, ending the header line early.
+func TestBuildConfigRejectsCRLFThatWouldSplitTheRequest(t *testing.T) {
+	const injection = "ok\r\nX-Injected: 1"
+
+	base := func() *request.Request {
+		return &request.Request{Method: "GET", BaseURL: "https://api.example.com", Path: "/pets"}
+	}
+
+	tests := []struct {
+		name string
+		req  func() *request.Request
+	}{
+		{"header value", func() *request.Request {
+			req := base()
+			req.Headers = []request.Pair{{Name: "X-Trace", Value: request.Literal(injection)}}
+			return req
+		}},
+		{"header name", func() *request.Request {
+			req := base()
+			req.Headers = []request.Pair{{Name: "X-Trace\r\nX-Injected", Value: request.Literal("ok")}}
+			return req
+		}},
+		{"basic auth credential", func() *request.Request {
+			req := base()
+			req.Headers = []request.Pair{{
+				Name:  "Authorization",
+				Value: request.Secret(secret.Env("TALARIA_AUTH_BASIC"), request.EncodeBasic),
+			}}
+			return req
+		}},
+		{"cookie value", func() *request.Request {
+			req := base()
+			req.Cookies = []request.Pair{{Name: "flavour", Value: request.Literal(injection)}}
+			return req
+		}},
+		{"cookie name", func() *request.Request {
+			req := base()
+			req.Cookies = []request.Pair{{Name: "flavour\r\nX-Injected: 1", Value: request.Literal("salty")}}
+			return req
+		}},
+		{"method", func() *request.Request {
+			req := base()
+			req.Method = "GET /admin HTTP/1.1"
+			return req
+		}},
+		{"method with a CRLF", func() *request.Request {
+			req := base()
+			req.Method = "GET\r\nX-Injected: 1"
+			return req
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TALARIA_AUTH_BASIC", "alice:pw\r\nX-Injected: 1")
+
+			config, _, cleanup, err := BuildConfig(tc.req(), Capture{})
+			if cleanup != nil {
+				cleanup()
+			}
+
+			if err == nil {
+				t.Fatalf("BuildConfig() succeeded, want a refusal; document:\n%s", config)
+			}
+			if code := clierr.From(err).Code; code != clierr.CodeUsage {
+				t.Errorf("exit code = %d, want %d", code, clierr.CodeUsage)
+			}
+			// The document is what curl reads. A refusal that still returns one
+			// is a refusal a caller can ignore by accident.
+			if config != nil {
+				t.Errorf("a document was built despite the refusal:\n%s", config)
+			}
+		})
+	}
+}
+
 // bodyFilePath extracts the path from the document's data-binary = "@path"
 // directive, failing the test if the body was not diverted to a file.
 func bodyFilePath(t *testing.T, config []byte) string {

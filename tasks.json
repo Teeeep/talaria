@@ -10,7 +10,7 @@
       "title": "Reject CR/LF in header, cookie and method values before they reach the wire",
       "line_start": 22,
       "line_end": 58,
-      "done": false
+      "done": true
     },
     {
       "id": 2,

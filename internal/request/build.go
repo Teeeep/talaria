@@ -71,7 +71,7 @@ func Build(in Inputs) (*Request, error) {
 
 	req := &Request{
 		OperationID: in.Op.ID,
-		Method:      in.Op.Method,
+		Method:      b.method(in.Op.Method),
 		BaseURL:     b.baseURL(),
 	}
 
@@ -247,6 +247,28 @@ func (b *binder) path(bound map[string]string) string {
 	return path
 }
 
+// method holds the operation's method to the HTTP token charset before it can
+// become curl's `request` directive.
+//
+// The request line is `METHOD SP target SP HTTP/1.1`, so a method carrying a
+// space rewrites the target and one carrying a CRLF appends a request of the
+// caller's choosing. The method comes from the spec, which is untrusted input
+// like every other source here.
+//
+// An empty method is left alone: it is the absence of a method rather than a
+// bad one, and internal/curl already reads it as "let curl default to GET".
+func (b *binder) method(method string) string {
+	if method == "" || isFieldName(method) {
+		return method
+	}
+
+	// Quoted, unlike a rejected value: a method is a verb, never a credential,
+	// and %q renders any CR or LF in it as an escape rather than a real one.
+	b.fail("method %q is not a valid HTTP method", method)
+
+	return ""
+}
+
 // located returns the bound parameters that belong in one location, in the
 // order the spec declares them so the result is stable across runs.
 func (b *binder) located(bound map[string]string, in string) []Pair {
@@ -255,9 +277,26 @@ func (b *binder) located(bound map[string]string, in string) []Pair {
 		if p.In != in {
 			continue
 		}
-		if value, ok := bound[p.Name]; ok {
-			out = append(out, Pair{Name: p.Name, Value: Literal(value)})
+
+		value, ok := bound[p.Name]
+		if !ok {
+			continue
 		}
+
+		// Only header names are field names. A query or cookie parameter is an
+		// ordinary string an API is free to spell `filter[status]`.
+		if in == inHeader && !isFieldName(p.Name) {
+			b.fail("%s declares header parameter %q, which is not a valid HTTP header name",
+				operationName(b.in.Op), p.Name)
+			continue
+		}
+
+		if SplitsRequest(p.Name, value) {
+			b.fail("--param %s %s (%s parameter)", p.Name, crlfProblem, p.In)
+			continue
+		}
+
+		out = append(out, Pair{Name: p.Name, Value: Literal(value)})
 	}
 
 	return out
@@ -285,9 +324,21 @@ func (b *binder) headers(bound map[string]string) []Pair {
 	sort.Strings(names)
 
 	for _, name := range names {
-		if !set[strings.ToLower(name)] {
-			out = append(out, Pair{Name: name, Value: Literal(b.in.Profile.Headers[name])})
+		if set[strings.ToLower(name)] {
+			continue
 		}
+
+		value := b.in.Profile.Headers[name]
+		if !isFieldName(name) {
+			b.fail("profile %s sets header %q, which is not a valid HTTP header name", b.in.Profile.Name, name)
+			continue
+		}
+		if SplitsRequest(name, value) {
+			b.fail("profile %s header %s %s", b.in.Profile.Name, name, crlfProblem)
+			continue
+		}
+
+		out = append(out, Pair{Name: name, Value: Literal(value)})
 	}
 
 	return out
@@ -340,6 +391,11 @@ func (b *binder) pairs(raws []string, flag string, rule *nameRule) []Pair {
 			continue
 		}
 
+		if SplitsRequest(name, value) {
+			b.fail("%s %d %s%s", flag, i+1, crlfProblem, elided(raw))
+			continue
+		}
+
 		out = append(out, Pair{Name: name, Value: Literal(value)})
 	}
 
@@ -366,6 +422,45 @@ const fieldNameChars = "!#$%&'*+-.^_`|~" +
 	"0123456789" +
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
 	"abcdefghijklmnopqrstuvwxyz"
+
+// crlfProblem completes the messages that reject a request-splitting value. It
+// describes the fault without echoing what caused it, for the reason `pairs`
+// gives: the value may be a credential.
+const crlfProblem = "carries a carriage return or newline, which would end its line early and " +
+	"append a header the caller did not write (its value is not echoed)"
+
+// SplitsRequest reports whether a name=value pair would break out of the field
+// it sits in. A CR or an LF ends a header line on the wire, so a value holding
+// either turns one field into two — or, with a bare CRLF pair, ends the header
+// block and starts a second request on the same connection.
+//
+// Both halves are checked because both go on the wire: a cookie's name is
+// joined to its value in one Cookie header, and a query name is only safe
+// because QueryString escapes it.
+//
+// Escaping is deliberately not the answer. curl's config document has escapes
+// for both characters (see internal/curl's escapeDirective), but they protect
+// curl's *parser* — curl un-escapes them back to the literal bytes and writes
+// those to the socket. A value carrying a CRLF is a value the caller cannot
+// have meant, so it is a usage error, not something to sanitise into a request
+// they did not ask for.
+//
+// It is exported for the same reason IsMethod is: internal/curl re-checks every
+// pair as the last gate before the document, and a credential is only a string
+// there — it is resolved after this package has finished with the Request.
+func SplitsRequest(name, value string) bool {
+	return strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n")
+}
+
+// IsMethod reports whether s can go in a request line as its method. An HTTP
+// method is a token (RFC 9110 §9), the same production a field name is drawn
+// from, so it is the same check under the name that says what it guards.
+//
+// It is exported for internal/curl, which re-checks the method as the last gate
+// before the `request` directive: not every Request is built by this package —
+// `history replay` rebuilds one from a stored entry — and the charset should
+// not be spelled out twice.
+func IsMethod(s string) bool { return isFieldName(s) }
 
 // isFieldName reports whether name can be sent as a header name.
 //

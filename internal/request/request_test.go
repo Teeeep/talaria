@@ -328,6 +328,140 @@ func TestBuildAcceptsAQueryNameAFieldNameWouldReject(t *testing.T) {
 	}
 }
 
+// injection is the shape of a request-splitting value: a plausible value, a
+// CRLF that ends the field line, and a header the caller never wrote. Tests
+// assert its second half never survives into the request or into the message
+// that rejected it.
+const injection = "ok\r\nX-Injected: 1"
+
+// TestBuildRejectsCRLFInAValue closes request splitting at the binder. A value
+// carrying \r\n ends its own header line and starts whatever follows it — a
+// second header, or with a bare CRLF pair a second request on the same
+// connection. curl's config document is no defence: escapeDirective protects
+// the *directive* syntax and curl un-escapes \r\n straight back to the two
+// bytes it writes to the socket. The only place to stop it is before the value
+// becomes a Pair.
+func TestBuildRejectsCRLFInAValue(t *testing.T) {
+	tests := []struct {
+		name string
+		// apply puts the offending value on the inputs, over petId=1.
+		apply func(in *Inputs)
+		// wants are the substrings the message must carry so the caller can
+		// find what to fix.
+		wants []string
+	}{
+		{
+			name:  "spec-declared header parameter",
+			apply: func(in *Inputs) { in.Params = append(in.Params, "X-Trace="+injection) },
+			wants: []string{"X-Trace"},
+		},
+		{
+			name:  "spec-declared cookie parameter",
+			apply: func(in *Inputs) { in.Params = append(in.Params, "flavour="+injection) },
+			wants: []string{"flavour"},
+		},
+		{
+			name:  "spec-declared query parameter",
+			apply: func(in *Inputs) { in.Params = append(in.Params, "verbose="+injection) },
+			wants: []string{"verbose"},
+		},
+		{
+			name:  "--header flag",
+			apply: func(in *Inputs) { in.Headers = []string{"X-Trace=" + injection} },
+			wants: []string{"--header 1"},
+		},
+		{
+			name:  "--query flag",
+			apply: func(in *Inputs) { in.Query = []string{"q=" + injection} },
+			wants: []string{"--query 1"},
+		},
+		{
+			name: "profile header",
+			apply: func(in *Inputs) {
+				in.Profile = &config.Profile{Name: "staging", Headers: map[string]string{"X-Env": injection}}
+			},
+			wants: []string{"staging", "X-Env"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			in := inputs(t, "getPet")
+			in.Params = []string{"petId=1"}
+			tc.apply(&in)
+
+			err := buildErr(t, in)
+
+			for _, want := range tc.wants {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+			// Same rule as every other rejected value: it may be a credential,
+			// so the message names the position and elides the content.
+			if strings.Contains(err.Error(), "X-Injected") {
+				t.Errorf("error %q echoes the rejected value back", err)
+			}
+		})
+	}
+}
+
+// TestBuildRejectsASpecHeaderParamNameThatIsNotAFieldName holds a spec's own
+// header names to the rule --header names already obey. A spec is untrusted
+// input like any other: a parameter declared `in: header` with a colon or a
+// space in its name renders a malformed wire header, and there is no reason the
+// flag path should be the only one that catches it.
+func TestBuildRejectsASpecHeaderParamNameThatIsNotAFieldName(t *testing.T) {
+	in := Inputs{
+		Op: operation.Operation{ID: "odd", Method: "GET", Path: "/odd", Params: []operation.Param{
+			{Name: "X-Trace: abc", In: "header"},
+		}},
+		BaseURL: "https://api.example.com",
+		Params:  []string{"X-Trace: abc=1"},
+	}
+
+	err := buildErr(t, in)
+
+	if !strings.Contains(err.Error(), "X-Trace") {
+		t.Errorf("error %q does not name the offending header parameter", err)
+	}
+}
+
+// TestBuildRejectsAProfileHeaderNameThatIsNotAFieldName is the same rule for
+// the third source of header names. A profile is a file on disk, and a name
+// with a space in it is a typo that would otherwise reach the wire.
+func TestBuildRejectsAProfileHeaderNameThatIsNotAFieldName(t *testing.T) {
+	in := inputs(t, "listPets")
+	in.Params = []string{"limit=10"}
+	in.Profile = &config.Profile{Name: "staging", Headers: map[string]string{"X Env": "1"}}
+
+	err := buildErr(t, in)
+
+	for _, want := range []string{"staging", "X Env"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// TestBuildRejectsAMethodThatIsNotAToken guards the request line rather than a
+// header line. The line is `METHOD SP target SP HTTP/1.1`, so a method holding
+// a space rewrites the target and one holding a CRLF appends a request.
+func TestBuildRejectsAMethodThatIsNotAToken(t *testing.T) {
+	for _, method := range []string{"GET /admin HTTP/1.1", "GET\r\nX-Injected: 1", "GET\tPOST"} {
+		t.Run(method, func(t *testing.T) {
+			in := Inputs{
+				Op:      operation.Operation{ID: "odd", Method: method, Path: "/odd"},
+				BaseURL: "https://api.example.com",
+			}
+
+			if err := buildErr(t, in); !strings.Contains(err.Error(), "method") {
+				t.Errorf("error %q does not say the method is the problem", err)
+			}
+		})
+	}
+}
+
 func TestBuildRejectsAnUndeclaredParam(t *testing.T) {
 	in := inputs(t, "getPet")
 	in.Params = []string{"petId=1", "nosuchparam=1"}

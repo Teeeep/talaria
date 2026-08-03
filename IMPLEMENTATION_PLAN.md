@@ -51,10 +51,10 @@ not done. Build, `gofmt`, `go vet` and `go test -race ./...` are clean at HEAD a
    method containing a space is rejected.
 
 **Verify:** `go test ./...`
-- [ ] A header, cookie or query value containing `\r` or `\n` — from a spec parameter, a profile
+- [x] A header, cookie or query value containing `\r` or `\n` — from a spec parameter, a profile
       header or a flag — is a usage error (exit 2), not a second request on the wire.
-- [ ] Spec- and profile-supplied header names are held to `isFieldName`, as `--header` names are.
-- [ ] No test asserts on the rejected value's content appearing in the error message.
+- [x] Spec- and profile-supplied header names are held to `isFieldName`, as `--header` names are.
+- [x] No test asserts on the rejected value's content appearing in the error message.
 
 ---
 

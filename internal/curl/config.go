@@ -137,6 +137,12 @@ func (d *document) build(req *request.Request, capture Capture, opts Options) er
 	}
 	d.directive("url", url)
 
+	if req.Method != "" && !request.IsMethod(req.Method) {
+		// Quoted where a value never is: a method is a verb, not a credential,
+		// and %q renders any CR or LF in it as an escape rather than a real one.
+		return clierr.Usage("method %q is not a valid HTTP method", req.Method)
+	}
+
 	// head rather than `request = "HEAD"`: -X HEAD leaves curl waiting for a body
 	// of Content-Length bytes that a compliant server never sends, so the call
 	// hangs (or exits 18 when the connection closes first). HEAD is a safe method
@@ -212,6 +218,10 @@ func (d *document) auth(req *request.Request) error {
 			return err
 		}
 
+		if err := checkSplit("header", h.Name, value); err != nil {
+			return err
+		}
+
 		if h.Value.Encoding() == request.EncodeBasic {
 			d.directive("user", strings.TrimPrefix(value, h.Value.Prefix()))
 			continue
@@ -237,6 +247,10 @@ func (d *document) cookies(req *request.Request) error {
 			return err
 		}
 
+		if err := checkSplit("cookie", c.Name, value); err != nil {
+			return err
+		}
+
 		if i > 0 {
 			b.WriteString("; ")
 		}
@@ -246,6 +260,23 @@ func (d *document) cookies(req *request.Request) error {
 	d.directive("cookie", b.String())
 
 	return nil
+}
+
+// checkSplit is the last gate before a pair is written into the document, and
+// it is not redundant with the binder's: `history replay` rebuilds a Request
+// from a stored entry rather than from request.Build, and a credential is only
+// a string here, after resolve. escapeDirective is not the answer — it protects
+// curl's parser, and curl un-escapes \r\n back to the two bytes on the wire.
+//
+// Only the name is quoted back, and never the value: the value may be the
+// resolved credential this package exists to keep off every other surface.
+func checkSplit(kind, name, value string) error {
+	if !request.SplitsRequest(name, value) {
+		return nil
+	}
+
+	return clierr.Usage("%s %q carries a carriage return or newline, which would end its line "+
+		"early and append a header the caller did not write (its value is not echoed)", kind, name)
 }
 
 // body writes the request body, inline when it can be and via a temp file when
