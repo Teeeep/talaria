@@ -46,8 +46,13 @@ Within a package, a file is one concern. The splits that exist, and what belongs
 `request/build.go` is the binder, `request/server.go` everything that answers *where does this
 go*, `request/wire.go` the charset rules for what may go on the wire, `request/hosts.go` the
 allowed host set; `curl/config.go` builds the document, `curl/firewall.go` is the half that
-resolves, re-checks and zeroes; `cmd/talaria/history.go` is the list/show views and the store
-plumbing, `history_replay.go` the replay command. Tests split the same way, with the same names.
+resolves, re-checks and zeroes; `corpus/store.go` is the `Store` API and id assignment,
+`corpus/file.go` the file mechanics under it — find, bounded read, append, trim, replace;
+`cmd/talaria/call.go` is the `call` command with its binder wiring and view structs,
+`record.go` the recording plumbing `call` and `history replay` share, `history.go` the
+list/show views and the store plumbing, `history_replay.go` the replay command. Tests split
+the same way, with the same names: `curl/firewall_test.go` holds the resolve, CRLF-refusal and
+zeroing cases, `config_test.go` the ones whose subject is the shape of the document.
 
 ## House rules
 
@@ -152,6 +157,15 @@ list history uses — because the body is raw `[]byte` and never becomes a `requ
 is the one display field no `Value` method protects. Never assign `string(req.Body.Data)` to a
 field a caller reads.
 
+**One redaction firewall per invocation.** `newRedactors(cfg)` (`cmd/talaria/record.go`, beside
+`recordCall` and `observed` — the recording plumbing `call` and `history replay` share) is called
+exactly once, in the command's `RunE`, and the `corpus.Redactors` it returns is threaded from
+there into all three surfaces that redact: the binder (`buildRequest`/`buildReplay` take it as
+`red` and pass `red.Request` to `request.Inputs.Redactor`), the view (`callPayload`'s
+`red.Body`), and the store (`recordCall`). Both commands used to build it twice — once for the
+binder, once for history — so a change making one surface's list configurable would have applied
+to only one of them, silently. Never call `newRedactors` below `RunE`; pass the value down.
+
 **`auth check` and `call` may not disagree.** DESIGN.md:329 is a contract, not a nicety: the
 verdict lives in `internal/config` — `Covers`, `Resolve` and `Unsatisfied(ops, creds)`, which is
 the whole of `auth check`'s exit code — and `cmd/talaria/auth.go` only calls it. Never re-derive
@@ -171,7 +185,7 @@ that reaches the wire as hostile until checked — a media type became a header-
 exactly this way. Failures must be entry-level or request-level, never process-level.
 
 **Every read of the history file is bounded, in one place.** `readStore(path)` in
-`internal/corpus/store.go` is the only way the store's bytes are loaded — `Read`, `storedIDs` and
+`internal/corpus/file.go` is the only way the store's bytes are loaded — `Read`, `storedIDs` and
 `trim` all go through it — and it bounds the bytes *actually read* through an `io.LimitReader`
 rather than trusting `os.Stat`, because a store that is a symlink to `/dev/zero` or a FIFO stats
 as empty and reads forever. Never re-introduce an `os.ReadFile` on this path. Two bounds, both
@@ -183,6 +197,16 @@ recorded *after* a hostile one still come back. `corpus.Body.Bytes` carries the 
 encoded length before the decode — a base64 `data` is an amplifier, a few hundred bytes of line
 naming hundreds of megabytes of allocation — and the decoded length after, because base64 rounds
 to three-byte groups and cannot tell `MaxBody` from `MaxBody+1`.
+
+`corpus.readStore` and `spec.(*Loader).fetch` write the same four-line idiom —
+`io.ReadAll(io.LimitReader(r, max+1))`, then `len(data) > max` — and they are deliberately *not*
+one helper. Task 12 tried it: what differs between them is the error, and that is the part that
+matters. `spec` classifies through `clierr.SpecLoad` so the bound becomes an exit code, while
+`corpus` needs a *different* message for the over-bound case than for an I/O error ("move it
+aside" is wrong advice for a permission denial), so a shared helper would need a sentinel and an
+`errors.Is` at each call site and save nothing. Copy the four lines and the `+1`; the tests that
+hold them honest (`requireOverBound`, and the store's own) already require the error to name the
+limit.
 
 **Reading a stored entry back belongs to `internal/corpus`.** `Entry.Replay(op)` returns a
 `Replayable` — the `name=value` strings `request.Inputs` takes — and it is where the path-template

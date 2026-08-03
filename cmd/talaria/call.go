@@ -150,7 +150,11 @@ func newCallCmd() *cobra.Command {
 				return err
 			}
 
-			req, err := buildRequest(cmd, cfg, op, doc, params, queries, headers, body)
+			// One firewall per invocation, built before anything that redacts:
+			// the binder, the view and the store all read this one.
+			redactors := newRedactors(cfg)
+
+			req, err := buildRequest(cmd, cfg, op, doc, redactors, params, queries, headers, body)
 			if err != nil {
 				return err
 			}
@@ -167,7 +171,6 @@ func newCallCmd() *cobra.Command {
 			}
 
 			renderer := output.New(format, cmd.OutOrStdout())
-			redactors := newRedactors(cfg)
 			if dryRun {
 				// Nothing is recorded: a dry run is a question about a request,
 				// not a request, and history answers "what have I already tried".
@@ -235,68 +238,18 @@ func timeoutOptions(seconds float64) curl.Options {
 	return curl.Options{MaxTime: time.Duration(seconds * float64(time.Second))}
 }
 
-// newRedactors builds the pair of firewalls an entry passes through on its way
-// to disk, extended with whatever the config file added. Request and response
-// share the header list: a name worth hiding on the way back is worth hiding on
-// the way out.
-func newRedactors(cfg *config.Config) corpus.Redactors {
-	return corpus.Redactors{
-		Request:  secret.NewRedactor(cfg.Redact.Headers...),
-		Response: secret.NewResponseRedactor(cfg.Redact.Headers, cfg.Redact.BodyPaths),
-	}
-}
-
-// recordCall writes one entry, reporting a failure to write as a warning and
-// nothing more.
-//
-// A call that reached the server and came back succeeded; whether talaria then
-// managed to write the fact down is not a reason to change the exit code an
-// agent branches on. The warning still goes to stderr, because history silently
-// not recording is how a user discovers weeks later that it never was.
-func recordCall(
-	stderr io.Writer,
-	store *corpus.Store,
-	source corpus.Source,
-	req *request.Request,
-	resp *curl.Response,
-	red corpus.Redactors,
-) {
-	if !store.Recording() {
-		return
-	}
-
-	if err := store.Append(corpus.NewEntry(source, req, observed(resp), red)); err != nil {
-		fmt.Fprintf(stderr, "warning: the call was not recorded in history: %v\n", err)
-	}
-}
-
-// observed narrows an executor response to the four fields the store records.
-//
-// This is the one place the two types meet: internal/corpus may not import
-// internal/curl, so something has to translate, and having it here keeps every
-// caller of recordCall passing the response it already holds. A nil response —
-// a dry run, or a call whose connection failed — stays nil, which NewEntry
-// records as a request that produced no observation.
-func observed(resp *curl.Response) *corpus.Observed {
-	if resp == nil {
-		return nil
-	}
-
-	return &corpus.Observed{
-		Status:   resp.Status,
-		Headers:  resp.Headers,
-		Body:     resp.Body,
-		TimingMS: resp.TimingMS,
-	}
-}
-
 // buildRequest resolves the profile and the operation's credentials, then binds
 // the flags to the operation.
+//
+// red is the caller's redactors rather than a set built here: the binder's
+// firewall and the one history and the view use are the same firewall, and a
+// second construction is a second thing to keep in step.
 func buildRequest(
 	cmd *cobra.Command,
 	cfg *config.Config,
 	op operation.Operation,
 	doc *spec.Document,
+	red corpus.Redactors,
 	params, queries, headers, body []string,
 ) (*request.Request, error) {
 	prof, err := selectProfile(cmd, cfg)
@@ -333,7 +286,7 @@ func buildRequest(
 		// The same list history is redacted with. A pattern that hides a value
 		// in the permanent artifact but not on the stdout an agent reads has
 		// the firewall backwards.
-		Redactor: newRedactors(cfg).Request,
+		Redactor: red.Request,
 		// The Go process owns the real stdin, and `--body -` is the only thing
 		// that reads it. curl's stdin carries the config document and nothing
 		// else (DESIGN.md §5a).

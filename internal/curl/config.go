@@ -318,6 +318,12 @@ func (d *document) body(req *request.Request) error {
 }
 
 // tempFile writes data to a 0600 file and records it for cleanup.
+//
+// cleanup unlinks the file; it does not overwrite the bytes first, so a body
+// the user put a credential in is protected by the mode and by its lifetime,
+// not by scrubbing the way the in-memory buffers are. Stated rather than fixed
+// because overwriting is a behaviour change with its own failure modes on a
+// copy-on-write filesystem, and it belongs in a task of its own.
 func (d *document) tempFile(data []byte) (string, error) {
 	f, err := os.CreateTemp("", "talaria-body-*")
 	if err != nil {

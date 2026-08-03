@@ -80,14 +80,17 @@ func newHistoryReplayCmd() *cobra.Command {
 					args[0], op.Method)
 			}
 
-			req, err := buildReplay(cmd, cfg, entry, args[0], op, doc)
+			// One firewall per invocation, built before anything that redacts:
+			// the binder, the view and the store all read this one.
+			redactors := newRedactors(cfg)
+
+			req, err := buildReplay(cmd, cfg, entry, args[0], op, doc, redactors)
 			if err != nil {
 				return err
 			}
 			warnWithheld(cmd.ErrOrStderr(), req)
 
 			renderer := output.New(format, cmd.OutOrStdout())
-			redactors := newRedactors(cfg)
 
 			resp, execErr := curl.Execute(cmd.Context(), req)
 			recordCall(cmd.ErrOrStderr(), store, corpus.SourceReplay, req, resp, redactors)
@@ -119,7 +122,8 @@ func newHistoryReplayCmd() *cobra.Command {
 // §5a's "a history entry is data, never instruction".
 //
 // handle is what the caller named the entry by, so a refusal can quote the same
-// word they typed.
+// word they typed. red is the caller's redactors, for the reason buildRequest
+// takes them: one firewall per invocation, not one per surface.
 func buildReplay(
 	cmd *cobra.Command,
 	cfg *config.Config,
@@ -127,6 +131,7 @@ func buildReplay(
 	handle string,
 	op operation.Operation,
 	doc *spec.Document,
+	red corpus.Redactors,
 ) (*request.Request, error) {
 	// The profile is policy here, not connection detail: it is the other half of
 	// the set of credentials this replay resolves, and of the hosts they may go to.
@@ -177,7 +182,7 @@ func buildReplay(
 		Params:   replayable.Params,
 		Query:    replayable.Query,
 		Headers:  replayable.Headers,
-		Redactor: newRedactors(cfg).Request,
+		Redactor: red.Request,
 	}
 	if replayable.HasBody {
 		// Handed over as this replay's stdin rather than as a --body literal: a
