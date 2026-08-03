@@ -115,20 +115,44 @@ type Body struct {
 // store is a file anything can write, and a newer talaria may have added one.
 // Reading such a Data as literal text is the exact silent corruption the
 // Encoding field exists to prevent.
+//
+// MaxBody bounds the result. newBody applies it on the way in by truncating, so
+// no entry talaria wrote can exceed it — but the store is user-writable, and a
+// base64 Data is an amplifier: a few hundred bytes of line can name hundreds of
+// megabytes of decode. The encoded length is checked first, so a body that
+// could not possibly fit is refused without allocating; the decoded length is
+// checked after, because base64 rounds to three-byte groups and cannot tell
+// MaxBody from MaxBody+1 on its own.
 func (b Body) Bytes() ([]byte, error) {
 	switch b.Encoding {
 	case "":
+		if len(b.Data) > MaxBody {
+			return nil, tooLarge(len(b.Data))
+		}
+
 		return []byte(b.Data), nil
 	case EncodingBase64:
+		if len(b.Data) > base64.StdEncoding.EncodedLen(MaxBody) {
+			return nil, tooLarge(base64.StdEncoding.DecodedLen(len(b.Data)))
+		}
 		data, err := base64.StdEncoding.DecodeString(b.Data)
 		if err != nil {
 			return nil, clierr.Usage("the recorded body claims %s encoding but does not decode: %v", EncodingBase64, err)
+		}
+		if len(data) > MaxBody {
+			return nil, tooLarge(len(data))
 		}
 
 		return data, nil
 	default:
 		return nil, clierr.Usage("the recorded body has encoding %q, which this version of talaria cannot read", b.Encoding)
 	}
+}
+
+// tooLarge is the refusal a recorded body past MaxBody gets. It names the size
+// asked for, since the entry itself is the only place that number came from.
+func tooLarge(size int) error {
+	return clierr.Usage("the recorded body is %d bytes, past the %d this version of talaria will read back", size, MaxBody)
 }
 
 // Observed is what came back, in the only shape this package needs to record

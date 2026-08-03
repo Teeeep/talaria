@@ -29,3 +29,8 @@ that pass deliberately did not do, and why.
   which the store must not do if it is to stay usable by the twin, which has no profiles. It
   was split into its own file instead; the two rules it holds (an off-set stored host is
   refused, a stored body goes via stdin) are one call each into a package that owns them.
+- `internal/corpus/store.go` is 434 lines and holds two concerns: the `Store` API (`Append`,
+  `Read`, `Recording`, `Path`, id assignment) and the file mechanics underneath it (`readStore`,
+  `write`, `trim`, `replace`, `lines`, `lineHead`, `stateDir`). The seam is that split — a
+  `file.go` beside `store.go`, matching how `curl` splits `config.go` from `firewall.go`. The
+  size bounds added in task 9 all live on the mechanics side.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Teeeep/talaria/internal/request"
@@ -125,6 +126,59 @@ func TestBodyBytesRefusesUndecodableBase64(t *testing.T) {
 
 	if _, err := body.Bytes(); err == nil {
 		t.Fatal("Bytes() accepted a Data that is not base64, want an error")
+	}
+}
+
+// MaxBody is enforced at write time by newBody, which truncates. Nothing
+// enforced it at read time, so a hand-edited line could name a decoded size no
+// call this tool made could produce and get it allocated. The bound is checked
+// before the decode, so the allocation never happens.
+func TestBodyBytesRefusesABase64BodyThatDecodesPastMaxBody(t *testing.T) {
+	body := Body{
+		ContentType: "application/octet-stream",
+		Data:        base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, MaxBody+1)),
+		Encoding:    EncodingBase64,
+	}
+
+	got, err := body.Bytes()
+	if err == nil {
+		t.Fatalf("Bytes() returned %d bytes for a body past MaxBody, want an error", len(got))
+	}
+}
+
+func TestBodyBytesRefusesAPlainBodyPastMaxBody(t *testing.T) {
+	body := Body{ContentType: "application/json", Data: strings.Repeat("A", MaxBody+1)}
+
+	got, err := body.Bytes()
+	if err == nil {
+		t.Fatalf("Bytes() returned %d bytes for a body past MaxBody, want an error", len(got))
+	}
+}
+
+// The bound is a refusal of the impossible, not of the largest legitimate body:
+// newBody keeps exactly MaxBody bytes when it truncates, and that entry still
+// has to read back.
+func TestBodyBytesAcceptsExactlyMaxBody(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body Body
+	}{
+		{"plain", Body{Data: strings.Repeat("A", MaxBody), Truncated: true}},
+		{"base64", Body{
+			Data:      base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, MaxBody)),
+			Encoding:  EncodingBase64,
+			Truncated: true,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.body.Bytes()
+			if err != nil {
+				t.Fatalf("Bytes: %v", err)
+			}
+			if len(got) != MaxBody {
+				t.Errorf("Bytes returned %d bytes, want %d", len(got), MaxBody)
+			}
+		})
 	}
 }
 

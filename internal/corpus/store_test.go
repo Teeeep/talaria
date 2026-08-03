@@ -1,6 +1,7 @@
 package corpus
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -574,6 +575,180 @@ func TestReadSkipsACorruptLine(t *testing.T) {
 	}
 	if entries[1].URL != "https://api.example.com/pets/3" {
 		t.Errorf("second entry = %q, want the line after the corrupt one", entries[1].URL)
+	}
+}
+
+// writeStore puts raw bytes at the store's path, creating the state directory.
+// The history file is user-writable by design and may have been copied from
+// another machine, so every hostile-input test here starts from bytes talaria
+// never wrote.
+func writeStore(t *testing.T, path string, data []byte) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("writing the store: %v", err)
+	}
+}
+
+// oversizedLine is one syntactically valid entry whose body is far past what
+// newBody would ever write. Reading it means allocating whatever a line in a
+// user-writable file asks for.
+func oversizedLine(t *testing.T) []byte {
+	t.Helper()
+
+	entry := Entry{
+		Source: SourceCall,
+		Method: "GET",
+		URL:    "https://api.example.com/pets/2",
+		Request: EntryRequest{
+			Body: &Body{ContentType: "application/json", Data: strings.Repeat("A", 4*maxEntryBytes)},
+		},
+	}
+	line, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshalling the oversized entry: %v", err)
+	}
+
+	return line
+}
+
+func TestReadSkipsAnOversizedLine(t *testing.T) {
+	store, path := newStore(t)
+
+	var file bytes.Buffer
+	file.WriteString(`{"source":"call","method":"GET","url":"https://api.example.com/pets/1"}` + "\n")
+	file.Write(oversizedLine(t))
+	file.WriteString("\n")
+	file.WriteString(`{"source":"call","method":"GET","url":"https://api.example.com/pets/3"}` + "\n")
+	writeStore(t, path, file.Bytes())
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("read %d entries, want the 2 that fit the bound", len(entries))
+	}
+	// §5a: a hostile entry fails that entry, never the process — and never the
+	// entries recorded after it.
+	if entries[1].URL != "https://api.example.com/pets/3" {
+		t.Errorf("second entry = %q, want the line after the oversized one", entries[1].URL)
+	}
+}
+
+func TestAppendSurvivesAnOversizedLineAlreadyInTheStore(t *testing.T) {
+	store, path := newStore(t)
+
+	writeStore(t, path, append(oversizedLine(t), '\n'))
+
+	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) != 1 || entries[0].OperationID != "getPet" {
+		t.Fatalf("read %d entries, want only the one just appended", len(entries))
+	}
+	if entries[0].ID == "" {
+		t.Error("the appended entry has no id; the id path did not survive the oversized line")
+	}
+}
+
+func TestReadRefusesAStorePastTheWholeFileBound(t *testing.T) {
+	store, path := newStore(t)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("creating the store: %v", err)
+	}
+	chunk := append(bytes.Repeat([]byte("a"), 1<<20-1), '\n')
+	for written := 0; written <= maxStoreBytes; written += len(chunk) {
+		if _, err := f.Write(chunk); err != nil {
+			t.Fatalf("writing the store: %v", err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("closing the store: %v", err)
+	}
+
+	if _, err := store.Read(); err == nil {
+		t.Fatal("Read accepted a store past the whole-file bound, want a refusal")
+	}
+}
+
+// A history file that is a character device or a symlink to one is not a store
+// talaria wrote, and reading it must neither block forever nor allocate until
+// the process dies.
+func TestReadOfAnEndlessStoreTerminates(t *testing.T) {
+	store, path := newStore(t)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if _, err := os.Stat("/dev/zero"); err != nil {
+		t.Skip("no /dev/zero on this platform")
+	}
+	if err := os.Symlink("/dev/zero", path); err != nil {
+		t.Fatalf("symlinking the store: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.Read()
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Read accepted an endless store, want a refusal")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Read did not return within 30s on an endless store")
+	}
+}
+
+func TestReadOfAStoreOfEmptyLinesIsEmpty(t *testing.T) {
+	store, path := newStore(t)
+
+	writeStore(t, path, bytes.Repeat([]byte("\n"), 1<<20))
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("read %d entries, want none", len(entries))
+	}
+}
+
+// A line short enough to hold can still be expensive to decode: JSON nesting
+// costs stack, not bytes. The decoder's own depth limit must be what stops it,
+// entry-level like every other unreadable line.
+func TestReadSkipsADeeplyNestedLine(t *testing.T) {
+	store, path := newStore(t)
+
+	const depth = 20000
+	var file bytes.Buffer
+	file.WriteString(strings.Repeat(`{"a":`, depth) + "1" + strings.Repeat("}", depth) + "\n")
+	file.WriteString(`{"source":"call","method":"GET","url":"https://api.example.com/pets/1"}` + "\n")
+	writeStore(t, path, file.Bytes())
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) != 1 || entries[0].URL != "https://api.example.com/pets/1" {
+		t.Fatalf("read %d entries, want only the one after the nested line", len(entries))
 	}
 }
 

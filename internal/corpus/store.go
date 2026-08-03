@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -29,6 +30,18 @@ const (
 	// whole file: a single `run` over a large spec would otherwise evict every
 	// interactive call a session had made.
 	maxPerSource = 1000
+
+	// maxEntryBytes is the longest line a reader will hold. An entry newBody
+	// wrote carries at most two MaxBody-sized bodies, base64 costing a third
+	// more, plus a URL and headers, so this is roughly four times the largest
+	// line this tool produces — and a line past it is skipped rather than
+	// allocated, because its length is a number in a file anyone may edit.
+	maxEntryBytes = 256 << 10
+	// maxStoreBytes is the whole file the reader will consume. Past it the file
+	// has stopped being the store trim maintains and the read is refused, which
+	// leaves a file to move aside; loading it and being killed for the memory
+	// leaves nothing.
+	maxStoreBytes = 64 << 20
 
 	dirMode  fs.FileMode = 0o700
 	fileMode fs.FileMode = 0o600
@@ -158,7 +171,7 @@ func uniqueID(path string, e Entry) string {
 // free. Lines written before ids existed contribute none, so an old store's
 // entries never make a new id look taken.
 func storedIDs(path string) map[string]bool {
-	data, err := os.ReadFile(path)
+	data, err := readStore(path)
 	if err != nil {
 		return nil
 	}
@@ -184,12 +197,12 @@ func (s *Store) Read() ([]Entry, error) {
 		return nil, err
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := readStore(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("cannot read the history file: %w", err)
+		return nil, err
 	}
 
 	var entries []Entry
@@ -245,9 +258,9 @@ func write(path string, line []byte) error {
 // trim enforces the per-source cap, rewriting the file only when some source is
 // over it. The common append leaves the file alone.
 func trim(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := readStore(path)
 	if err != nil {
-		return fmt.Errorf("cannot read the history file: %w", err)
+		return err
 	}
 
 	all := lines(data)
@@ -346,11 +359,41 @@ func lineHead(line []byte) (entryHead, bool) {
 	return head, true
 }
 
-// lines splits the store into its non-empty lines.
+// readStore reads the whole history file, refusing one past maxStoreBytes.
+//
+// The bound is on the bytes actually read, not on what os.Stat reports: a store
+// that is a symlink to /dev/zero or a FIFO stats as empty and reads forever, and
+// this file is user-writable by design. A caller that only wants what it can
+// parse — storedIDs — treats the refusal like any other unreadable file; the
+// ones that report to a human pass the error up, because a store this size has
+// stopped being the file trim maintains and moving it aside is a decision only
+// its owner can make.
+func readStore(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close() //nolint:errcheck // Read-only; the read error is the one worth reporting.
+
+	data, err := io.ReadAll(io.LimitReader(f, maxStoreBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("cannot read the history file: %w", err)
+	}
+	if len(data) > maxStoreBytes {
+		return nil, fmt.Errorf("the history file at %s is larger than the %d bytes talaria will read; move it aside", path, maxStoreBytes)
+	}
+
+	return data, nil
+}
+
+// lines splits the store into the non-empty lines a reader will hold. A line
+// past maxEntryBytes is left out exactly as an unparseable one is: its length is
+// a number in a file anyone may edit, and the entries recorded after it must
+// still come back (§5a — a hostile entry fails that entry, never the process).
 func lines(data []byte) [][]byte {
 	var out [][]byte
 	for _, line := range bytes.Split(data, []byte("\n")) {
-		if len(bytes.TrimSpace(line)) == 0 {
+		if len(bytes.TrimSpace(line)) == 0 || len(line) > maxEntryBytes {
 			continue
 		}
 		out = append(out, line)

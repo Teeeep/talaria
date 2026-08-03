@@ -12,7 +12,7 @@
     { "id": 6, "section": "6", "title": "Refactor pass — tasks 1-5", "line_start": 663, "line_end": 697, "done": true },
     { "id": 7, "section": "7", "title": "A request body carrying a secret does not print on stdout — finding 6", "line_start": 700, "line_end": 775, "done": true },
     { "id": 8, "section": "8", "title": "internal/corpus stops importing internal/curl — finding 30", "line_start": 778, "line_end": 829, "done": true },
-    { "id": 9, "section": "9", "title": "History entries are size-bounded on read — finding 13", "line_start": 832, "line_end": 882, "done": false },
+    { "id": 9, "section": "9", "title": "History entries are size-bounded on read — finding 13", "line_start": 832, "line_end": 882, "done": true },
     { "id": 10, "section": "10", "title": "A remote spec read is bounded — finding 9", "line_start": 885, "line_end": 930, "done": false },
     { "id": 11, "section": "11", "title": "The config document's credential buffer is actually zeroed — finding 29", "line_start": 933, "line_end": 988, "done": false },
     { "id": 12, "section": "12", "title": "Refactor pass — tasks 7-11", "line_start": 991, "line_end": 1015, "done": false },

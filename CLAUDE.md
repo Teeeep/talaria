@@ -156,6 +156,20 @@ this process. Bound every read, size-check before allocating, and treat any spec
 that reaches the wire as hostile until checked — a media type became a header-injection vector
 exactly this way. Failures must be entry-level or request-level, never process-level.
 
+**Every read of the history file is bounded, in one place.** `readStore(path)` in
+`internal/corpus/store.go` is the only way the store's bytes are loaded — `Read`, `storedIDs` and
+`trim` all go through it — and it bounds the bytes *actually read* through an `io.LimitReader`
+rather than trusting `os.Stat`, because a store that is a symlink to `/dev/zero` or a FIFO stats
+as empty and reads forever. Never re-introduce an `os.ReadFile` on this path. Two bounds, both
+entry-level where they can be: `maxStoreBytes` (64 MiB) refuses the whole file, since a file that
+size has stopped being the store `trim` maintains; `maxEntryBytes` (256 KiB) is applied in
+`lines`, which drops an over-long line exactly as an unparseable one is dropped, so the entries
+recorded *after* a hostile one still come back. `corpus.Body.Bytes` carries the third bound:
+`MaxBody` is enforced on the way in by `newBody` (truncating) *and* on the way out, checking the
+encoded length before the decode — a base64 `data` is an amplifier, a few hundred bytes of line
+naming hundreds of megabytes of allocation — and the decoded length after, because base64 rounds
+to three-byte groups and cannot tell `MaxBody` from `MaxBody+1`.
+
 **Reading a stored entry back belongs to `internal/corpus`.** `Entry.Replay(op)` returns a
 `Replayable` — the `name=value` strings `request.Inputs` takes — and it is where the path-template
 match, the redaction-marker drops and the body refusals live, so they are testable without cobra.
