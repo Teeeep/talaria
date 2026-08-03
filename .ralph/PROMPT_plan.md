@@ -83,14 +83,23 @@ live defects. Ask, per task: which of these inputs is not fully under our contro
 schema fetched from a URL, a file another process wrote, a flag value, a stored record read
 back later, anything crossing a trust boundary. Then write the test that assumes it is hostile.
 
-### Compaction tasks
+### Refactor pass tasks
 
-**Emit one compaction task every ~5 tasks, and one at the end of each phase.** A loop whose
+**Emit one refactor pass every 5 tasks, and one at the end of each phase.** A loop whose
 tasks are all feature tasks can only add: no iteration can see the whole, so duplication
 accumulates silently and nothing is ever removed. These tasks are the only counterweight.
 
+Do not call these "compaction" — that word means summarising a full context window, and a
+task whose whole job is deleting duplicated code should not borrow it.
+
+**Block size is exactly 5 feature tasks + 1 refactor pass = 6.** Keep it exact, not "~5". The
+loop reviews every N build iterations and one iteration is one task, so `--review-every 6`
+puts the checkpoint *after* each refactor pass, with the refactor diff inside the reviewed
+window. Emit blocks of 5 and the checkpoint lands immediately *before* the refactor instead,
+which is the one place it is useless.
+
 ```markdown
-### Task N: Compaction — tasks P–Q
+### Task N: Refactor pass — tasks P–Q
 
 **Depends on:** Task Q
 
@@ -101,8 +110,10 @@ in lines.
 1. Read `.ralph/refactor-backlog.md` first — build iterations record structural problems there
    as they hit them, because each one is visible only from inside the task that caused it.
    That file is the work list; this task drains it. Delete each entry as you resolve it, and
-   leave anything you deliberately did not do, with one line on why.
-2. Read every file touched since the last compaction task.
+   leave anything you deliberately did not do, with one line on why. If the file does not
+   exist, no iteration recorded anything — carry on with the steps below, do not treat it as
+   an error.
+2. Read every file touched since the last refactor pass.
 3. Consolidate types and helpers that were duplicated because separate iterations could not
    see each other's work — shared view/DTO structs, repeated parsing or formatting, near-identical
    error construction.

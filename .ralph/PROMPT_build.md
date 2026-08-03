@@ -47,7 +47,8 @@ will ever be in a position to notice this particular thing.
 
 **Record observations in `.ralph/refactor-backlog.md`. Do not act on them.** Fixing a
 structural problem mid-task breaks the one-task rule, blows out the diff, and makes the commit
-stop matching the task. A compaction task will drain this backlog later. One line per
+stop matching the task. A refactor pass task will drain this backlog later. Create the file if
+it does not exist yet — you may be the first iteration to notice anything. One line per
 observation:
 
 ```
