@@ -3,8 +3,10 @@
 *Status: design · drafted 2026-08-02 · **revised 2026-08-03** against the completed build ·
 successor to [DESIGN.md](../design/DESIGN.md) v0.4*
 
-> **Do not apply the DESIGN.md amendments in §9 until phase 2a is complete.** DESIGN.md is the
-> source of truth for any loop running against this repo.
+> **Three of the §9 amendments were applied on 2026-08-03 as DESIGN.md v0.5** — the emitted-curl
+> body rule, the cache policy, and the replay table — because phase 2a *implements* them, and a
+> spec-compliance reviewer reading unamended text would flag the fixes as drift. The `run`
+> removal landed with them. The remaining six are 2b work and stay fenced until 2a completes.
 
 ## 0. What changed in the 2026-08-03 revision
 
@@ -407,13 +409,13 @@ already added are not repeated here.
 | § | Amendment |
 |---|---|
 | §1, §3.0 | Split claims A / A′ / B (§3 above). State which the code delivers and which needs the enforced deployment. "Secrets never reach the agent" becomes three sentences, not one |
-| §3.4 | Emitted curl references the body source rather than inlining it (§4.3) |
-| §4 | Add `talaria doctor [--require enforced]`; add exit code **6 — boundary requirement not satisfied** (verified still unused in v0.4); add the cache TTL/revalidation/`--refresh` clause (§4.2) |
+| ~~§3.4~~ | **Applied in v0.5.** Emitted curl references the body source rather than inlining it (§4.3) |
+| §4 | Add `talaria doctor [--require enforced]`; add exit code **6 — boundary requirement not satisfied** (verified still unused in v0.5). ~~Cache TTL/revalidation/`--refresh`~~ **applied in v0.5** |
 | §5 | Add `internal/boundary` and `internal/fileguard` |
 | §5a | New leak-channel row: path-taking flags as arbitrary-file-read primitives under privilege separation; countermeasure is the ownership rule. Four call sites named |
-| §5a replay table | Simplify — replay resolves nothing from stored entries, so the namespace row has no code to govern (§4.1) |
+| ~~§5a replay table~~ | **Applied in v0.5.** Replay resolves nothing from stored entries, so the namespace row has no code to govern (§4.1) |
 | §5a threats not covered | Rewrite: enforced mode moves *out*. Record the rejected designs of §6.1 with reasons so they are not re-proposed |
-| §4, §5, §5a, §7 | **Remove `run`** (§2.1): drop the `run` block from the CLI surface, `internal/gen` from the package list, the "Test data for `run` mode" subsection, and roadmap Phase 4. Exit code 4 keeps its `--fail-on-error` half |
+| ~~§4, §5, §5a, §7~~ | **Applied in v0.5.** `run` removed from the CLI surface, `internal/gen` from the package list, the "Test data" subsection dropped, roadmap Phase 4 struck. Exit code 4 keeps its `--fail-on-error` half |
 | §7 | Insert phase 2 between 4 and 5; note it absorbs the self-install slice of the distribution line |
 | §8 | Add macOS: Keychain per-binary ACLs are a stronger mechanism with no Linux equivalent |
 
