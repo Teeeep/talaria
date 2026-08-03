@@ -73,6 +73,14 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().String("base-url", "",
 		"override the spec's server URL")
 
+	// Persistent because the allowed host set is a property of the call, not of
+	// the command that makes it: call, auth check and history replay all have to
+	// answer "may this credential go to this host" the same way (DESIGN.md §5a).
+	// Repeatable, one host per occurrence — request.NewHostSet unions them with
+	// the profile's allow_hosts and the spec's servers[].
+	root.PersistentFlags().StringArray("allow-host", nil,
+		"host a credential may be sent to beyond the spec's servers: host or host:port (repeatable)")
+
 	// A bad flag is a bad invocation, not a failed request; without this it
 	// would reach the translator as a bare error and exit 1.
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {

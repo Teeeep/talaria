@@ -65,6 +65,14 @@ type Profile struct {
 	// reference such as ${STAGING_TOKEN}. It holds references, never values:
 	// see Resolve.
 	Auth map[string]string `yaml:"auth"`
+	// AllowHosts are extra hosts this profile's credentials may be sent to,
+	// beyond the ones the spec's servers[] declare — the profile's third of
+	// DESIGN.md §5a's allowed host set. Each entry is a bare `host` (any port)
+	// or `host:port`; request.NewHostSet is what reads them.
+	//
+	// It only ever adds. Nothing here can remove a host the spec declared, and
+	// nothing here is consulted for anything but where a credential may go.
+	AllowHosts []string `yaml:"allow_hosts"`
 	// History is this profile's half of the recording opt-out. It is per-profile
 	// rather than file-wide because "record what I do here" is a property of the
 	// environment: a production profile is exactly the one you might not want a

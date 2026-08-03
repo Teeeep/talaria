@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -150,6 +151,31 @@ func TestUnparseableConfigFileIsAUsageError(t *testing.T) {
 	}
 	if code := clierr.From(err).Code; code != clierr.CodeUsage {
 		t.Errorf("code = %d, want %d", code, clierr.CodeUsage)
+	}
+}
+
+// allow_hosts is the profile's half of the allowed host set (DESIGN.md §5a).
+// Load decodes with KnownFields(true), so a key the struct does not declare is
+// not ignored — it is a usage error that makes the whole profile unloadable.
+func TestAllowHostsLoadsFromAProfile(t *testing.T) {
+	cfg, err := Load(writeConfig(t, 0o600, `
+profiles:
+  twin:
+    base-url: http://localhost:9000
+    allow_hosts:
+      - localhost:9000
+      - twin.internal
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	prof, err := cfg.Profile("twin")
+	if err != nil {
+		t.Fatalf("Profile(twin): %v", err)
+	}
+	if want := []string{"localhost:9000", "twin.internal"}; !slices.Equal(prof.AllowHosts, want) {
+		t.Errorf("AllowHosts = %q, want %q", prof.AllowHosts, want)
 	}
 }
 

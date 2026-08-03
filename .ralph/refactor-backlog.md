@@ -13,3 +13,6 @@ these mid-task.
   server URL "counts as no server"; the code has always failed it with *"is not an absolute
   http(s) URL"* instead. The claim was dropped in Task 1 rather than the behaviour changed —
   if the comment described the intended behaviour, that is a real (small) bug to fix.
+- `internal/request/build.go:345` — correction to the seam above: `hasControl` now has a second
+  caller, `parseHostEntry` in `hosts.go`, so it belongs in the shared `wire.go` half, not in
+  `server.go` with the substitution code.

@@ -65,6 +65,13 @@ left out of the result: the host set may be narrower than the spec, never wider.
 **Credentials bind to hosts.** A resolved credential goes only to a host the spec declares or a
 human explicitly allowed. Redaction answers *does it print*; it does not answer *who receives
 it*. Both questions need an answer for every new path that carries a credential.
+The set itself is `request.HostSet` (`internal/request/hosts.go`):
+`NewHostSet(specURLs, allowFlags, profileHosts)` unions `request.ServerURLs(doc)`, `--allow-host`
+(persistent, repeatable, on the root) and the profile's `allow_hosts`. Ask it `Allows(rawURL)`;
+`Key(rawURL)` is the `host:port` form `credentials_withheld[].host` prints. A malformed *spec*
+server contributes nothing, silently; a malformed *human* entry is exit 2, because a dropped one
+would read as allowed. There is no wildcard and the empty set allows nothing — never add an
+"empty means allow everything" shortcut.
 
 **The spec is untrusted input, and so is the history file.** Both are fetched or edited outside
 this process. Bound every read, size-check before allocating, and treat any spec-derived string
