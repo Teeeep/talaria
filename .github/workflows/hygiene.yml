@@ -1,0 +1,52 @@
+# Repo hygiene: fail the build if something lands that does not belong in the repo.
+#
+# This exists because 53MB of raw ralph session logs were committed to the
+# implementation branch and were only caught by hand at merge time. .gitignore
+# alone does not help — it is only consulted for untracked files, so anything
+# force-added or added before the rule stays tracked forever.
+#
+# Deliberately a separate workflow: internal/ci/workflow_test.go asserts that
+# ci.yml runs only the commands recorded in .ralph/stack.json, and that
+# invariant is worth more than co-locating these checks.
+name: Hygiene
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No oversized files
+        run: |
+          # 512KB. The largest legitimate file here is ~40KB, so this catches
+          # logs, corpora and vendored blobs long before they matter.
+          # Measured over *tracked* files only: an ignored build artifact or a
+          # local log in someone's working tree is not the repo's problem.
+          big=$(git ls-files -z | xargs -0 -r du -k 2>/dev/null | awk '$1 > 512 {print $1"KB\t"$2}')
+          if [ -n "$big" ]; then
+            echo "::error::tracked files over 512KB:"; echo "$big"; exit 1
+          fi
+
+      - name: No session logs, corpora or local config
+        run: |
+          bad=$(git ls-files | grep -E '\.ralph/.*\.log$|\.ralph/(state|review_history)$|(^|/)twin-data/|\.corpus/|(^|/)history\.jsonl$|(^|/)\.env($|\.)|config\.local\.ya?ml$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::these must not be tracked:"; echo "$bad"; exit 1
+          fi
+
+      - name: No credential-shaped strings
+        run: |
+          # Real token formats only. The canary suite deliberately contains
+          # fake secrets, so matching on the word "secret" would be useless.
+          hits=$(git grep -InE 'gh[pousr]_[A-Za-z0-9]{30,}|sk-ant-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----' -- . || true)
+          if [ -n "$hits" ]; then
+            echo "::error::credential-shaped strings found:"; echo "$hits"; exit 1
+          fi
