@@ -520,12 +520,11 @@ func TestHistoryRejectsAnUnparseableStatus(t *testing.T) {
 }
 
 func TestHistoryFiltersBySource(t *testing.T) {
-	// `run` (Task 30) writes to the same store; without --source a smoke run over
-	// a large spec buries the interactive history underneath it.
+	// `history replay` writes to the same store as `call`; --source is how a
+	// caller separates what it issued from what it re-issued.
 	isolateHistory(t)
 	seedHistory(t,
 		seedEntry(corpus.SourceCall, 3*time.Minute, "interactive", "GET", "https://api.test/a", 200),
-		seedEntry(corpus.SourceRun, 2*time.Minute, "smoke", "GET", "https://api.test/b", 200),
 		seedEntry(corpus.SourceReplay, time.Minute, "again", "GET", "https://api.test/a", 200),
 	)
 
@@ -534,7 +533,6 @@ func TestHistoryFiltersBySource(t *testing.T) {
 		want   []string
 	}{
 		{"call", []string{"interactive"}},
-		{"run", []string{"smoke"}},
 		{"replay", []string{"again"}},
 	}
 
@@ -568,8 +566,8 @@ func TestHistoryRejectsAnUnknownSource(t *testing.T) {
 	if err := json.Unmarshal([]byte(stderr), &alternatives); err != nil {
 		t.Fatalf("decoding stderr %q: %v", stderr, err)
 	}
-	if len(alternatives.Error.Alternatives) != 3 {
-		t.Errorf("error alternatives = %v, want the three sources", alternatives.Error.Alternatives)
+	if len(alternatives.Error.Alternatives) != 2 {
+		t.Errorf("error alternatives = %v, want both sources", alternatives.Error.Alternatives)
 	}
 }
 

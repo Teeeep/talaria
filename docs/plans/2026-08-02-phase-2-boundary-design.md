@@ -64,6 +64,9 @@ stays behind the §7 gate.
 
 ### 2.1 Scope reduction: `run` is cut
 
+**Executed 2026-08-03** (`21 files changed, 17 insertions(+), 3821 deletions(-)`). Production
+lines 10,752 → 9,159; test lines 15,498 → 13,421.
+
 **Decision: remove `talaria run`, `internal/gen`, fixtures and the JUnit report before 2a begins.**
 
 Measured cost of keeping it: 3,539 lines directly (`cmd/talaria/run.go` + test 1,498,
@@ -81,19 +84,21 @@ deleted is waste.
 
 Two simplifications fall out:
 
-- **Retention collapses to a single cap.** `corpus.Source` (`entry.go:36`) exists so a `run` over
-  a large spec could not evict interactive `call` history — the per-source 1000-entry cap has no
-  other justification. Without `run` the fiddliest part of the store goes.
+- **`corpus.SourceRun` goes**, leaving `call` and `replay`. Retention stays per-source: an
+  earlier draft of this section claimed the per-source cap loses its justification with `run`
+  gone, but `history replay` is also a burst producer, so the rule that one source cannot evict
+  another still earns its keep. Corrected after looking at the code rather than the doc.
 - **`--fixtures` disappears**, taking 2b-1's fileguard from four call sites to three.
 
 **Honest limit of this cut.** It removes ~15% of production lines. It does not address the two
-larger volume problems in §2.2 — the command-layer inversion and a test suite that is 2.4× the
+larger volume problems in §2.2 — the size of the command layer and a test suite that is 2.4× the
 production code while catching none of the 32 findings. Cutting `run` is worth doing; it is not
 the answer to "why is this so big."
 
 ### 2.2 Why the codebase is the size it is
 
-Measured, so it is not re-argued from impressions: **6,496 lines of actual production code**
+Measured **before the §2.1 cut**, since these numbers are what explain how the shape arose:
+**6,496 lines of actual production code**
 (non-comment, non-blank), carrying 2,777 comment lines, 1,479 blanks, 15,498 test lines, 2,387
 lines of testdata and 2,520 of markdown. Twelve non-test packages at ~430 lines each. For the
 feature set, 6.5k is not bloated and the package split is not over-fragmented.
@@ -106,10 +111,11 @@ Three things are wrong, and none of them is the line count:
    of the 33 tasks specified 5–8 "Red — write failing tests" assertions *in advance*, so the suite
    **encodes the plan's intentions, not an attacker's**. Four adversarial reviewers in one pass
    found more than 15k lines of tests did.
-2. **The command layer is inverted.** `cmd/talaria` holds 3,050 production lines — 47% of all
-   production code — with 15 view structs spread across it and `history.go` at 762 lines. A CLI
-   layer should be thin wiring over packages. `replayRequest` living in `cmd/` is why finding 3
-   exists.
+2. **The command layer is the largest single component.** `cmd/talaria` holds 28% of production
+   code (1,589 of 5,511 non-comment lines) with 12 view structs spread across it and
+   `history.go` at 762 lines. A CLI layer should be thin wiring over packages; `replayRequest`
+   living in `cmd/` is why finding 3 exists. (An earlier draft said 47%, dividing `cmd/`'s raw
+   line count by the project's code-only count — an invalid comparison.)
 3. **30% of non-blank production lines are comments**, and several assert invariants the code does
    not hold (findings 19, 29, 30, 31).
 

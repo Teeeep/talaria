@@ -511,7 +511,7 @@ func parseSource(value string) (corpus.Source, error) {
 // historySources is the set of commands that write to the store, in the order
 // they are worth reading about.
 func historySources() []string {
-	return []string{string(corpus.SourceCall), string(corpus.SourceRun), string(corpus.SourceReplay)}
+	return []string{string(corpus.SourceCall), string(corpus.SourceReplay)}
 }
 
 // parseStatusFilter reads --status: an exact code, or a class with x in place

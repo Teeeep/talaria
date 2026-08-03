@@ -391,23 +391,6 @@ type historyView struct {
 	} `json:"entries"`
 }
 
-type runView struct {
-	Results []struct {
-		OperationID string `json:"operation_id"`
-		Method      string `json:"method"`
-		Path        string `json:"path"`
-		Outcome     string `json:"outcome"`
-		Reason      string `json:"reason"`
-		Status      int    `json:"status"`
-	} `json:"results"`
-	Summary struct {
-		Total   int `json:"total"`
-		Passed  int `json:"passed"`
-		Failed  int `json:"failed"`
-		Skipped int `json:"skipped"`
-	} `json:"summary"`
-}
-
 // decode reads one command's JSON output into the view it renders.
 func decode[T any](t *testing.T, res result) T {
 	t.Helper()
@@ -513,23 +496,6 @@ func TestTheDocumentedAgentWorkflowRunsEndToEnd(t *testing.T) {
 		t.Errorf("the replay called %s, the original called %s", replayed.Request.URL, called.Request.URL)
 	}
 
-	// 8. run — the same operation as a smoke test, selected by the same id.
-	report := decode[runView](t, h.runOK("run", specPath,
-		"--operation", id, "--base-url", srv.URL, "--report", "json"))
-	if report.Summary.Total != 1 || report.Summary.Passed != 1 {
-		t.Fatalf("`run --operation %s` summarised %+v, want 1 total and 1 passed", id, report.Summary)
-	}
-	if report.Results[0].OperationID != id {
-		t.Errorf("`run` reported %q, not the operation it was asked for", report.Results[0].OperationID)
-	}
-
-	// The replay is on the record too, so the store grew across the session
-	// rather than being rewritten by each command.
-	final := decode[historyView](t, h.runOK("history", "--output", "json"))
-	if len(final.Entries) != 3 {
-		t.Errorf("history holds %d entries after a call, a replay and a run, want 3: %+v",
-			len(final.Entries), final.Entries)
-	}
 }
 
 // stdoutOf renders a decoded call for a failure message. The view is what was
@@ -668,7 +634,6 @@ func TestNoStepOfTheWorkflowLeaksTheCredential(t *testing.T) {
 		// Exits 5: secureKey is unset. The report is written on the way to that
 		// exit code, with the bearer canary in reach the whole time.
 		h.run("auth", "check", specPath, "--output", "json"),
-		h.runOK("run", specPath, "--operation", "listPets", "--base-url", srv.URL, "--report", "json"),
 		// A failure surface, because §5a's rule is that error paths are where
 		// redaction bugs live.
 		h.run("call", specPath, "getBroken", "--base-url", srv.URL, "--fail-on-error", "--output", "json"),
@@ -705,7 +670,7 @@ func TestNoStepOfTheWorkflowLeaksTheCredential(t *testing.T) {
 // TestAMutationIsRefusedWithoutAllowMutationsAtBothLevels holds the safety rail
 // DESIGN.md §4 puts in the tool rather than in the prompt, at each of the two
 // places a request can be issued from.
-func TestAMutationIsRefusedWithoutAllowMutationsAtBothLevels(t *testing.T) {
+func TestAMutationIsRefusedWithoutAllowMutations(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": "e2e-mutation-token"})
@@ -734,27 +699,8 @@ func TestAMutationIsRefusedWithoutAllowMutationsAtBothLevels(t *testing.T) {
 		t.Fatalf("the server saw %+v, want one POST", got)
 	}
 
-	// `run`: the same gate, reported as a skip rather than a failure — a DELETE
-	// left alone is correct behaviour, not a broken API.
-	skipped := decode[runView](t, h.runOK("run", specPath, "--operation", "createPet",
-		"--base-url", srv.URL, "--report", "json"))
-	if skipped.Summary.Skipped != 1 || skipped.Summary.Passed != 0 {
-		t.Fatalf("`run` on a mutation summarised %+v, want 1 skipped", skipped.Summary)
-	}
-	if !strings.Contains(skipped.Results[0].Reason, "--allow-mutations") {
-		t.Errorf("the skip does not name the flag that lifts it: %q", skipped.Results[0].Reason)
-	}
-
-	// `run --allow-mutations`: included, called, and validated against the
-	// spec's 201 contract.
-	included := decode[runView](t, h.runOK("run", specPath, "--operation", "createPet",
-		"--base-url", srv.URL, "--allow-mutations", "--report", "json"))
-	if included.Summary.Passed != 1 {
-		t.Fatalf("`run --allow-mutations` summarised %+v, want 1 passed: %s",
-			included.Summary, included.Results[0].Reason)
-	}
-	if got := srv.requests(); len(got) != 2 {
-		t.Fatalf("the server saw %d requests, want 2 (one from call, one from run)", len(got))
+	if got := srv.requests(); len(got) != 1 {
+		t.Fatalf("the server saw %d requests, want 1 from the allowed call", len(got))
 	}
 }
 
@@ -899,25 +845,6 @@ func TestASwagger2SpecFlowsThroughTheWholeLoop(t *testing.T) {
 	if broken.code != 4 {
 		t.Errorf("`%s` = %d, want 4; the converted schema is not being enforced. stderr: %s",
 			broken.label(), broken.code, broken.stderr)
-	}
-
-	// And the suite runner drives the converted document end to end: the two
-	// readable operations pass, the mutation is skipped, the liar fails.
-	report := decode[runView](t, h.runOK("run", spec2Path, "--base-url", srv.URL, "--report", "json"))
-	outcomes := map[string]string{}
-	for _, res := range report.Results {
-		outcomes[res.OperationID] = res.Outcome
-	}
-	for id, want := range map[string]string{
-		"listPets":  "passed",
-		"getPet":    "passed",
-		"createPet": "skipped",
-		"getBroken": "failed",
-	} {
-		if outcomes[id] != want {
-			t.Errorf("`run` on the converted spec reports %s as %q, want %q; report: %+v",
-				id, outcomes[id], want, report.Results)
-		}
 	}
 
 	// The canary rode the converted path the whole way and came out nowhere.

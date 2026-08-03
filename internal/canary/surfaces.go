@@ -85,12 +85,6 @@ func Tree(label, root string) ([]Surface, error) {
 // point of the indirection.
 func Formats() []string { return output.Formats() }
 
-// ReportFormats returns every `run --report` value, straight from the same
-// enum. It is a superset of Formats — junit is a report and nothing else — and
-// §5a names "junit reports" as a surface the suite must cover, so the run cases
-// iterate this rather than Formats.
-func ReportFormats() []string { return output.ReportFormats() }
-
 // Value returns a fresh canary: the label, so a failure says which mechanism
 // leaked, plus 128 bits of entropy, so a match in an output stream cannot be a
 // coincidence or a value some fixture happened to contain.

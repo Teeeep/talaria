@@ -347,7 +347,7 @@ func TestAppendCapsEachSourceSeparately(t *testing.T) {
 		t.Fatalf("Append: %v", err)
 	}
 	for i := 0; i < maxPerSource+1; i++ {
-		entry := Entry{Source: SourceRun, Method: "GET", URL: "https://api.example.com/pets/2"}
+		entry := Entry{Source: SourceReplay, Method: "GET", URL: "https://api.example.com/pets/2"}
 		if err := store.Append(entry); err != nil {
 			t.Fatalf("Append run entry %d: %v", i, err)
 		}
@@ -362,8 +362,8 @@ func TestAppendCapsEachSourceSeparately(t *testing.T) {
 	for _, e := range entries {
 		counts[e.Source]++
 	}
-	if counts[SourceRun] != maxPerSource {
-		t.Errorf("kept %d run entries, want %d", counts[SourceRun], maxPerSource)
+	if counts[SourceReplay] != maxPerSource {
+		t.Errorf("kept %d run entries, want %d", counts[SourceReplay], maxPerSource)
 	}
 	if counts[SourceCall] != 1 {
 		t.Errorf("kept %d call entries, want the one interactive call untouched", counts[SourceCall])
@@ -374,7 +374,7 @@ func TestAppendTrimsOldestFirst(t *testing.T) {
 	store, _ := newStore(t)
 
 	for i := 0; i < maxPerSource+2; i++ {
-		entry := Entry{Source: SourceRun, Method: "GET", URL: "https://api.example.com/pets/" + strconv.Itoa(i)}
+		entry := Entry{Source: SourceReplay, Method: "GET", URL: "https://api.example.com/pets/" + strconv.Itoa(i)}
 		if err := store.Append(entry); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
@@ -402,7 +402,7 @@ func TestConcurrentAppendsKeepEveryEntryTheyAcknowledged(t *testing.T) {
 	// the rewrite path. Below the cap trim returns early, so a test that stayed
 	// under it would exercise nothing.
 	for i := 0; i < maxPerSource-1; i++ {
-		entry := Entry{Source: SourceRun, Method: "GET", URL: "https://api.example.com/seed/" + strconv.Itoa(i)}
+		entry := Entry{Source: SourceReplay, Method: "GET", URL: "https://api.example.com/seed/" + strconv.Itoa(i)}
 		if err := store.Append(entry); err != nil {
 			t.Fatalf("seeding entry %d: %v", i, err)
 		}
@@ -427,7 +427,7 @@ func TestConcurrentAppendsKeepEveryEntryTheyAcknowledged(t *testing.T) {
 
 			for i := 0; i < each; i++ {
 				url := "https://api.example.com/pets/" + strconv.Itoa(w) + "-" + strconv.Itoa(i)
-				if err := store.Append(Entry{Source: SourceRun, Method: "GET", URL: url}); err != nil {
+				if err := store.Append(Entry{Source: SourceReplay, Method: "GET", URL: url}); err != nil {
 					return
 				}
 				// Only entries Append reported as written are claimed: a returned

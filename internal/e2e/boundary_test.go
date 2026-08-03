@@ -16,7 +16,6 @@ const modulePath = "github.com/Teeeep/talaria"
 var shared = []string{
 	"internal/operation",
 	"internal/validate",
-	"internal/gen",
 }
 
 // forbidden are the packages a shared one may not reach. `curl` is the outbound

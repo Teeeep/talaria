@@ -20,13 +20,11 @@ type Table struct {
 func (t Table) Empty() bool { return len(t.Headers) == 0 && len(t.Rows) == 0 }
 
 // Payload is what a command hands to a renderer: Data is serialised by the JSON
-// renderer, Table is printed by the pretty and TSV renderers, JUnit is written
-// by the JUnit renderer. A command fills in whichever the formats it supports
-// need.
+// renderer, Table is printed by the pretty and TSV renderers. A command fills in
+// whichever the formats it supports need.
 type Payload struct {
 	Data  any
 	Table Table
-	JUnit Suite
 }
 
 // Renderer writes a payload in one output format.
@@ -41,8 +39,6 @@ func New(f Format, w io.Writer) Renderer {
 		return prettyRenderer{w: w}
 	case FormatTSV:
 		return tsvRenderer{w: w}
-	case FormatJUnit:
-		return junitRenderer{w: w}
 	default:
 		return jsonRenderer{w: w}
 	}

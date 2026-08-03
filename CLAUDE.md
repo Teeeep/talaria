@@ -42,8 +42,7 @@ internal/clierr/      exit-code contract
 
 ## House rules
 
-**Package boundaries.** `operation`, `validate` and `gen` may not import `curl`, `corpus` or
-`twin` — they are shared with the future twin server, which uses `net/http` directly. `corpus`
+**Package boundaries.** `operation` and `validate` may not import `curl`, `corpus` or `twin` — they are shared with the future twin server, which uses `net/http` directly. `corpus`
 may not import `curl` either: it takes a local observation struct, not a `*curl.Response`.
 `internal/e2e/boundary_test.go` asserts this against the real import graph; if you add a package
 that must not cross a boundary, add it there in the same commit.
@@ -64,8 +63,9 @@ exactly this way. Failures must be entry-level or request-level, never process-l
 
 **`cmd/talaria` is wiring.** Parse flags, call a package, render the result. Decisions,
 transformations and multi-step workflows belong in a package that can be tested without cobra.
-The command layer currently holds ~47% of production code and 15 view structs; do not add to
-that. A new view struct belongs beside its siblings, not in a new command file.
+The command layer holds 28% of production code (1,589 of 5,511 non-comment lines) and 12 view
+structs; it is the largest single component. Do not add to it — a new view struct belongs beside
+its siblings, not in a new command file.
 
 **Errors go through `internal/clierr`.** Exit codes are a published contract that agents branch
 on. A new failure mode maps to an existing code or the design doc changes — never both silently.
@@ -85,5 +85,7 @@ should do.
 
 ## Scope note
 
-`talaria run`, `internal/gen` and the JUnit report are slated for removal — see
-`docs/plans/2026-08-02-phase-2-boundary-design.md` §2.1. Do not extend them.
+`talaria run`, `internal/gen` and the JUnit report were removed on 2026-08-03 — see
+`docs/plans/2026-08-02-phase-2-boundary-design.md` §2.1. Do not reintroduce spec-driven smoke
+testing without a design-doc change; it is the one capability deliberately ceded to Schemathesis
+and Hurl.
