@@ -42,7 +42,7 @@
       "title": "Scrub sensitive literals, not just resolved credentials, from curl's stderr",
       "line_start": 159,
       "line_end": 186,
-      "done": false
+      "done": true
     },
     {
       "id": 6,

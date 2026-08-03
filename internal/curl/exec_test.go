@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -429,6 +430,70 @@ func TestRequestFailedRedactsCredentialsInCurlStderr(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "curl exited 60") {
 		t.Errorf("error = %q, want curl's exit status in it", err)
+	}
+}
+
+func TestRequestFailedRedactsSensitiveLiteralsInCurlStderr(t *testing.T) {
+	// A literal the user typed under a credential-shaped name — `--query
+	// api_key=…` — is marked Sensitive at bind time and shows as <redacted>
+	// everywhere else. curl's own error text is an output surface like any
+	// other, so it has to be scrubbed the same way (§5a).
+	const canary = "canary-9f3a/not-in-any-output"
+
+	req := &request.Request{
+		Method:  http.MethodGet,
+		BaseURL: "https://api.example.com",
+		Path:    "/pets",
+		Query: []request.Pair{{
+			Name:  "api_key",
+			Value: request.Literal(canary).Sensitive(),
+		}},
+	}
+	// Both forms: curl echoes the URL it was given, which carries the value
+	// percent-encoded, and its other messages quote what it was handed.
+	stderr := "curl: (60) SSL certificate problem for https://api.example.com/pets?api_key=" +
+		url.QueryEscape(canary) + " (value " + canary + ")"
+
+	err := requestFailed(req, 60, stderr)
+
+	if strings.Contains(err.Error(), canary) {
+		t.Fatalf("error leaked the literal: %q", err)
+	}
+	if strings.Contains(err.Error(), url.QueryEscape(canary)) {
+		t.Fatalf("error leaked the percent-encoded literal: %q", err)
+	}
+	if !strings.Contains(err.Error(), secret.Placeholder) {
+		t.Errorf("error = %q, want the literal shown as %s", err, secret.Placeholder)
+	}
+}
+
+func TestExecuteDoesNotLeakASensitiveLiteralWhenCurlRejectsTheURL(t *testing.T) {
+	requireCurl(t)
+
+	const canary = "canary-4c71-not-in-any-output"
+
+	// A `[` in the path is a glob curl parses itself: it exits 3 and prints the
+	// whole URL back, credential included, before any request is made.
+	req := &request.Request{
+		Method:  http.MethodGet,
+		BaseURL: "https://api.example.invalid",
+		Path:    "/pets[/1",
+		Query: []request.Pair{{
+			Name:  "api_key",
+			Value: request.Literal(canary).Sensitive(),
+		}},
+	}
+
+	_, err := Execute(t.Context(), req)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want curl to reject the URL")
+	}
+
+	if strings.Contains(err.Error(), canary) {
+		t.Fatalf("error leaked the literal: %q", err)
+	}
+	if !strings.Contains(err.Error(), secret.Placeholder) {
+		t.Errorf("error = %q, want the literal shown as %s", err, secret.Placeholder)
 	}
 }
 

@@ -180,9 +180,9 @@ not done. Build, `gofmt`, `go vet` and `go test -race ./...` are clean at HEAD a
    text contains the placeholder and not the literal.
 
 **Verify:** `go test ./...`
-- [ ] A curl error echoing a URL that contains a literal `api_key=` value emits the placeholder
+- [x] A curl error echoing a URL that contains a literal `api_key=` value emits the placeholder
       on stderr, not the value.
-- [ ] The existing secret-ref scrubbing behaviour is unchanged.
+- [x] The existing secret-ref scrubbing behaviour is unchanged.
 
 ---
 

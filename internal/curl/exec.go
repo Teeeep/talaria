@@ -16,6 +16,7 @@ import (
 
 	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/request"
+	"github.com/Teeeep/talaria/internal/secret"
 )
 
 // Response is one observed HTTP response. It is the `response` block of call's
@@ -259,13 +260,18 @@ func requestFailed(req *request.Request, exitCode int, detail string) error {
 	return clierr.RequestFailed("the request could not be completed: curl exited %d: %s", exitCode, detail)
 }
 
-// scrubber returns a replacer that rewrites any credential this request
-// resolved back into its <redacted:env:NAME> form.
+// scrubber returns a replacer that rewrites any credential this request put on
+// the wire back into the form every other surface shows it as.
 //
-// It works from the request's own refs rather than from a pattern over the
-// text: talaria knows exactly which values it put on the wire, and matching
-// those is neither a guess nor defeatable by an unusual message format. A
+// It works from the request's own values rather than from a pattern over the
+// text: talaria knows exactly which values it sent, and matching those is
+// neither a guess nor defeatable by an unusual message format. A referenced
 // credential that will not resolve was never sent and so cannot be echoed.
+//
+// Sensitive, not secret: a literal the user typed under a credential-shaped
+// name — `--query api_key=…`, hidden by request.Build — is a credential too,
+// and skipping it would leave it in cleartext in curl's own error text while
+// every other output surface prints <redacted>.
 func scrubber(req *request.Request) *strings.Replacer {
 	if req == nil {
 		return strings.NewReplacer()
@@ -274,20 +280,31 @@ func scrubber(req *request.Request) *strings.Replacer {
 	var pairs []string
 	for _, group := range [][]request.Pair{req.Headers, req.Query, req.Cookies} {
 		for _, p := range group {
-			if !p.Value.IsSecret() {
+			if !p.Value.IsSensitive() {
 				continue
 			}
 
-			resolved, err := p.Value.Ref().Resolve()
-			if err != nil || resolved == "" {
+			// A ref prints as its own <redacted:env:NAME> form, which tells the
+			// reader which credential failed; a hidden literal has no name to
+			// give and falls back to the bare placeholder.
+			sent, redacted := p.Value.Reveal(), secret.Placeholder
+			if p.Value.IsSecret() {
+				resolved, err := p.Value.Ref().Resolve()
+				if err != nil || resolved == "" {
+					continue
+				}
+
+				sent, redacted = resolved, p.Value.Ref().String()
+			}
+
+			if sent == "" {
 				continue
 			}
 
-			redacted := p.Value.Ref().String()
-			pairs = append(pairs, resolved, redacted)
+			pairs = append(pairs, sent, redacted)
 			// A credential echoed back as part of a URL is percent-encoded, which
 			// the literal form would walk straight past.
-			if encoded := url.QueryEscape(resolved); encoded != resolved {
+			if encoded := url.QueryEscape(sent); encoded != sent {
 				pairs = append(pairs, encoded, redacted)
 			}
 		}
