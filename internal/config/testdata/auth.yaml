@@ -91,6 +91,50 @@ paths:
       responses:
         "200":
           description: OK
+  # The schemes talaria cannot speak itself. Each is reachable only through a
+  # token the caller brought in $TALARIA_AUTH_BEARER (§5 Auth).
+  /oidc-only:
+    get:
+      operationId: getOIDCOnly
+      security:
+        - oidc: []
+      responses:
+        "200":
+          description: OK
+  /mtls-only:
+    get:
+      operationId: getMutualTLSOnly
+      security:
+        - mtls: []
+      responses:
+        "200":
+          description: OK
+  /path-key:
+    get:
+      operationId: getPathKey
+      security:
+        - pathKey: []
+      responses:
+        "200":
+          description: OK
+  /capital-key:
+    get:
+      operationId: getCapitalKey
+      security:
+        - capitalKey: []
+      responses:
+        "200":
+          description: OK
+  /undeclared:
+    get:
+      operationId: getUndeclared
+      # Names a scheme components.securitySchemes never declares: a broken spec,
+      # not a missing credential.
+      security:
+        - ghostScheme: []
+      responses:
+        "200":
+          description: OK
 components:
   securitySchemes:
     bearerAuth:
@@ -127,3 +171,18 @@ components:
           tokenUrl: https://api.example.com/token
           scopes:
             "pets:read": read pets
+    oidc:
+      type: openIdConnect
+      openIdConnectUrl: https://api.example.com/.well-known/openid-configuration
+    mtls:
+      type: mutualTLS
+    pathKey:
+      # `path` is not a place a request carries a credential.
+      type: apiKey
+      in: path
+      name: key
+    capitalKey:
+      # OpenAPI fixes `in` as lowercase; this one is malformed on purpose.
+      type: apiKey
+      in: Header
+      name: X-Capital

@@ -317,13 +317,203 @@ func TestAuthCheckAndCallPickTheSameAlternative(t *testing.T) {
 	}
 }
 
+// unsupportedSchemes maps each operation of the unsupported fixture to the
+// scheme it requires — one per shape talaria cannot speak.
+var unsupportedSchemes = map[string]string{
+	"getOAuth":     "oauth2",
+	"getOIDC":      "oidc",
+	"getMutualTLS": "mtls",
+	"getPathKey":   "pathKey",
+}
+
+// A scheme talaria cannot speak is reported, not hidden (DESIGN.md:322). The
+// old behaviour — an empty `schemes` array and exit 0 — told an agent there was
+// nothing to do about a spec no call could authenticate.
+func TestAuthCheckReportsASchemeItCannotSpeak(t *testing.T) {
+	isolateAuthEnv(t)
+
+	code, stdout, stderr := runAuth(t, "testdata/unsupported.yaml", "--output", "json")
+	if code != int(clierr.CodeCredentialMissing) {
+		t.Fatalf("auth check = %d, want 5; stdout: %s stderr: %s", code, stdout, stderr)
+	}
+
+	got := decodeAuth(t, stdout)
+	if len(got.Schemes) != 4 {
+		t.Fatalf("reported %d schemes, want 4:\n%s", len(got.Schemes), stdout)
+	}
+
+	// DESIGN.md:327's object, character for character: no source, because
+	// there is no scheme-specific variable to name.
+	want := `{"scheme":"mtls","supported":false,"present":false}`
+	found := false
+	for _, raw := range got.Schemes {
+		if strings.Contains(string(raw), `"mtls"`) {
+			found = true
+			if string(raw) != want {
+				t.Errorf("scheme entry =\n %s\nwant\n %s", raw, want)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("mtls is missing from the report:\n%s", stdout)
+	}
+
+	// The error is the actionable half: which scheme, and what to export.
+	err := decodeErr(t, stderr)
+	if err.Error.Code != int(clierr.CodeCredentialMissing) {
+		t.Errorf("error code = %d, want 5", err.Error.Code)
+	}
+	for _, scheme := range unsupportedSchemes {
+		if !strings.Contains(err.Error.Message, scheme) {
+			t.Errorf("error %q does not name %s", err.Error.Message, scheme)
+		}
+	}
+	if !strings.Contains(err.Error.Message, "$"+config.EnvBearer) {
+		t.Errorf("error %q does not name $%s", err.Error.Message, config.EnvBearer)
+	}
+}
+
+// Bring your own token: the scheme stays unsupported, and the token the caller
+// obtained however its flow demands satisfies it (DESIGN.md:324).
+func TestAuthCheckReportsAnUnsupportedSchemeSatisfiedByABroughtToken(t *testing.T) {
+	isolateAuthEnv(t)
+	t.Setenv(config.EnvBearer, authCanary)
+
+	code, stdout, stderr := runAuth(t, "testdata/unsupported.yaml", "--output", "json")
+	if code != 0 {
+		t.Fatalf("auth check = %d, want 0 with $%s exported; stderr: %s", code, config.EnvBearer, stderr)
+	}
+
+	for name, entry := range decodeAuthEntries(t, stdout) {
+		if !entry.Present {
+			t.Errorf("%s reported absent, but a token is exported", name)
+		}
+		if entry.Supported == nil || *entry.Supported {
+			t.Errorf("%s reported supported; the token satisfies it, the scheme is still one talaria cannot speak", name)
+		}
+	}
+}
+
+// The agreement clause (DESIGN.md:329): `auth check` never reports a scheme
+// satisfied when the call would refuse it. This is the matrix — every
+// unsupported shape, with and without a token — and the two verdicts have to
+// match in every cell.
+func TestAuthCheckAndCallAgreeOnUnsupportedSchemes(t *testing.T) {
+	for _, token := range []string{"", authCanary} {
+		state := "no-token"
+		if token != "" {
+			state = "token"
+		}
+
+		t.Run(state, func(t *testing.T) {
+			isolateAuthEnv(t)
+			t.Setenv(config.EnvBearer, token)
+
+			checkCode, _, _ := runAuth(t, "testdata/unsupported.yaml", "--output", "json")
+
+			for op, scheme := range unsupportedSchemes {
+				var out, errOut strings.Builder
+				callCode := run([]string{
+					"call", "testdata/unsupported.yaml", op, "--dry-run", "--output", "json",
+				}, &out, &errOut)
+
+				if (checkCode == 0) != (callCode == 0) {
+					t.Fatalf("auth check = %d but call %s = %d; the pre-flight and the call disagree.\nstderr: %s",
+						checkCode, op, callCode, errOut.String())
+				}
+				if token == "" {
+					if callCode != int(clierr.CodeCredentialMissing) {
+						t.Errorf("call %s = %d, want 5 with no token; stderr: %s", op, callCode, errOut.String())
+					}
+					// Exit 5 is only actionable if it says which scheme and
+					// which variable.
+					if err := decodeErr(t, errOut.String()); !strings.Contains(err.Error.Message, scheme) ||
+						!strings.Contains(err.Error.Message, "$"+config.EnvBearer) {
+						t.Errorf("call %s error = %q, want it to name %s and $%s",
+							op, err.Error.Message, scheme, config.EnvBearer)
+					}
+					continue
+				}
+
+				if callCode != 0 {
+					t.Errorf("call %s = %d, want 0 with a token; stderr: %s", op, callCode, errOut.String())
+					continue
+				}
+				// The token goes out as the bearer credential the scheme's own
+				// flow would have produced.
+				if curl := decodeCall(t, out.String()).Request.Curl; !strings.Contains(curl, "Authorization") {
+					t.Errorf("call %s curl = %s, want the brought token in an Authorization header", op, curl)
+				}
+			}
+		})
+	}
+}
+
+// A scheme the document never declares is a broken spec, not an unset variable:
+// no token can fix it, so both commands stay on exit 2.
+func TestAuthCheckAndCallRefuseASchemeTheSpecNeverDeclares(t *testing.T) {
+	isolateAuthEnv(t)
+	t.Setenv(config.EnvBearer, authCanary)
+
+	code, stdout, stderr := runAuth(t, "testdata/undeclared.yaml", "--output", "json")
+	if code != int(clierr.CodeUsage) {
+		t.Fatalf("auth check = %d, want 2; stdout: %s stderr: %s", code, stdout, stderr)
+	}
+	if err := decodeErr(t, stderr); !strings.Contains(err.Error.Message, "ghostScheme") {
+		t.Errorf("error = %q, want it to name the undeclared scheme", err.Error.Message)
+	}
+
+	var out, errOut strings.Builder
+	callCode := run([]string{
+		"call", "testdata/undeclared.yaml", "getGhost", "--dry-run", "--output", "json",
+	}, &out, &errOut)
+	if callCode != int(clierr.CodeUsage) {
+		t.Fatalf("call getGhost = %d, want 2; stderr: %s", callCode, errOut.String())
+	}
+}
+
+// A scheme *name* is spec-controlled and reaches both streams. It may not forge
+// a second line of envelope JSON on either of them.
+func TestAHostileSchemeNameCannotForgeAnEnvelope(t *testing.T) {
+	isolateAuthEnv(t)
+
+	code, stdout, stderr := runAuth(t, "testdata/hostile_scheme.yaml", "--output", "json")
+	if code == int(clierr.CodeSpecLoad) {
+		// Refusing the document outright is a valid answer to a malformed one.
+		return
+	}
+	if code != int(clierr.CodeCredentialMissing) {
+		t.Fatalf("auth check = %d, want 5 or 3; stdout: %s stderr: %s", code, stdout, stderr)
+	}
+
+	for name, stream := range map[string]string{"stdout": stdout, "stderr": stderr} {
+		if strings.Count(strings.TrimSpace(stream), "\n") != 0 {
+			t.Errorf("%s is more than one line; the scheme name broke out of its string:\n%s", name, stream)
+		}
+		if strings.ContainsAny(stream, "\r") {
+			t.Errorf("%s carries a raw carriage return from the scheme name:\n%s", name, stream)
+		}
+	}
+
+	// Both streams still decode as one envelope each, forged content and all.
+	if got := decodeAuth(t, stdout); len(got.Schemes) != 1 {
+		t.Errorf("reported %d schemes, want 1:\n%s", len(got.Schemes), stdout)
+	}
+	if err := decodeErr(t, stderr); err.Error.Code != int(clierr.CodeCredentialMissing) {
+		t.Errorf("error code = %d, want 5", err.Error.Code)
+	}
+}
+
 // authEntry is one decoded scheme report, for the tests that look at fields
 // rather than at the exact document.
 type authEntry struct {
-	Scheme   string `json:"scheme"`
-	Source   string `json:"source"`
-	Present  bool   `json:"present"`
-	Withheld bool   `json:"withheld"`
+	Scheme string `json:"scheme"`
+	Source string `json:"source"`
+	// Supported is a pointer because its absence is the ordinary case and means
+	// supported; only a scheme talaria cannot speak carries it, as false.
+	Supported *bool `json:"supported"`
+	Present   bool  `json:"present"`
+	Withheld  bool  `json:"withheld"`
 }
 
 func decodeAuthEntries(t *testing.T, stdout string) map[string]authEntry {

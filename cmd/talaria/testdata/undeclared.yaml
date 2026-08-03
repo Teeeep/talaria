@@ -1,0 +1,22 @@
+openapi: 3.0.3
+info:
+  title: Undeclared Scheme Fixture
+  version: 1.0.0
+servers:
+  - url: https://api.invalid/v1
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+paths:
+  /ghost:
+    get:
+      operationId: getGhost
+      # Names a scheme components.securitySchemes never declares. No credential
+      # can fix it, so it is a broken spec rather than a missing variable.
+      security:
+        - ghostScheme: []
+      responses:
+        "200":
+          description: OK

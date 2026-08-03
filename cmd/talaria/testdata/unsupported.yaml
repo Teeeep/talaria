@@ -1,0 +1,63 @@
+openapi: 3.0.3
+info:
+  title: Unsupported Schemes Fixture
+  version: 1.0.0
+servers:
+  # Unroutable on purpose: every case that means to reach a server passes
+  # --base-url, so anything that hits the network here is a bug in the test.
+  - url: https://api.invalid/v1
+components:
+  securitySchemes:
+    # One scheme per shape talaria cannot speak. Each is satisfiable only by a
+    # token the caller brought in $TALARIA_AUTH_BEARER (DESIGN.md §5 Auth).
+    oauth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.invalid/token
+          scopes:
+            "pets:read": read pets
+    oidc:
+      type: openIdConnect
+      openIdConnectUrl: https://api.invalid/.well-known/openid-configuration
+    mtls:
+      type: mutualTLS
+    pathKey:
+      # `path` is not a place a request carries a credential.
+      type: apiKey
+      in: path
+      name: key
+paths:
+  /oauth:
+    get:
+      operationId: getOAuth
+      security:
+        - oauth2:
+            - "pets:read"
+      responses:
+        "200":
+          description: OK
+  /oidc:
+    get:
+      operationId: getOIDC
+      security:
+        - oidc: []
+      responses:
+        "200":
+          description: OK
+  /mtls:
+    get:
+      operationId: getMutualTLS
+      security:
+        - mtls: []
+      responses:
+        "200":
+          description: OK
+  /path-key:
+    get:
+      operationId: getPathKey
+      security:
+        - pathKey: []
+      responses:
+        "200":
+          description: OK

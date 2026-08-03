@@ -81,6 +81,26 @@ doc, prof)` — and the one place the stderr line is written — `warnWithheld`.
 resolves a credential calls both; do not build a `HostSet` anywhere else, or `call`, `auth check`
 and `history replay` will start disagreeing about where a credential may go.
 
+**An unsupported security scheme is reported, never hidden.** `config.Credential.Supported` is
+false for a scheme outside v1's set — `oauth2`, `openIdConnect`, `mutualTLS`, an `apiKey` in a
+place a request does not have — and its `Ref` then points at `TALARIA_AUTH_BEARER`: the only
+thing that can satisfy it is a token the caller brought (§5 Auth). `config.Schemes` returns every
+declared scheme, so `auth check` reports `{"scheme":…,"supported":false,"present":…}` — the
+`supported` field is a `*bool` on `cmd/talaria`'s `authScheme` because it must appear precisely
+when it is false, and an unsupported entry carries no `source`. `Covers` reads
+"declared, unsupported and absent" as `Unsupported`, which is why `call --dry-run` exits 5 on it
+rather than previewing a request nothing could authenticate. A name missing from `byName` now
+means only *the document never declared it* — exit 2, since no variable will fix a broken spec.
+Never re-add a supportedness filter to `Schemes` or `declaredCredentials`: `credentialFor`'s
+apiKey branch is guarded, but the report is what an agent acts on, and an omitted scheme reads
+as "nothing to do here".
+
+**`auth check` and `call` may not disagree.** DESIGN.md:329 is a contract, not a nicety: the
+verdict lives in `config.Covers`/`config.Resolve`, and `cmd/talaria/auth.go`'s `satisfied` only
+asks it. Any change to one side needs the matrix test in `cmd/talaria/auth_test.go`
+(`TestAuthCheckAndCallAgreeOnUnsupportedSchemes`) and the two-process one in `internal/e2e` to
+still pass — they compare the two commands' exit codes cell by cell.
+
 **`call` withholds and runs; `history replay` refuses.** Same host set, deliberately different
 outcomes (§5a). An off-set `--base-url` is a human pointing at a twin, so the call still exits 0
 with `credentials_withheld` in the envelope. An off-set *stored* host is a line in a file asking

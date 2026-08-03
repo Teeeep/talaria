@@ -23,9 +23,16 @@ type authView struct {
 // and the whole of what it may learn: it turns the name into "export this and
 // retry" without ever holding the value.
 type authScheme struct {
-	Scheme  string `json:"scheme"`
-	Source  string `json:"source"`
-	Present bool   `json:"present"`
+	Scheme string `json:"scheme"`
+	// Source is omitted for a scheme talaria cannot speak: there is no
+	// scheme-specific variable to name, only the bring-your-own-token one the
+	// exit-5 error points at.
+	Source string `json:"source,omitempty"`
+	// Supported is a pointer because it appears precisely when it is false —
+	// DESIGN.md:327's object is {"scheme":…,"supported":false,"present":false} —
+	// and a plain bool with omitempty says the opposite of that.
+	Supported *bool `json:"supported,omitempty"`
+	Present   bool  `json:"present"`
 	// Withheld reports that a call under these same flags would *not* send this
 	// credential, because the destination is outside the allowed host set (§5a).
 	// It is omitted when it is false, so the ordinary report is unchanged and an
@@ -132,23 +139,36 @@ func authPayload(creds []config.Credential, withheld bool) output.Payload {
 
 	for _, cred := range creds {
 		present := cred.Present()
+		source := cred.Ref.Location()
+
+		var unsupported *bool
+		if !cred.Supported {
+			unsupported, source = new(bool), ""
+		}
+
 		view.Schemes = append(view.Schemes, authScheme{
-			Scheme:   cred.Scheme,
-			Source:   cred.Ref.Location(),
-			Present:  present,
-			Withheld: present && withheld,
+			Scheme:    cred.Scheme,
+			Source:    source,
+			Supported: unsupported,
+			Present:   present,
+			Withheld:  present && withheld,
 		})
-		rows = append(rows, []string{cred.Scheme, cred.Ref.Location(), presenceLabel(present, withheld)})
+		rows = append(rows, []string{cred.Scheme, source, presenceLabel(cred, present, withheld)})
 	}
 
 	return output.Payload{Data: view, Table: output.Table{Rows: rows}}
 }
 
 // presenceLabel is the pretty and TSV form of the present field. The words name
-// the states a reader acts on: "missing" is the one to go export, and
-// "withheld" the one to pass --allow-host for.
-func presenceLabel(present, withheld bool) string {
+// the states a reader acts on: "missing" is the one to go export, "withheld"
+// the one to pass --allow-host for, and "unsupported" the one where exporting
+// $TALARIA_AUTH_BEARER is the only move talaria has.
+func presenceLabel(cred config.Credential, present, withheld bool) string {
 	switch {
+	case !cred.Supported && !present:
+		return "unsupported"
+	case !cred.Supported:
+		return "present (brought token)"
 	case !present:
 		return "missing"
 	case withheld:
@@ -158,9 +178,14 @@ func presenceLabel(present, withheld bool) string {
 	}
 }
 
-// unsatisfied returns the exit-5 error naming the credentials that stand
-// between the caller and some operation, or nil when every operation in the
-// spec can be authenticated.
+// unsatisfied returns the error naming what stands between the caller and some
+// operation, or nil when every operation in the spec can be authenticated.
+//
+// There are two ways to be blocked and they carry different codes, because they
+// have different fixes: a declared scheme whose variable is unset is exit 5 and
+// a human's job, while a scheme the document never declared is exit 2 and no
+// variable will help. `call` draws the same line in config.Resolve; drawing it
+// differently here is how the pre-flight and the call come to disagree.
 func unsatisfied(ops []operation.Operation, creds []config.Credential) error {
 	byName := make(map[string]config.Credential, len(creds))
 	for _, cred := range creds {
@@ -170,6 +195,8 @@ func unsatisfied(ops []operation.Operation, creds []config.Credential) error {
 	// creds is already sorted by scheme name, so walking it to collect the
 	// blocking ones keeps the message's order stable too.
 	blocking := map[string]bool{}
+	var undeclared []string
+	seen := map[string]bool{}
 	for _, op := range ops {
 		if satisfied(op, byName) {
 			continue
@@ -177,14 +204,15 @@ func unsatisfied(ops []operation.Operation, creds []config.Credential) error {
 
 		for _, req := range op.Security {
 			for _, want := range req.Schemes {
-				if cred, ok := byName[want.Name]; ok && !cred.Present() {
+				switch cred, ok := byName[want.Name]; {
+				case ok && !cred.Present():
 					blocking[want.Name] = true
+				case !ok && !seen[want.Name]:
+					seen[want.Name] = true
+					undeclared = append(undeclared, want.Name)
 				}
 			}
 		}
-	}
-	if len(blocking) == 0 {
-		return nil
 	}
 
 	var parts []string
@@ -194,11 +222,17 @@ func unsatisfied(ops []operation.Operation, creds []config.Credential) error {
 		}
 	}
 
-	if len(parts) == 1 {
+	switch {
+	case len(parts) == 1:
 		return clierr.CredentialMissing("no credential for security scheme %s", parts[0])
+	case len(parts) > 1:
+		return clierr.CredentialMissing("no credential for security schemes %s", strings.Join(parts, ", "))
+	case len(undeclared) > 0:
+		return clierr.Usage("spec requires security scheme %s, which components.securitySchemes does not declare",
+			strings.Join(undeclared, ", "))
 	}
 
-	return clierr.CredentialMissing("no credential for security schemes %s", strings.Join(parts, ", "))
+	return nil
 }
 
 // satisfied reports whether op has an alternative talaria can authenticate with
@@ -206,27 +240,28 @@ func unsatisfied(ops []operation.Operation, creds []config.Credential) error {
 //
 // A spec may offer alternatives and any one of them is enough, so a bearer
 // token alone satisfies an operation that accepts either it or an API key. An
-// alternative naming a scheme talaria cannot supply — OAuth2 — is skipped
-// rather than counted against the caller: v1's position is that you bring your
-// own token for those, and there is no variable to report missing (§5 Auth).
+// alternative naming a scheme talaria cannot speak — OAuth2 — counts when a
+// brought token covers it and not otherwise (§5 Auth), which is config.Covers'
+// answer rather than a judgement made here.
 //
 // The rule itself is config.Covers, the same one config.Resolve picks an
 // alternative with. This verdict is the pre-flight for that call, so deriving
 // it here a second time is how the two came to disagree.
 func satisfied(op operation.Operation, byName map[string]config.Credential) bool {
-	usable := false
+	// An operation with no security requires nothing, so there is nothing to be
+	// missing. Said outright, because the loop below cannot say it.
+	if len(op.Security) == 0 {
+		return true
+	}
 
 	for _, req := range op.Security {
 		switch config.Covers(req, byName) {
 		case config.Optional, config.Satisfied:
 			return true
-		case config.Incomplete:
-			usable = true
-		case config.Unsupported:
+		case config.Incomplete, config.Unsupported:
+			// Neither is an alternative the caller could make this call with.
 		}
 	}
 
-	// No usable alternative means nothing talaria could have satisfied, which
-	// includes the common case of an operation with no security at all.
-	return !usable
+	return false
 }

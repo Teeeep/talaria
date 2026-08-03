@@ -61,6 +61,13 @@ type Credential struct {
 	Name string `json:"name"`
 	// Ref names the credential. It marshals redacted, like everywhere else.
 	Ref secret.SecretRef `json:"source"`
+	// Supported reports whether talaria can speak this scheme itself. It is
+	// false for a scheme outside v1's set — oauth2, openIdConnect, mutualTLS, an
+	// apiKey in a place a request does not have — which Ref then points at
+	// EnvBearer for: the only thing that can satisfy it is a token the caller
+	// brought (§5 Auth). Such a scheme is reported, never hidden, because an
+	// agent that cannot see it has no way to learn why every call returns 401.
+	Supported bool `json:"supported"`
 }
 
 // Present reports whether the credential this names is set, without reading it.
@@ -73,8 +80,9 @@ func (c Credential) Present() bool { return c.Ref.Present() }
 type Coverage int
 
 const (
-	// Unsupported means the requirement names a scheme talaria has no way to
-	// supply, such as OAuth2. There is no variable to report missing.
+	// Unsupported means the requirement cannot be met as things stand: it names
+	// a scheme the document never declared, or one talaria cannot speak and no
+	// brought token covers.
 	Unsupported Coverage = iota
 	// Incomplete means talaria can supply every scheme the requirement names,
 	// but at least one credential is not set.
@@ -87,9 +95,10 @@ const (
 )
 
 // Covers classifies one security requirement against byName, which maps a
-// scheme name to the credential that satisfies it — Schemes' result for a
-// document, or the map Resolve builds for an operation. A scheme missing from
-// byName is one talaria cannot supply, since both sources leave those out.
+// scheme name to the credential that would satisfy it — Schemes' result for a
+// document, or the map Resolve builds for an operation. Both sources hold every
+// scheme the document declares, supported or not, so a name missing from byName
+// is one the document never declared.
 //
 // This is the one rule behind both Resolve's choice of alternative and `auth
 // check`'s verdict. The two used to derive it separately, in separate packages,
@@ -101,14 +110,20 @@ func Covers(req operation.SecurityRequirement, byName map[string]Credential) Cov
 		return Optional
 	}
 
-	// A requirement's schemes apply together, so one scheme talaria cannot
-	// supply makes the whole alternative unusable, and one credential that is
-	// not set makes it incomplete.
+	// A requirement's schemes apply together, so one scheme that cannot be met
+	// makes the whole alternative unusable, and one credential that is not set
+	// makes it incomplete.
 	coverage := Satisfied
 	for _, want := range req.Schemes {
 		cred, ok := byName[want.Name]
 		switch {
 		case !ok:
+			return Unsupported
+		case !cred.Supported && !cred.Present():
+			// Nothing talaria could put on the wire: the scheme is one it does
+			// not speak and no token was brought for it. Reporting this as a
+			// merely incomplete alternative would let Resolve pick it and print
+			// a request that cannot be authenticated.
 			return Unsupported
 		case !cred.Present():
 			coverage = Incomplete
@@ -128,26 +143,37 @@ func Covers(req operation.SecurityRequirement, byName map[string]Credential) Cov
 // Every scheme within the chosen requirement is returned, because a
 // requirement's schemes apply together.
 //
+// An alternative naming a scheme talaria cannot speak is usable when the caller
+// brought a token for it, and it is then preferred over a later one exactly as
+// any other satisfied alternative is: the token goes out as the bearer
+// credential the scheme's own flow would have produced.
+//
 // An operation with no security, or with an empty requirement (auth optional),
 // resolves to no credentials.
 func Resolve(op operation.Operation, doc *spec.Document, prof *Profile) ([]Credential, error) {
 	schemes := securitySchemes(doc)
 
-	byName, err := supportedCredentials(op, schemes, prof)
+	byName, err := declaredCredentials(op, schemes, prof)
 	if err != nil {
 		return nil, err
 	}
 
 	var (
-		unsupported []string
-		fallback    []Credential
+		undeclared []string
+		unmet      []string
+		fallback   []Credential
 	)
 	for _, req := range op.Security {
 		switch Covers(req, byName) {
 		case Optional:
 			return nil, nil
 		case Unsupported:
-			unsupported = append(unsupported, unsupportedReason(req, schemes))
+			reason, missingScheme := blockedReason(req, schemes, byName)
+			if missingScheme {
+				undeclared = append(undeclared, reason)
+			} else {
+				unmet = append(unmet, reason)
+			}
 		case Satisfied:
 			return credentials(req, byName), nil
 		case Incomplete:
@@ -160,30 +186,36 @@ func Resolve(op operation.Operation, doc *spec.Document, prof *Profile) ([]Crede
 	switch {
 	case fallback != nil:
 		return fallback, nil
-	case len(unsupported) == 0:
-		return nil, nil
+	case len(unmet) > 0:
+		// Exit 5, not 2: the invocation is right and a variable is what stands
+		// in the way, which is the one failure a human fixes rather than the
+		// agent (§5 Auth).
+		return nil, clierr.CredentialMissing("no credential for %s: %s",
+			operationName(op), strings.Join(unmet, "; "))
+	case len(undeclared) > 0:
+		// No token can fix a spec that names a scheme it never declared.
+		return nil, clierr.Usage("no usable security scheme for %s: %s",
+			operationName(op), strings.Join(undeclared, "; "))
 	}
 
-	return nil, clierr.Usage("no usable security scheme for %s: %s",
-		operationName(op), strings.Join(unsupported, "; "))
+	return nil, nil
 }
 
-// Schemes lists every security scheme the document declares that talaria can
-// satisfy, as the credential that would satisfy it, sorted by scheme name.
+// Schemes lists every security scheme the document declares, as the credential
+// that would satisfy it, sorted by scheme name.
 //
 // Resolve answers "which credentials does this call use". This answers "which
 // credentials does this spec ask for at all", which is the question `auth
-// check` reports on. Schemes talaria has no way to supply — OAuth2, OpenID
-// Connect, an API key in a place a request does not have — are left out: there
-// is no variable to tell a human to set, so there is nothing to report (§5).
+// check` reports on. A scheme talaria cannot speak — OAuth2, OpenID Connect, an
+// API key in a place a request does not have — is in the list with
+// Supported false rather than left out of it: leaving it out reports "nothing
+// required" for a spec no call can authenticate (§5 Auth).
 func Schemes(doc *spec.Document, prof *Profile) ([]Credential, error) {
 	declared := securitySchemes(doc)
 
 	names := make([]string, 0, len(declared))
-	for name, scheme := range declared {
-		if schemeReason(name, scheme) == "" {
-			names = append(names, name)
-		}
+	for name := range declared {
+		names = append(names, name)
 	}
 	// Sorted, because the map iteration behind it is not, and a report whose
 	// line order changes between runs is one no diff can be taken of.
@@ -201,22 +233,30 @@ func Schemes(doc *spec.Document, prof *Profile) ([]Credential, error) {
 	return out, nil
 }
 
-// unsupportedReason returns why this requirement cannot be satisfied, or "" if
-// it can. A requirement's schemes apply together, so one unusable scheme makes
-// the whole alternative unusable.
-func unsupportedReason(req operation.SecurityRequirement, schemes map[string]*v3high.SecurityScheme) string {
+// blockedReason returns why a requirement Covers rejected cannot be met, and
+// whether the spec itself is at fault — a scheme it never declared — rather
+// than the environment. The two answers carry different exit codes, so the
+// caller has to be able to tell them apart without reading the prose.
+//
+// A requirement's schemes apply together, so the first unmet one is the reason.
+func blockedReason(
+	req operation.SecurityRequirement,
+	schemes map[string]*v3high.SecurityScheme,
+	byName map[string]Credential,
+) (reason string, undeclared bool) {
 	for _, want := range req.Schemes {
-		scheme, ok := schemes[want.Name]
+		cred, ok := byName[want.Name]
 		if !ok {
-			return "scheme " + want.Name + " is not declared in components.securitySchemes"
+			return "scheme " + want.Name + " is not declared in components.securitySchemes", true
 		}
 
-		if reason := schemeReason(want.Name, scheme); reason != "" {
-			return reason
+		if !cred.Supported && !cred.Present() {
+			return schemeReason(want.Name, schemes[want.Name]) +
+				"; set " + cred.Ref.Symbolic() + " to bring your own token for it", false
 		}
 	}
 
-	return ""
+	return "", false
 }
 
 // schemeReason returns why talaria cannot use one declared scheme, or "" if it
@@ -238,16 +278,17 @@ func schemeReason(name string, scheme *v3high.SecurityScheme) string {
 	}
 }
 
-// supportedCredentials builds the credential for every scheme op names that
-// talaria can actually supply, keyed by scheme name. Schemes it cannot supply
-// are left out, which is what Covers reads as an unsupported alternative.
+// declaredCredentials builds the credential for every scheme op names that the
+// document declares, keyed by scheme name. Only a name the document never
+// declared is left out, which is what Covers reads as an alternative no
+// credential can meet.
 //
 // It is built for the whole operation rather than per alternative because the
 // choice between alternatives depends on which credentials are present, which
 // cannot be known before they are built. The only failure is a malformed
 // profile entry, which is fatal rather than a reason to try another
 // alternative: the user meant to configure this scheme and got it wrong.
-func supportedCredentials(
+func declaredCredentials(
 	op operation.Operation,
 	schemes map[string]*v3high.SecurityScheme,
 	prof *Profile,
@@ -256,7 +297,7 @@ func supportedCredentials(
 	for _, req := range op.Security {
 		for _, want := range req.Schemes {
 			scheme, ok := schemes[want.Name]
-			if _, done := out[want.Name]; done || !ok || schemeReason(want.Name, scheme) != "" {
+			if _, done := out[want.Name]; done || !ok {
 				continue
 			}
 
@@ -283,19 +324,28 @@ func credentials(req operation.SecurityRequirement, byName map[string]Credential
 	return out
 }
 
-// credentialFor builds the Credential for one supported scheme: where the value
+// credentialFor builds the Credential for one declared scheme: where the value
 // goes on the request, and the name of the value that goes there.
+//
+// A scheme talaria cannot speak gets the bring-your-own-token credential —
+// $TALARIA_AUTH_BEARER in the Authorization header — and Supported false. It
+// may not fall through to the apiKey branch: that branch reads scheme.In and
+// scheme.Name, which an oauth2 scheme does not have, and would mint a
+// credential bound for a place the spec never named.
 func credentialFor(name string, scheme *v3high.SecurityScheme, prof *Profile) (Credential, error) {
-	cred := Credential{Scheme: name, In: InHeader, Name: "Authorization"}
+	cred := Credential{Scheme: name, In: InHeader, Name: "Authorization", Supported: true}
 	switch {
 	case isHTTP(scheme, "bearer"):
 		cred.Kind, cred.Ref = KindBearer, secret.Env(EnvBearer)
 	case isHTTP(scheme, "basic"):
 		cred.Kind, cred.Ref = KindBasic, secret.Env(EnvBasic)
-	default:
+	case schemeReason(name, scheme) == "":
 		cred.Kind = KindAPIKey
 		cred.In, cred.Name = scheme.In, scheme.Name
 		cred.Ref = secret.Env(EnvAPIKeyPrefix + envSuffix(name))
+	default:
+		cred.Supported = false
+		cred.Kind, cred.Ref = KindBearer, secret.Env(EnvBearer)
 	}
 
 	// The profile is the more specific source and wins over the convention: it

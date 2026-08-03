@@ -43,6 +43,11 @@ const (
 // body. It is separate so the pair above stays symmetrical.
 const reproSpecPath = "testdata/e2e-reproduce.yaml"
 
+// unsupportedSpecPath describes /secure as needing oauth2: a scheme talaria
+// cannot speak, and the one shape where `auth check` and `call` used to
+// disagree.
+const unsupportedSpecPath = "testdata/e2e-unsupported.yaml"
+
 // binary is the talaria under test, built once by TestMain.
 //
 // The suite drives a real process rather than the command tree in-process, for
@@ -777,6 +782,61 @@ func TestTheExitCodeContractIsObservableAcrossOneSpec(t *testing.T) {
 	if observed.Validation == nil || len(observed.Validation.Errors) == 0 {
 		t.Fatalf("the broken response validated clean, so exit 4 above was not about the body: %s",
 			observed.stdoutOf())
+	}
+}
+
+// TestAuthCheckAndCallAgreeOnASchemeTalariaCannotSpeak holds DESIGN.md:329
+// against two real processes: "`auth check` never reports a scheme satisfied
+// when the call would refuse it."
+//
+// The spec declares oauth2 and nothing else. Before this was fixed, `auth
+// check` reported an empty scheme list and exited 0 on it — the pre-flight an
+// agent trusts said "nothing to set" for a spec on which every call exited
+// non-zero, which sends the agent into a retry loop instead of to the human.
+func TestAuthCheckAndCallAgreeOnASchemeTalariaCannotSpeak(t *testing.T) {
+	t.Parallel()
+
+	const token = "e2e-brought-token"
+	srv := newServer(t)
+
+	callArgs := []string{"call", unsupportedSpecPath, "getSecure",
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json"}
+
+	// With no token there is nothing that could authenticate the call, and both
+	// commands say so with the code whose fix is "ask a human to export this".
+	blind := newHarness(t, nil)
+	check := blind.run("auth", "check", unsupportedSpecPath, "--output", "json")
+	call := blind.run(callArgs...)
+	if check.code != 5 || call.code != 5 {
+		t.Fatalf("auth check = %d and call = %d, want 5 from both; stderr: %s | %s",
+			check.code, call.code, check.stderr, call.stderr)
+	}
+	for _, res := range []result{check, call} {
+		if !strings.Contains(res.stderr, "oauth2") || !strings.Contains(res.stderr, "TALARIA_AUTH_BEARER") {
+			t.Errorf("`%s` stderr = %q, want it to name the scheme and the variable", res.label(), res.stderr)
+		}
+	}
+	if got := srv.requests(); len(got) != 0 {
+		t.Errorf("the server saw %d requests; nothing may be sent before the credential is known", len(got))
+	}
+
+	// The report is still printed on the way to exit 5 — a code with nothing to
+	// read says what failed but not what to do.
+	if !strings.Contains(check.stdout, `"supported":false`) {
+		t.Errorf("auth check stdout = %q, want the scheme reported as unsupported", check.stdout)
+	}
+
+	// Bring the token and both commands turn: `auth check` exits 0, and the
+	// call sends it as the bearer credential the flow would have produced.
+	h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": token})
+	check = h.run("auth", "check", unsupportedSpecPath, "--output", "json")
+	if check.code != 0 {
+		t.Fatalf("auth check with a token = %d, want 0; stderr: %s", check.code, check.stderr)
+	}
+	h.runOK(callArgs...)
+
+	if !srv.sawHeader("Authorization", "Bearer "+token) {
+		t.Errorf("the server never saw the brought token; requests: %+v", srv.requests())
 	}
 }
 

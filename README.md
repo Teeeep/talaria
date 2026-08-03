@@ -162,13 +162,20 @@ environment variable by convention, and carries the *name* from there on:
 | `type: http`, `scheme: basic` | `TALARIA_AUTH_BASIC` (as `user:password`) |
 | `type: apiKey`, named `petKey` | `TALARIA_AUTH_APIKEY_PETKEY` |
 
-API keys are supported in all three locations — `header`, `query` and `cookie`. OAuth2 and
-OpenID Connect flows are out of scope for v1: bring your own token and let a `bearer` scheme
-carry it. When a spec offers several alternative security requirements, talaria uses the first
-one it can supply *and* has every credential for, so a spec offering "OAuth2 or a bearer token"
-resolves to the bearer token, and one offering either of two API keys resolves to whichever key
-you exported. When no alternative is fully covered, the first supported one is named in the
-exit-5 error, so there is always a variable to go set.
+API keys are supported in all three locations — `header`, `query` and `cookie`. When a spec
+offers several alternative security requirements, talaria uses the first one it can supply *and*
+has every credential for, so a spec offering either of two API keys resolves to whichever key you
+exported. When no alternative is fully covered, the first supported one is named in the exit-5
+error, so there is always a variable to go set.
+
+**A scheme talaria cannot speak is reported, not hidden.** `oauth2`, `openIdConnect`, `mutualTLS`
+and an `apiKey` in a place a request does not have (`in: path`, or a mis-capitalised `in: Header`)
+are all outside v1. Implementing the flows is out of scope, so the way through them is to bring
+your own token: obtain it however the flow demands and export it as `TALARIA_AUTH_BEARER`, and
+talaria sends it as `Authorization: Bearer …` for that scheme. Without it the operation cannot be
+authenticated at all, and both `auth check` and `call` exit **5** naming the scheme and the
+variable. A scheme the spec *requires* but never declares in `components.securitySchemes` is a
+different failure — no variable can fix it — and both commands exit 2.
 
 ### Credentials bind to hosts
 
@@ -272,12 +279,22 @@ profile's variable (`env:STAGING_TOKEN`) rather than the convention's. Presence 
 a lookup; the value is never read.
 
 It exits **5** when an operation in the spec has no credential to authenticate it with, naming
-each scheme and the variable to export. Exit 5 is distinct from a usage error on purpose: it is
-the one failure whose fix is "ask a human to set `$NAME`" rather than "correct the invocation".
-An operation that accepts several alternatives is satisfied by any one of them, and schemes
-talaria cannot supply at all (OAuth2, OpenID Connect) are left out rather than reported missing.
-The report is printed either way — a code 5 with nothing to read would say what failed but not
-what to do.
+each scheme and the variable to export — including a scheme talaria cannot speak, which is
+reported as unsupported rather than left out:
+
+```json
+{"scheme":"oauth2","supported":false,"present":false}
+```
+
+The `supported` field appears only when it is false, and such an entry has no `source`: the one
+thing that can satisfy it is `TALARIA_AUTH_BEARER`, which the error on stderr names. Exit 5 is
+distinct from a usage error on purpose: it is the one failure whose fix is "ask a human to set
+`$NAME`" rather than "correct the invocation". An operation that accepts several alternatives is
+satisfied by any one of them. The report is printed either way — a code 5 with nothing to read
+would say what failed but not what to do.
+
+`auth check` never reports a scheme satisfied when `call` would refuse it; the two derive the
+verdict from the same code, and the end-to-end suite asserts they agree.
 
 ## Making a call
 
@@ -488,10 +505,10 @@ Exit codes are deterministic, so agents can branch on them:
 |---|---|
 | 0 | Success. An HTTP 4xx/5xx is still a successful *observation* for `call`; use `--fail-on-error` to change that |
 | 1 | The request could not be completed (network, curl failure) |
-| 2 | Usage error — unknown operation, a command group named without its subcommand (`talaria auth`), missing required parameter, bad flag value |
+| 2 | Usage error — unknown operation, a command group named without its subcommand (`talaria auth`), missing required parameter, bad flag value, a spec requiring a security scheme it never declares |
 | 3 | Spec parse/load error |
 | 4 | Validation failure: the response violates the spec (only with `--fail-on-error` or `run`) |
-| 5 | A required security scheme has no credential — distinct from a usage error so an agent can ask a human to set `$NAME` |
+| 5 | A required security scheme has no credential, including one talaria cannot speak with no `TALARIA_AUTH_BEARER` to bring — distinct from a usage error so an agent can ask a human to set `$NAME` |
 
 ## Building
 

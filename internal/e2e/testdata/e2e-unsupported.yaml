@@ -1,0 +1,43 @@
+openapi: 3.0.3
+info:
+  title: E2E Unsupported Scheme API
+  version: 1.0.0
+  description: >
+    The same API as e2e-api.yaml, described as requiring a scheme talaria cannot
+    speak. It exists to hold DESIGN.md:329 end to end: `auth check` and `call`
+    must give the same verdict on it, whether or not a token was brought.
+servers:
+  - url: https://api.invalid/v1
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.invalid/token
+          scopes:
+            "pets:read": read pets
+  schemas:
+    Pet:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+paths:
+  /secure:
+    get:
+      operationId: getSecure
+      summary: A pet behind a scheme talaria cannot speak
+      security:
+        - oauth2:
+            - "pets:read"
+      responses:
+        "200":
+          description: One pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"

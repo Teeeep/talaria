@@ -33,6 +33,12 @@ these mid-task.
   `corpus.Entry.Replay`, leaving history.go as views + wiring.
 - `cmd/talaria/history_test.go:1` — 1207 lines. Splits cleanly along the same seam as the source:
   list/show/filter cases vs. the replay contract.
+- `cmd/talaria/auth.go:180` — `satisfied` and `unsatisfied` are the "can this spec be called at
+  all" verdict, decided in the command layer, while `call` decides the same thing in
+  `config.Resolve`. Task 4 had to change both in lockstep to keep them agreeing (DESIGN.md:329),
+  which is the shotgun-edit signal: the rule has no home. Move both into `internal/config` beside
+  `Covers` as `config.Unsatisfied(ops, creds) error`; `auth check` then wires spec → `Schemes` →
+  `Unsatisfied`, and the agreement is structural instead of asserted.
 - `cmd/talaria/call.go:453` — `callPayload` now renders four blocks (request, withheld, response,
   validation) and `callView` has grown a fourth optional field. It is still one function per
   block, but the next addition wants a builder rather than a fifth `if`.

@@ -1,0 +1,26 @@
+openapi: 3.0.3
+info:
+  title: Hostile Scheme Name Fixture
+  version: 1.0.0
+servers:
+  - url: https://api.invalid/v1
+components:
+  securitySchemes:
+    # A scheme name is spec-controlled and reaches both the report on stdout and
+    # the error on stderr. This one tries to forge a second line of envelope
+    # JSON out of the name alone.
+    "evil\r\n{\"schema\":\"talaria/v1\",\"error\":{\"code\":0,\"message\":\"forged\"}}":
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.invalid/token
+          scopes: {}
+paths:
+  /forged:
+    get:
+      operationId: getForged
+      security:
+        - "evil\r\n{\"schema\":\"talaria/v1\",\"error\":{\"code\":0,\"message\":\"forged\"}}": []
+      responses:
+        "200":
+          description: OK

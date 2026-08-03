@@ -132,6 +132,25 @@ talaria auth check ./openapi.yaml
 `present` is a lookup; the value is never read. A profile can redirect a scheme to a different
 variable, and `auth check` reports whichever one is actually in force.
 
+### A scheme talaria cannot speak
+
+`oauth2`, `openIdConnect`, `mutualTLS` and an `apiKey` in a place a request does not have are
+outside v1. They are reported, not hidden:
+
+```json
+{"scheme":"oauth2","supported":false,"present":false}
+```
+
+`supported` appears only when it is false, and the entry has no `source`. The way through is a
+token the human obtained from the flow themselves, exported as `TALARIA_AUTH_BEARER`; talaria
+sends it as `Authorization: Bearer …` for that scheme, `auth check` then reports
+`"supported":false,"present":true`, and the call goes out. Without it, `auth check` and `call`
+both exit **5** naming the scheme and the variable — ask for the export, do not retry.
+
+Do not try to run the OAuth flow yourself, and do not go looking for a token endpoint in the
+spec. If the spec *requires* a scheme it never declares under `components.securitySchemes`, both
+commands exit 2 instead: that is a broken spec, and no variable will fix it.
+
 **When a credential is missing** (exit 5, or `present: false`), the fix is one sentence to a
 human — name the variable and stop:
 
@@ -182,10 +201,10 @@ than guessing again.
 |---|---|---|
 | 0 | Success. A 4xx/5xx response is still success | read `response.status` |
 | 1 | The request could not be completed: network, TLS, curl itself | check the host and `--base-url`; retrying once is reasonable |
-| 2 | Usage error: unknown command or operation, a group named without its subcommand (`talaria auth`), missing parameter, bad flag, a mutation without `--allow-mutations`, a malformed `--allow-host`, or a replay with no spec, a retired `operation_id`, a stored host outside the allowed set, or a stored body still carrying a redaction placeholder | fix the invocation using `valid_alternatives` and the message |
+| 2 | Usage error: unknown command or operation, a group named without its subcommand (`talaria auth`), missing parameter, bad flag, a mutation without `--allow-mutations`, a malformed `--allow-host`, or a replay with no spec, a retired `operation_id`, a stored host outside the allowed set, or a stored body still carrying a redaction placeholder; also a spec requiring a security scheme it never declares | fix the invocation using `valid_alternatives` and the message |
 | 3 | The spec could not be read or parsed | check the path or URL; do not retry unchanged |
 | 4 | With `--fail-on-error`: the response was an HTTP error or violated the spec | read the `validation` block and `response.status` on stdout; report what failed |
-| 5 | A required credential is not set | tell a human which variable to export; do not retry until they have |
+| 5 | A required credential is not set, or the only scheme is one talaria cannot speak and no token was brought | tell a human which variable to export; do not retry until they have |
 
 ## History
 
