@@ -14,7 +14,8 @@
 #   --plan-max N         Max plan iterations (default 5)
 #   --build-max N        Max build iterations (default: 2x task count, min 10)
 #   --review-max N       Max review cycles (default 3)
-#   --time-budget SECS   Wall-clock budget (default 14400 = 4h)
+#   --time-budget SECS   Wall-clock budget (default: none — the phase runs until its
+#                        iteration cap or completion, however long that takes)
 #
 # Exit codes: 0 shipped/complete, 1 error, 2 stopped at a cap (resumable)
 
@@ -35,7 +36,9 @@ REVIEW_MAX=3
 REVIEW_EVERY=6        # review every N build iterations; 0 = only once, after all tasks.
                       # 6 = the planner's block size (5 feature tasks + 1 refactor pass), so
                       # each checkpoint lands just after a refactor pass rather than before it.
-TIME_BUDGET=14400
+TIME_BUDGET=99999999  # ~3 years: the work is bounded by the task list, not by the clock.
+                      # The iteration caps (BUILD_MAX, REVIEW_MAX) are the real stops; a
+                      # wall-clock stop only ever interrupted a phase mid-way.
 RETRY_MAX=5
 RETRY_DELAY=30
 

@@ -4,29 +4,197 @@
   "generated_at": "2026-08-03T13:05:00Z",
   "total_tasks": 24,
   "tasks": [
-    { "id": 1, "section": "1", "title": "Substitute server variables in servers[].url", "line_start": 141, "line_end": 196, "done": true },
-    { "id": 2, "section": "2", "title": "Compute the allowed host set (no enforcement yet)", "line_start": 199, "line_end": 268, "done": true },
-    { "id": 3, "section": "3", "title": "Credentials bind to hosts, and replay re-derives — findings 1, 2, 3, 22", "line_start": 271, "line_end": 479, "done": true },
-    { "id": 4, "section": "4", "title": "An unsupported security scheme is reported, not hidden — findings 4 and 21", "line_start": 482, "line_end": 586, "done": true },
-    { "id": 5, "section": "5", "title": "A spec-supplied media type cannot inject headers — finding 5", "line_start": 589, "line_end": 660, "done": true },
-    { "id": 6, "section": "6", "title": "Refactor pass — tasks 1-5", "line_start": 663, "line_end": 697, "done": true },
-    { "id": 7, "section": "7", "title": "A request body carrying a secret does not print on stdout — finding 6", "line_start": 700, "line_end": 775, "done": true },
-    { "id": 8, "section": "8", "title": "internal/corpus stops importing internal/curl — finding 30", "line_start": 778, "line_end": 829, "done": true },
-    { "id": 9, "section": "9", "title": "History entries are size-bounded on read — finding 13", "line_start": 832, "line_end": 882, "done": true },
-    { "id": 10, "section": "10", "title": "A remote spec read is bounded — finding 9", "line_start": 885, "line_end": 930, "done": false },
-    { "id": 11, "section": "11", "title": "The config document's credential buffer is actually zeroed — finding 29", "line_start": 933, "line_end": 988, "done": false },
-    { "id": 12, "section": "12", "title": "Refactor pass — tasks 7-11", "line_start": 991, "line_end": 1015, "done": false },
-    { "id": 13, "section": "13", "title": "The canary gate covers the validation error path and profile auth — findings 19 and 20", "line_start": 1018, "line_end": 1089, "done": false },
-    { "id": 14, "section": "14", "title": "--output tsv emits structurally valid rows — finding 8", "line_start": 1092, "line_end": 1138, "done": false },
-    { "id": 15, "section": "15", "title": "Ctrl-C works — finding 14", "line_start": 1141, "line_end": 1188, "done": false },
-    { "id": 16, "section": "16", "title": "curl subprocesses cannot hang the process — findings 10 and 15", "line_start": 1191, "line_end": 1245, "done": false },
-    { "id": 17, "section": "17", "title": "The history lock has a deadline — finding 17", "line_start": 1248, "line_end": 1289, "done": false },
-    { "id": 18, "section": "18", "title": "Refactor pass — tasks 13-17", "line_start": 1292, "line_end": 1315, "done": false },
-    { "id": 19, "section": "19", "title": "History never lies about what it recorded — findings 23, 24 and 31", "line_start": 1318, "line_end": 1387, "done": false },
-    { "id": 20, "section": "20", "title": "The spec cache expires and can be refreshed — finding 25", "line_start": 1390, "line_end": 1468, "done": false },
-    { "id": 21, "section": "21", "title": "One pass over the history file per append — finding 16", "line_start": 1471, "line_end": 1512, "done": false },
-    { "id": 22, "section": "22", "title": "No comment asserts an invariant no test enforces", "line_start": 1515, "line_end": 1608, "done": false },
-    { "id": 23, "section": "23", "title": "The credential firewall holds end to end", "line_start": 1611, "line_end": 1664, "done": false },
-    { "id": 24, "section": "24", "title": "Refactor pass — tasks 19-23, end of phase", "line_start": 1667, "line_end": 1706, "done": false }
+    {
+      "id": 1,
+      "section": "1",
+      "title": "Substitute server variables in servers[].url",
+      "line_start": 141,
+      "line_end": 196,
+      "done": true
+    },
+    {
+      "id": 2,
+      "section": "2",
+      "title": "Compute the allowed host set (no enforcement yet)",
+      "line_start": 199,
+      "line_end": 268,
+      "done": true
+    },
+    {
+      "id": 3,
+      "section": "3",
+      "title": "Credentials bind to hosts, and replay re-derives \u2014 findings 1, 2, 3, 22",
+      "line_start": 271,
+      "line_end": 479,
+      "done": true
+    },
+    {
+      "id": 4,
+      "section": "4",
+      "title": "An unsupported security scheme is reported, not hidden \u2014 findings 4 and 21",
+      "line_start": 482,
+      "line_end": 586,
+      "done": true
+    },
+    {
+      "id": 5,
+      "section": "5",
+      "title": "A spec-supplied media type cannot inject headers \u2014 finding 5",
+      "line_start": 589,
+      "line_end": 660,
+      "done": true
+    },
+    {
+      "id": 6,
+      "section": "6",
+      "title": "Refactor pass \u2014 tasks 1-5",
+      "line_start": 663,
+      "line_end": 697,
+      "done": true
+    },
+    {
+      "id": 7,
+      "section": "7",
+      "title": "A request body carrying a secret does not print on stdout \u2014 finding 6",
+      "line_start": 700,
+      "line_end": 775,
+      "done": true
+    },
+    {
+      "id": 8,
+      "section": "8",
+      "title": "internal/corpus stops importing internal/curl \u2014 finding 30",
+      "line_start": 778,
+      "line_end": 829,
+      "done": true
+    },
+    {
+      "id": 9,
+      "section": "9",
+      "title": "History entries are size-bounded on read \u2014 finding 13",
+      "line_start": 832,
+      "line_end": 882,
+      "done": true
+    },
+    {
+      "id": 10,
+      "section": "10",
+      "title": "A remote spec read is bounded \u2014 finding 9",
+      "line_start": 885,
+      "line_end": 930,
+      "done": true
+    },
+    {
+      "id": 11,
+      "section": "11",
+      "title": "The config document's credential buffer is actually zeroed \u2014 finding 29",
+      "line_start": 933,
+      "line_end": 988,
+      "done": false
+    },
+    {
+      "id": 12,
+      "section": "12",
+      "title": "Refactor pass \u2014 tasks 7-11",
+      "line_start": 991,
+      "line_end": 1015,
+      "done": false
+    },
+    {
+      "id": 13,
+      "section": "13",
+      "title": "The canary gate covers the validation error path and profile auth \u2014 findings 19 and 20",
+      "line_start": 1018,
+      "line_end": 1089,
+      "done": false
+    },
+    {
+      "id": 14,
+      "section": "14",
+      "title": "--output tsv emits structurally valid rows \u2014 finding 8",
+      "line_start": 1092,
+      "line_end": 1138,
+      "done": false
+    },
+    {
+      "id": 15,
+      "section": "15",
+      "title": "Ctrl-C works \u2014 finding 14",
+      "line_start": 1141,
+      "line_end": 1188,
+      "done": false
+    },
+    {
+      "id": 16,
+      "section": "16",
+      "title": "curl subprocesses cannot hang the process \u2014 findings 10 and 15",
+      "line_start": 1191,
+      "line_end": 1245,
+      "done": false
+    },
+    {
+      "id": 17,
+      "section": "17",
+      "title": "The history lock has a deadline \u2014 finding 17",
+      "line_start": 1248,
+      "line_end": 1289,
+      "done": false
+    },
+    {
+      "id": 18,
+      "section": "18",
+      "title": "Refactor pass \u2014 tasks 13-17",
+      "line_start": 1292,
+      "line_end": 1315,
+      "done": false
+    },
+    {
+      "id": 19,
+      "section": "19",
+      "title": "History never lies about what it recorded \u2014 findings 23, 24 and 31",
+      "line_start": 1318,
+      "line_end": 1387,
+      "done": false
+    },
+    {
+      "id": 20,
+      "section": "20",
+      "title": "The spec cache expires and can be refreshed \u2014 finding 25",
+      "line_start": 1390,
+      "line_end": 1468,
+      "done": false
+    },
+    {
+      "id": 21,
+      "section": "21",
+      "title": "One pass over the history file per append \u2014 finding 16",
+      "line_start": 1471,
+      "line_end": 1512,
+      "done": false
+    },
+    {
+      "id": 22,
+      "section": "22",
+      "title": "No comment asserts an invariant no test enforces",
+      "line_start": 1515,
+      "line_end": 1608,
+      "done": false
+    },
+    {
+      "id": 23,
+      "section": "23",
+      "title": "The credential firewall holds end to end",
+      "line_start": 1611,
+      "line_end": 1664,
+      "done": false
+    },
+    {
+      "id": 24,
+      "section": "24",
+      "title": "Refactor pass \u2014 tasks 19-23, end of phase",
+      "line_start": 1667,
+      "line_end": 1706,
+      "done": false
+    }
   ]
 }
