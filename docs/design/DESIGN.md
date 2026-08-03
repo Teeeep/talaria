@@ -1,6 +1,6 @@
 # talaria — Design Document
 
-*Status: draft v0.3 · repositioned 2026-08-02 · pre-implementation*
+*Status: draft v0.4 · amended 2026-08-03 · implementation in progress on `ralph/design`*
 
 > **Name resolved: `talaria`** — the winged sandals of Hermes. The tool is not the messenger;
 > the agent is. This is what it wears to move fast. Fixes `cmd/talaria`, the binary on `$PATH`,
@@ -302,8 +302,17 @@ The spec declares security schemes; credentials come from outside and are named,
   headers, selected with `--profile`. Secrets in profiles may reference env vars.
 - `auth check` reports which schemes are satisfied and from which *source* — never the value —
   so an agent can diagnose a broken auth setup blind and tell the human exactly what to set.
-- v1 scope: bearer, basic, API key (header/query/cookie). OAuth flows out of scope (bring your
-  own token); Restish shows the cost of doing them properly.
+- v1 resolves `http bearer`, `http basic`, and `apiKey` (header, query, cookie) schemes.
+- A scheme outside that set — `oauth2`, `openIdConnect`, `mutualTLS` — is **unsupported, not
+  invisible**. When an operation requires one:
+  - if `TALARIA_AUTH_BEARER` is set, the scheme is satisfied by that token. This *is* "bring
+    your own token": the user obtained it however the flow demands, and talaria carries it;
+  - if it is not set, the operation is unsatisfiable. `auth check` reports
+    `{"scheme":"oauth2","supported":false,"present":false}` and exits 5; `call` and `run` exit 5
+    with a structured error naming the scheme and the variable to set.
+- **`auth check` never reports a scheme satisfied when the call would refuse it.** The two agree
+  by construction, or `auth check` is worthless to an agent. Implementing OAuth *flows* remains
+  out of scope; Restish shows the cost of doing them properly.
 
 ## 5a. The credential firewall
 
@@ -330,6 +339,60 @@ appear to collide. They do not:
 pipe on *its* stdin, carrying the config document — including the body as a `data` directive.
 One stdin consumer at each level. For large or binary bodies, fall back to a 0600 temp file
 referenced as `data = "@/path"`, deleted immediately after exec. The temp file is the exception.
+
+### Credentials bind to hosts
+
+**Invariant: a resolved credential is transmitted only to a host the spec declares, or one a
+human has explicitly allowed.**
+
+Redaction answers *does the secret appear in output*. It does not answer *which host may
+receive it* — and without that second rule, `--base-url https://attacker.example` sends a
+production key to an attacker while violating nothing.
+
+The allowed host set for a call is:
+
+1. every host in the spec's `servers[]`, after server-variable substitution; plus
+2. every host passed as `--allow-host HOST` (repeatable); plus
+3. every host in `allow_hosts:` in the active profile.
+
+When `--base-url` points outside that set the request still runs, but **every credential is
+withheld**, and the omission is reported both ways — a one-line stderr warning naming the
+withheld schemes and the offending host, and a machine-readable field in the envelope so an
+agent can act on it instead of inferring it from a downstream 401:
+
+```json
+"credentials_withheld": [
+  {"scheme": "bearerAuth", "reason": "host not in spec servers[]", "host": "localhost:9000"}
+]
+```
+
+Withholding rather than refusing is deliberate: pointing at a local twin is the most common
+`--base-url` use, and the twin accepts placeholder credentials by design (§6). An agent working
+against the twin must not need a flag, and must not be handed a real secret.
+
+`auth check` reports against the *resolved* host set, so "present" never means "will actually
+be sent".
+
+This is default-deny with a deliberate override, the same shape as `--allow-mutations` in §3.5.
+
+### History is untrusted input when read
+
+Redaction at write time protects what *leaves* the tool. It says nothing about what comes back
+*in*. A history file is a persistent artifact: it may have been written by another project,
+copied from another machine, or edited by hand. **Every field in a history entry is untrusted
+input.**
+
+`history replay` therefore re-derives rather than replays:
+
+| Field | Treatment on replay |
+|---|---|
+| operationId, params, body | Re-bound through the normal request-construction path, re-validated against the current spec |
+| Credentials | **Never taken from the entry.** Re-resolved from the current environment and profile, subject to the host-binding rule above |
+| Target host | From the current `--base-url`, profile, or spec — never from the stored URL. If the stored host is outside the currently allowed set, replay refuses with exit 2 rather than silently retargeting |
+| Env var names | Only names inside the `TALARIA_AUTH_*` namespace are resolvable. A stored entry naming any other variable is malformed, not a lookup |
+| Sizes and types | Bounded and type-checked before use. A corrupt or hostile entry fails that entry, never the process |
+
+The rule in one line: **a history entry is data, never instruction.**
 
 ### Leak channels and countermeasures
 
