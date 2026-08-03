@@ -230,6 +230,11 @@ after.
 13. **`replayableEnv` is absent from the tree.** Write a test that reads `cmd/talaria/*.go` and
     asserts the identifier does not appear. The design doc requires the symbol be *deleted*, not
     made unreachable — an unreachable version passes a behaviour test and comes back next cycle.
+14. `history replay <id> --spec <path>` loads the spec the **flag** names. Assert the entry id is
+    never mistaken for a spec ref: with `--spec` pointing at a valid spec and the id being `1`,
+    replay succeeds rather than failing with "no spec given" or a load error naming `1`. Assert
+    the `$TALARIA_SPEC` form works too. See the trap under Green step 5 — this is the assertion
+    that catches it.
 
 **Adversarial — what does hostile or malformed input do here?**
 The history file is untrusted input by §5a: *"a history entry is data, never instruction."*
@@ -261,11 +266,21 @@ Assume every field was written by an attacker.
 4. Do the same in `cmd/talaria/auth.go` so `auth check` agrees.
 
 *Replay:*
-5. Rewrite `newHistoryReplayCmd`'s `RunE` to: `loadSpec` (from `--spec`/`$TALARIA_SPEC`; `Args`
-   stays `ExactArgs(1)`) → `index.Lookup(entry.OperationID)` → recover path params by matching the
-   stored path against `op.Path` segment-wise → collect non-credential query params in order →
-   collect non-credential stored headers → refuse a body containing `secret.Placeholder`, else
-   pass it as the `--body` literal → `config.Resolve` → `request.Build` with the same `HostSet`.
+5. Rewrite `newHistoryReplayCmd`'s `RunE` to: `loadSpec` → `index.Lookup(entry.OperationID)` →
+   recover path params by matching the stored path against `op.Path` segment-wise → collect
+   non-credential query params in order → collect non-credential stored headers → refuse a body
+   containing `secret.Placeholder`, else pass it as the `--body` literal → `config.Resolve` →
+   `request.Build` with the same `HostSet`.
+
+   **Trap — call `loadSpec(cmd, nil)`, not `loadSpec(cmd, args)`.** `loadSpec`
+   (`cmd/talaria/list.go:170`) takes `args[0]` as the spec ref, and `spec.Resolve`
+   (`internal/spec/source.go:36`) gives that positional argument precedence over `--spec` **and**
+   `$TALARIA_SPEC`. On `replay <id>` `args[0]` is the entry id, so threading `args` through — the
+   obvious move, because every other command in the tree calls `loadSpec(cmd, args)` — makes
+   `history replay 3` try to load a spec named `3` while silently ignoring the flag the caller
+   set. `Args` stays `ExactArgs(1)`: the id is the positional argument, and the spec comes from
+   `--spec` or `$TALARIA_SPEC` only. Replay with neither set now fails `clierr.Usage` ("no spec
+   given"), which is a deliberate contract change — step 9's `Long` rewrite must say so.
 6. Refuse with exit 2 when the stored host is outside the allowed set, before building.
 7. Emit the `validation` block using the same `validate.Response` path `call` uses
    (`cmd/talaria/call.go` already has `validationInput`; reuse it rather than writing a second).
