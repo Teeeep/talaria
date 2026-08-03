@@ -157,7 +157,10 @@ absence of new commits — an empty or cosmetic commit keeps it spinning for no 
 - Do not assume something is missing — search the codebase and confirm before planning to build it.
 - Keep tasks small. One task, one session, one commit.
 - Respect dependency order. Blocking tasks come first.
-- Remove completed tasks from the plan body entirely — no "Done" section.
+- **Never delete a completed task's section from the plan.** `tasks.json` keeps `done: true`
+  entries and the build phase reads each task by line range, so removing the section while the
+  entry survives silently shifts every later task's `line_start`/`line_end` and a builder reads
+  the wrong task. Completed sections cost nothing — no iteration reads the whole plan.
 - Capture the *why* in every task. A fresh agent uses it to make judgment calls.
 - Every command you write must come from `.ralph/stack.json`. Do not invent test commands.
 - For features spanning multiple components, include a final task that verifies data flows

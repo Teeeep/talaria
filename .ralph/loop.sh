@@ -420,6 +420,30 @@ phase_build() {
   return 1
 }
 
+# Findings are the most valuable thing a run produces and the working files at the repo
+# root are scratch: the next cycle deletes REVIEW_FINDINGS.md before the reviewer writes a
+# new one. Archive every cycle under a timestamp so nothing is ever overwritten, and later
+# work can cite a stable path instead of a file that changes under it.
+REVIEW_ARCHIVE_DIR="docs/review"
+
+archive_review() {
+  local cycle="$1" stamp
+  stamp=$(date -u +%Y%m%d-%H%M%S)
+  mkdir -p "$REVIEW_ARCHIVE_DIR"
+  [ -f REVIEW_FINDINGS.md ] \
+    && cp REVIEW_FINDINGS.md "$REVIEW_ARCHIVE_DIR/${stamp}-cycle${cycle}-findings.md"
+  [ -f REVIEW_ESCALATION.md ] \
+    && cp REVIEW_ESCALATION.md "$REVIEW_ARCHIVE_DIR/${stamp}-cycle${cycle}-escalation.md"
+  # Commit the archive by path so it survives even if the run dies here, and so it cannot
+  # be swept into an unrelated commit by whatever the next iteration stages.
+  if [ -n "$(git status --porcelain "$REVIEW_ARCHIVE_DIR" 2>/dev/null)" ]; then
+    git add "$REVIEW_ARCHIVE_DIR" 2>/dev/null || true
+    git commit -q -m "docs: archive review cycle $cycle findings" -- "$REVIEW_ARCHIVE_DIR" \
+      2>/dev/null || true
+  fi
+  log "Archived cycle $cycle review to $REVIEW_ARCHIVE_DIR/${stamp}-cycle${cycle}-*.md"
+}
+
 phase_review() {
   banner "PHASE 4/5 — REVIEW"
   set_phase review
@@ -478,6 +502,7 @@ phase_review() {
     repeats=$(count_repeats)
     echo "$crits" >> "$RALPH_DIR/review_history"
     log "Findings: $findings total, $crits CRIT ($blocked design-blocked, $repeats repeat)"
+    archive_review "$cycle"
 
     # ── Guardrails: stop rather than spin ────────────────────────────────────
     # Each of these means another cycle cannot help. Escalating beats burning the cap.

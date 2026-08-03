@@ -26,8 +26,15 @@ You are in REVIEW PLAN mode. Convert review findings into fix tasks. Do NOT fix 
    - Same file and same kind of fix → one task
    - A finding needing changes across many files → its own task
 3. Each task must be completable in a single build session.
-4. Write `IMPLEMENTATION_PLAN.md` with these tasks, replacing the previous contents.
-5. Regenerate `tasks.json` from that plan.
+4. **Append** these tasks to `IMPLEMENTATION_PLAN.md` under a new
+   `## Review fixes — cycle <N>` heading. Do **not** replace the file or remove earlier
+   sections: the build tasks that came before are the record of what this run has already
+   done, and a fix task is a continuation of that work, not a replacement for it.
+5. **Append** the new tasks to `tasks.json`, preserving every existing entry exactly as it
+   is — including `done: true`. Continue `id` and `### Task N` numbering from the highest
+   number already present; never restart at 1 and never reuse an id. `total_tasks` becomes
+   the count of *all* tasks, old and new, so progress stays truthful across the whole run
+   instead of resetting each time a review lands.
 6. Commit.
 
 ## Task Format
@@ -62,8 +69,10 @@ You are in REVIEW PLAN mode. Convert review findings into fix tasks. Do NOT fix 
 }
 ```
 
-All tasks start `done: false` — these are new fixes, none are complete. Carry `spec_file`
-across unchanged; losing it blinds the next review phase to the design doc.
+The tasks **you add** start `done: false`. Every task already in the file keeps its existing
+state untouched — rewriting a `done: true` back to `false` re-runs finished work and makes the
+loop look like it is going backwards. Carry `spec_file` across unchanged; losing it blinds the
+next review phase to the design doc.
 
 `line_start` and `line_end` must accurately bracket each `### Task N:` section. The build
 phase reads only that range.
@@ -72,12 +81,14 @@ phase reads only that range.
 
 ```bash
 git add IMPLEMENTATION_PLAN.md tasks.json
-git commit -m "review-plan: N tasks from M CRIT findings"
+git commit -m "review-plan: N tasks from M CRIT findings (cycle <N>)"
 ```
 
 ## Rules
 
 - CRIT findings only. WARN and INFO produce no tasks.
+- Append, never replace. Earlier tasks and their `done` state survive every review cycle, so
+  `total_tasks` only ever grows and the completed count never resets.
 - Reference the specific finding numbers in every task.
 - Do NOT modify or delete `REVIEW_FINDINGS.md` — the next review cycle regenerates it, and it
   stays readable in git history.
