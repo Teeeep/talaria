@@ -62,6 +62,63 @@ doing that first would install a tool with a verified credential-exfiltration ho
 The ordering after phase 2 is unchanged: **deepen the CLI → the twin.** The twin (roadmap 5–8)
 stays behind the §7 gate.
 
+### 2.1 Scope reduction: `run` is cut
+
+**Decision: remove `talaria run`, `internal/gen`, fixtures and the JUnit report before 2a begins.**
+
+Measured cost of keeping it: 3,539 lines directly (`cmd/talaria/run.go` + test 1,498,
+`internal/gen` 1,659, `internal/output/junit.go` + test 382), plus knock-on in the canary stages,
+the e2e flows and the docs — call it ~4,200. `internal/gen` is imported only by `run.go`, so the
+cut is clean.
+
+It is the least differentiated thing in the tool. Schemathesis, Hurl and newman all do
+spec-driven smoke testing, and §2 concedes it. `call`, `history` and the spec commands are the
+part nothing else does.
+
+Cutting *before* 2a rather than after: findings 7 and 12 are entirely inside `gen` and vanish;
+findings 4, 8, 16 and 19 shrink to their non-`run` halves. Hardening code that is about to be
+deleted is waste.
+
+Two simplifications fall out:
+
+- **Retention collapses to a single cap.** `corpus.Source` (`entry.go:36`) exists so a `run` over
+  a large spec could not evict interactive `call` history — the per-source 1000-entry cap has no
+  other justification. Without `run` the fiddliest part of the store goes.
+- **`--fixtures` disappears**, taking 2b-1's fileguard from four call sites to three.
+
+**Honest limit of this cut.** It removes ~15% of production lines. It does not address the two
+larger volume problems in §2.2 — the command-layer inversion and a test suite that is 2.4× the
+production code while catching none of the 32 findings. Cutting `run` is worth doing; it is not
+the answer to "why is this so big."
+
+### 2.2 Why the codebase is the size it is
+
+Measured, so it is not re-argued from impressions: **6,496 lines of actual production code**
+(non-comment, non-blank), carrying 2,777 comment lines, 1,479 blanks, 15,498 test lines, 2,387
+lines of testdata and 2,520 of markdown. Twelve non-test packages at ~430 lines each. For the
+feature set, 6.5k is not bloated and the package split is not over-fragmented.
+
+Three things are wrong, and none of them is the line count:
+
+1. **The tests are voluminous and shallow.** 15,498 lines, 2.4× production, green with all 32
+   findings present. They did not catch credential exfiltration via `--base-url`, header
+   injection, an unredacted body on stdout, the OOM or invalid TSV. The cause is structural: each
+   of the 33 tasks specified 5–8 "Red — write failing tests" assertions *in advance*, so the suite
+   **encodes the plan's intentions, not an attacker's**. Four adversarial reviewers in one pass
+   found more than 15k lines of tests did.
+2. **The command layer is inverted.** `cmd/talaria` holds 3,050 production lines — 47% of all
+   production code — with 15 view structs spread across it and `history.go` at 762 lines. A CLI
+   layer should be thin wiring over packages. `replayRequest` living in `cmd/` is why finding 3
+   exists.
+3. **30% of non-blank production lines are comments**, and several assert invariants the code does
+   not hold (findings 19, 29, 30, 31).
+
+**Root cause: a fresh-context loop can only add.** Context cannot carry intent between iterations,
+so tests must be specified up front; cannot carry rationale, so comments are heavy; cannot see the
+whole, so no task refactors across boundaries and each command grows its own view types. Thirty-
+three additive tasks with no compaction phase is exactly how this shape arises. **The missing step
+is a compaction pass, not a different coding standard.**
+
 ## 3. The threat model, corrected
 
 Three claims, not two. The first draft had A and B; the review established that A alone is not
@@ -350,6 +407,7 @@ already added are not repeated here.
 | §5a | New leak-channel row: path-taking flags as arbitrary-file-read primitives under privilege separation; countermeasure is the ownership rule. Four call sites named |
 | §5a replay table | Simplify — replay resolves nothing from stored entries, so the namespace row has no code to govern (§4.1) |
 | §5a threats not covered | Rewrite: enforced mode moves *out*. Record the rejected designs of §6.1 with reasons so they are not re-proposed |
+| §4, §5, §5a, §7 | **Remove `run`** (§2.1): drop the `run` block from the CLI surface, `internal/gen` from the package list, the "Test data for `run` mode" subsection, and roadmap Phase 4. Exit code 4 keeps its `--fail-on-error` half |
 | §7 | Insert phase 2 between 4 and 5; note it absorbs the self-install slice of the distribution line |
 | §8 | Add macOS: Keychain per-binary ACLs are a stronger mechanism with no Linux equivalent |
 
