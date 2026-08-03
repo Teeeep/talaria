@@ -54,6 +54,11 @@ in a single session.
 1. [Specific assertion, not "test the thing"]
 2. [Another specific assertion]
 
+**Adversarial — what does hostile or malformed input do here?**
+1. [What happens with input the code did not expect: oversized, malformed, cyclic,
+   attacker-controlled, or crossing a trust boundary. "None — this touches no external
+   input" is a valid answer, but it must be stated, not omitted]
+
 **Green — minimal implementation:**
 1. [Specific step]
 2. [Specific step]
@@ -61,6 +66,47 @@ in a single session.
 **Verify:** `<exact command from .ralph/stack.json test_command or test_single_command>`
 
 **Why:** [One line — the value this delivers, so a later agent can judge tradeoffs]
+```
+
+**Why the adversarial section is mandatory.** Red assertions are written from the plan's
+intentions, so a suite built only from them tests what the feature *should* do and never what
+an attacker would do. That produces a large green suite that catches nothing — the failure mode
+is a codebase with more test lines than source lines and a review that still finds dozens of
+live defects. Ask, per task: which of these inputs is not fully under our control? A spec or
+schema fetched from a URL, a file another process wrote, a flag value, a stored record read
+back later, anything crossing a trust boundary. Then write the test that assumes it is hostile.
+
+### Compaction tasks
+
+**Emit one compaction task every ~5 tasks, and one at the end of each phase.** A loop whose
+tasks are all feature tasks can only add: no iteration can see the whole, so duplication
+accumulates silently and nothing is ever removed. These tasks are the only counterweight.
+
+```markdown
+### Task N: Compaction — tasks P–Q
+
+**Depends on:** Task Q
+
+**Deliverable is negative.** No new behaviour, no new files, no new tests beyond ones that
+replace several others. The suite is green before and after, and the diff is net-negative
+in lines.
+
+1. Read `.ralph/refactor-backlog.md` first — build iterations record structural problems there
+   as they hit them, because each one is visible only from inside the task that caused it.
+   That file is the work list; this task drains it. Delete each entry as you resolve it, and
+   leave anything you deliberately did not do, with one line on why.
+2. Read every file touched since the last compaction task.
+3. Consolidate types and helpers that were duplicated because separate iterations could not
+   see each other's work — shared view/DTO structs, repeated parsing or formatting, near-identical
+   error construction.
+4. Move logic that accumulated in the entrypoint or command layer down into the package that
+   owns it. A thin entrypoint is the goal; measure it.
+5. Delete commented-out code, superseded helpers, and any comment asserting a property that
+   no test enforces — either write the test or delete the claim.
+6. Record every pattern you consolidated in the conventions file, so later iterations follow it
+   instead of re-inventing it.
+
+**Verify:** `<test_command>` green, and report the net line delta in the commit message.
 ```
 
 ### Special cases
