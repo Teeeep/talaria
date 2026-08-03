@@ -113,6 +113,15 @@ Two hard constraints from the design doc, both encoded in the dependencies below
 Finding 21 is the documentation half of finding 4 and ships inside Task 4, or README contradicts
 the code.
 
+**That rule is general, and this plan applies it to three tasks, not one.** Finding 21 is not a
+special case — it is what happens when a shipped document outlives the behaviour it describes. Three
+tasks here change a user-facing contract, so each carries its own doc edits in its own commit:
+Task 3 (README.md:387-399 and AGENT.md:199-207 document `replayableEnv`, which Task 3 deletes
+outright; plus `--allow-host` and `credentials_withheld`, which nothing documents yet), Task 4
+(finding 21 proper), and Task 20 (README:49-50's *"fetched once per URL"* is the forever-cache being
+removed). No CI check enforces doc/code agreement — Task 24 step 8 is the only backstop, and a
+backstop is not a substitute for shipping them together.
+
 ## Structure
 
 24 tasks: 20 feature tasks in four blocks of five, each block closed by a refactor pass (tasks 6,
@@ -285,6 +294,9 @@ after.
   `replayQuery` (615), `replayPairs` (651), `replayValue` (681), `replayableEnv` (721),
   `encodingPrefix` (739)
 - `cmd/talaria/auth.go` (modify) — report against the host set
+- `README.md` (modify) — lines 387-399 describe the behaviour this task deletes
+- `AGENT.md` (modify) — lines 199-207 describe it too; line 61 documents `--base-url` with no
+  mention that credentials are now withheld when it points off-spec
 
 **Red — write failing tests:**
 
@@ -329,12 +341,21 @@ after.
     replay succeeds rather than failing with "no spec given" or a load error naming `1`. Assert
     the `$TALARIA_SPEC` form works too. See the trap under Green step 5 — this is the assertion
     that catches it.
+15. **The mutation gate reads the spec, not the entry.** An entry whose stored `"method"` is `GET`
+    but whose `operation_id` resolves to a `DELETE` in the spec is **refused without
+    `--allow-mutations`**. Today the gate is `(operation.Operation{Method: entry.Method}).IsMutation()`
+    at `history.go:203` — built from the stored method, and it runs *before* any spec is loaded, so a
+    one-word edit to a JSONL line turns a DELETE replay into an ungated one. Assert the inverse too:
+    a stored `"method":"DELETE"` whose operation is a `GET` does **not** demand the flag, or the
+    hostile file gets to make replay harder rather than easier.
 
 **Adversarial — what does hostile or malformed input do here?**
 The history file is untrusted input by §5a: *"a history entry is data, never instruction."*
 Assume every field was written by an attacker.
 1. An entry whose `operation_id` names a *different* operation than its stored method/path — the
-   spec wins; assert the request uses the spec's method and path template.
+   spec wins; assert the request uses the spec's method and path template, **and that the
+   `--allow-mutations` gate is decided from the spec's method** (Red 15). The stored method is the
+   attacker's field; the gate is the one place where believing it costs a write against a live API.
 2. An entry whose stored path cannot be matched against the operation's path template — exit 2,
    not a request to a half-substituted path.
 3. An entry with a stored header named `Authorization` holding a plausible-looking literal — it
@@ -413,10 +434,42 @@ Assume every field was written by an attacker.
    `callView.Validation` (`call.go:34`), so replay only has to stop passing `nil` as its third
    argument (`history.go:232`). Do **not** reach for `validateWith` (`call.go:380`) — it is dead
    code with zero callers and a doc comment describing the deleted `run`; Task 6 removes it.
-8. Delete `replayRequest`, `replayQuery`, `replayPairs`, `replayValue`, `replayableEnv` and
+8. **Move the mutation gate after `index.Lookup` and gate on the spec's operation.** It sits at
+   `history.go:203` today — `(operation.Operation{Method: entry.Method}).IsMutation()`, built from
+   the stored method, evaluated before any spec exists. It becomes `op.IsMutation()` on the
+   operation `index.Lookup` returned. Keep the flag registration (`history.go:236`) and the message
+   at `history.go:205` as they are; only the source of the method changes. This is the same rule as
+   everything else in this task — the spec decides, the file does not — and it is the one instance
+   where getting it wrong sends a real DELETE.
+9. Delete `replayRequest`, `replayQuery`, `replayPairs`, `replayValue`, `replayableEnv` and
    `encodingPrefix`. Keep `warnUnreplayable` (history.go:746) for dropped fields. Delete the
    now-false comment at `history.go:230-231` ("replay reads a recorded request and needs no spec").
-9. Update `newHistoryReplayCmd`'s `Long` text: replay now needs a spec.
+10. Update `newHistoryReplayCmd`'s `Long` text: replay now needs a spec.
+
+*Documentation — this ships in the same commit, or README contradicts the code:*
+11. **README.md:394-399 and AGENT.md:204-207 become wholly false and must be rewritten, not
+    amended.** Both paragraphs document `replayableEnv` — *"the names replay will resolve are an
+    allowlist … `TALARIA_AUTH_BEARER`, `TALARIA_AUTH_BASIC`, any `TALARIA_AUTH_APIKEY_*`, and the
+    variables the selected profile's `auth:` map names"*. After this task **nothing in a stored
+    entry is resolved at all**; credentials come from `config.Resolve` against the current spec and
+    profile. The replacement states that, which is a simpler rule than the one it deletes. This is
+    also what silently resolves finding 18 (see "Side effect worth knowing" at the top of this
+    plan) — do not restate the old conflict in the new wording.
+12. README.md:387-392 needs the rest of replay's new contract: it re-derives through the spec, so
+    it now **requires** a spec (`--spec` or `$TALARIA_SPEC`; the positional argument is the entry
+    id, per the trap in step 5); an entry whose `operation_id` is gone fails exit 2; a stored host
+    outside the allowed set is refused exit 2 rather than retargeted; a stored body still carrying
+    a redaction placeholder is refused; and a `validation` block is emitted as `call` does.
+13. Document the **new user-facing surface** this task creates, which no passage covers today:
+    `--allow-host` (registered in Task 2, meaningful only now), the `credentials_withheld` envelope
+    array, and the one stderr line. AGENT.md:61 currently says only *"`--base-url` overrides the
+    spec's server"* — an agent following that will point `--base-url` at a local twin, silently get
+    no credential, and have nothing in the docs explaining why. That is the retry-loop-instead-of-
+    asking-a-human failure Task 4's **Why** describes, arriving through a different door. Say
+    plainly: off-spec host ⇒ credentials withheld, call still runs, exit 0, pass `--allow-host` to
+    override. Add `--allow-host` beside `--base-url` in AGENT.md's flag list (line 61) and README's
+    (line 174).
+14. AGENT.md:177's exit-2 row enumerates its causes — add replay's new refusals to it.
 
 **Verify:** `go test ./...`
 
@@ -442,8 +495,12 @@ JSONL file names — the two attacks §5a exists to prevent, both live, both ver
   from `TALARIA_AUTH_BEARER`; `auth.go:167` becomes `clierr.CredentialMissing`
 - `cmd/talaria/auth.go` (modify) — `authScheme.Supported` (auth.go:24); `satisfied` (auth.go:173)
   stops treating `config.Unsupported` as a no-op
-- `README.md` (modify) — rewrite lines ~165-171 and ~254 (finding 21)
-- `AGENT.md` (modify) — add unsupported-scheme behaviour under `## Credentials` (~line 108)
+- `README.md` (modify) — rewrite lines ~165-171 and ~254 (finding 21); exit-5 row at line 460 says
+  only *"a required security scheme has no credential"*, which no longer covers "declared but
+  unsupportable"
+- `AGENT.md` (modify) — add unsupported-scheme behaviour under `## Credentials` (~line 108); same
+  widening for the exit-5 row at line 180, whose advice (*"tell a human which variable to export"*)
+  is the right action for an unsupported scheme too, but only if the report names it
 
 **Red — write failing tests:**
 1. On a spec whose only scheme is `oauth2`, `auth check` reports
@@ -1345,6 +1402,10 @@ fast call against a local service indistinguishable from one that was never obse
 - `cmd/talaria/root.go` (modify) — register `--refresh` as a persistent flag beside `--spec` (:65)
 - `cmd/talaria/list.go` (modify) — `loadSpec` at 170 reads the flag; replace the bare
   `spec.Load(ref)` at 186 with an explicit `Loader`
+- `README.md` (modify) — lines 49-50 say a URL spec is *"fetched once per URL, not once per call"*,
+  which is the forever-cache this task removes
+- `AGENT.md` (modify) — says **nothing** about spec caching, so an agent whose spec changed under a
+  URL has no documented way to know it is being served a stale contract, or to escape it
 
 **Policy is already settled — do not invent it.** DESIGN.md §4 lines 235-239 (verified verbatim):
 cached with its `ETag`/`Last-Modified`; inside 24 hours served from cache with no network call;
@@ -1391,6 +1452,12 @@ The cache is a file on disk; the ETag and Last-Modified are attacker-controlled 
    package-level `spec.Load` (`source.go:62`) discards the `Loader`, so this is the one structural
    change needed. `loadIndex` (`list.go:161`) wraps `loadSpec` for the four discovery commands, so
    the flag reaches all six spec-reading commands through one edit.
+5. **Document it in the same commit.** Rewrite README:49-50 — *"fetched once per URL, not once per
+   call"* describes exactly the defect being fixed — with the settled §4 policy: 24h TTL,
+   conditional revalidation, `--refresh` to force. Add `--refresh` to AGENT.md's flag list beside
+   `--spec` (line 61) and one line under `## The spec` (line 23) saying a URL spec may be up to 24
+   hours stale and `--refresh` forces a re-fetch. An agent that cannot tell a stale contract from a
+   real schema violation will report the latter — which is the damage finding 25 names.
 
 **Verify:** `go test ./internal/spec/... ./cmd/...`
 
@@ -1626,6 +1693,14 @@ the last task in the phase, so it also leaves the tree in the state phase 2b sta
 7. Confirm `.ralph/stack.json`'s three command fields still match `.github/workflows/ci.yml`
    byte-for-byte — `internal/ci/workflow_test.go` fails if they drift, and tasks 2 and 20 added
    flags but should not have changed a command.
+8. **Re-read README.md and AGENT.md against the shipped binary.** Finding 21 exists because a
+   shipped document described behaviour the code no longer had, and this phase changed user-facing
+   contracts in four places: the unsupported-scheme report and exit 5 (Task 4), host binding,
+   `--allow-host`, `credentials_withheld` and replay's whole contract (Task 3), the spec cache TTL
+   and `--refresh` (Task 20). Each was told to ship its own docs; this step confirms they did, and
+   that the three sets do not contradict each other where they overlap — replay appears in both
+   README's history section and AGENT.md's, and `--base-url` appears in the flag list of each.
+   Nothing enforces this in CI, so it is a read, not a test.
 
 **Verify:** `go test ./...` green, `go build ./...`, `test -z "$(gofmt -l .)" && go vet ./...`, and
 the net line delta plus the `cmd/talaria` measurement in the commit message.
