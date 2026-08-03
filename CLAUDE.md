@@ -207,6 +207,23 @@ attacker-controlled, or crossing a trust boundary. The existing suite is 2.4× t
 code and caught none of the review's findings because it only ever asserted what the feature
 should do.
 
+**A test for a size bound is written so that failing it costs nothing.** An unbounded generator —
+a reader that never returns EOF, a handler that writes forever — is the faithful adversary, but
+its failure mode is an out-of-memory kill of the machine running the suite rather than a red
+test. `corpus.test` and `spec.test` each took 20 GB and were OOM-killed on 2026-08-03, both
+during the TDD red phase of the task adding the bound they test. Cap the generator at a small
+multiple of the bound (`endlessBody` in `internal/spec/source_test.go` stops at `4*maxSpecBytes`):
+past every limit under test, so a missing bound still fails, and finite, so it fails as a test.
+
+**A hostile-input test asserts *which* refusal happened, not that something failed.** Oversized
+bodies in these tests are `x` repeated, which no parser accepts: assert only `err != nil` and the
+test passes against no bound at all, because the unbounded read reaches the parser and fails
+there. `requireOverBound` in `internal/spec/source_test.go` is the shape — the error must name the
+limit. Same for a policy net/http would enforce anyway: `TestLoaderRefusesARedirectAwayFromHTTP`
+matches the message `checkRedirect` writes, since the transport refuses `file://` on its own and
+an error alone would prove nothing about the redirect policy. Neuter the implementation and watch
+the test go red before you believe it.
+
 ## Scope note
 
 `talaria run`, `internal/gen` and the JUnit report were removed on 2026-08-03 — see

@@ -3,6 +3,7 @@ package spec
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -21,6 +22,21 @@ const EnvSpec = "TALARIA_SPEC"
 // fetchTimeout bounds a remote spec fetch. A spec that never arrives has to
 // become an exit code rather than a hung process an agent cannot interpret.
 const fetchTimeout = 30 * time.Second
+
+// maxSpecBytes bounds a remote spec read, and maxSpecRedirects the chain of
+// hops it will follow to get there.
+//
+// The size is an order of magnitude past the 2 MB DESIGN.md cites for a real
+// swagger.json, and it is applied to the bytes actually read: Content-Length is
+// a claim the server makes, and the body may arrive chunked or compressed. The
+// clock bound alone is not enough — fetchTimeout lets thirty seconds of full
+// bandwidth into memory. The redirect bound is tight because the fetched bytes
+// are cached under a hash of the URL the *caller* named, so every hop is a
+// server choosing what talaria remembers as that URL's spec.
+const (
+	maxSpecBytes     = 32 << 20
+	maxSpecRedirects = 5
+)
 
 // cacheDirMode and cacheFileMode keep the cache private to its owner. Specs are
 // other people's API descriptions and routinely carry example credentials and
@@ -109,10 +125,14 @@ func (l *Loader) loadURL(url string) (*Document, error) {
 }
 
 func (l *Loader) fetch(url string) ([]byte, error) {
-	client := l.Client
-	if client == nil {
-		client = &http.Client{Timeout: fetchTimeout}
+	// A copy, never the caller's client: the redirect policy below belongs to
+	// this fetch, and writing it into a client the caller still holds would
+	// change how their other requests behave.
+	client := http.Client{Timeout: fetchTimeout}
+	if l.Client != nil {
+		client = *l.Client
 	}
+	client.CheckRedirect = checkRedirect
 
 	resp, err := client.Get(url)
 	if err != nil {
@@ -124,12 +144,33 @@ func (l *Loader) fetch(url string) ([]byte, error) {
 		return nil, clierr.SpecLoad("fetching spec %s: HTTP %s", url, resp.Status)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	// One byte past the limit, so a spec of exactly maxSpecBytes still loads and
+	// anything larger is distinguishable from it without a second read.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSpecBytes+1))
 	if err != nil {
 		return nil, clierr.SpecLoad("reading spec %s: %w", url, err)
 	}
+	if len(data) > maxSpecBytes {
+		return nil, clierr.SpecLoad("reading spec %s: larger than the %d byte limit", url, maxSpecBytes)
+	}
 
 	return data, nil
+}
+
+// checkRedirect bounds the hops a spec fetch follows and keeps every one of
+// them on http(s). Both matter because the bytes are cached under a hash of the
+// URL the caller named: a redirect is a server choosing what talaria will
+// remember as that URL's spec, and a hop to file:// or another scheme would let
+// it choose something the caller never made a request to.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxSpecRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxSpecRedirects)
+	}
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing a redirect to scheme %q", req.URL.Scheme)
+	}
+
+	return nil
 }
 
 // cachePath is where the spec at url is cached. The name is the SHA-256 of the
