@@ -40,9 +40,14 @@ func Render(req *request.Request) string {
 	// call it reproduces did not.
 	case strings.EqualFold(req.Method, http.MethodHead):
 		args = append(args, "-I")
-	// GET is curl's default and naming it adds noise; anything else is worth
-	// seeing, and for a mutation it is the most important token in the line.
-	case req.Method != "" && !strings.EqualFold(req.Method, http.MethodGet):
+	// Naming GET is noise only while curl's default is what actually goes out.
+	// A body changes that: --data-raw makes curl send POST unless the method is
+	// named, and the config document the real call reads always writes
+	// `request = "GET"` (config.go's build). Left out, the printed command would
+	// send a different method than the call it reproduces. Anything else is
+	// worth seeing, and for a mutation it is the most important token in the
+	// line.
+	case req.Method != "" && !(strings.EqualFold(req.Method, http.MethodGet) && req.Body == nil):
 		args = append(args, "-X", req.Method)
 	}
 

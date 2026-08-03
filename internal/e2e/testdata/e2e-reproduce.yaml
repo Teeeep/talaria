@@ -1,0 +1,110 @@
+# The operations whose curl rendering differs from the config document talaria
+# actually executes, or would if the two ever drifted: a GET carrying a body, a
+# HEAD, a cookie parameter and a form body. Kept out of e2e-api.yaml so that
+# file stays the exact counterpart of e2e-api-2.0.json, which is what makes the
+# Swagger 2.0 run a test of the conversion rather than of a second API.
+#
+# Every path here is one the e2e server already answers, so the reproduction
+# test needs no routes of its own.
+openapi: 3.0.3
+info:
+  title: Talaria E2E Reproduction API
+  version: 1.0.0
+servers:
+  - url: https://api.invalid/v1
+components:
+  schemas:
+    Pet:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+# Document-level, so every case below carries a credential the rendered command
+# has to reproduce as an expandable $TALARIA_AUTH_BEARER.
+security:
+  - bearerAuth: []
+paths:
+  /pets:
+    get:
+      operationId: searchPets
+      summary: List pets, with the filter in a body
+      tags: [pets]
+      # Legal and rare: a GET with a body is the one case where curl's default
+      # method is not what talaria sends, because --data-raw switches it to POST.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: The pets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Pet"
+    head:
+      operationId: checkPets
+      summary: Headers only
+      tags: [pets]
+      responses:
+        "200":
+          description: The headers of the pet list
+    post:
+      operationId: createPetForm
+      summary: Create a pet from a form body
+      tags: [pets]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /pets/{petId}:
+    get:
+      operationId: sessionPets
+      summary: Fetch one pet, identified by a session cookie
+      tags: [pets]
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "42"
+        - name: session
+          in: cookie
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"

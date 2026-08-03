@@ -18,7 +18,7 @@
       "title": "Emit `-X GET` in the rendered curl when the request carries a body",
       "line_start": 61,
       "line_end": 91,
-      "done": false
+      "done": true
     },
     {
       "id": 3,

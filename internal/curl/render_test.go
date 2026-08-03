@@ -211,6 +211,41 @@ func TestRenderNamesTheMethodAndBodyForAMutation(t *testing.T) {
 	}
 }
 
+// TestRenderNamesGETWhenItCarriesABody pins the emitted command to the config
+// document the executed call actually reads. --data-raw makes curl switch to
+// POST unless the method is named, while config.go always writes
+// `request = "GET"` — so a GET with a body is the one case where leaving -X out
+// prints a command that does something different from the call it reproduces.
+func TestRenderNamesGETWhenItCarriesABody(t *testing.T) {
+	req := &request.Request{
+		Method:  http.MethodGet,
+		BaseURL: "https://api.example.com",
+		Path:    "/pets/search",
+		Body:    &request.Body{ContentType: "application/json", Data: []byte(`{"name":"Rex"}`)},
+	}
+
+	got := Render(req)
+
+	if !strings.Contains(got, "-X GET") {
+		t.Errorf("Render() = %s\nwant it to contain -X GET: --data-raw without it sends POST", got)
+	}
+}
+
+func TestRenderLeavesGETUnnamedWithoutABody(t *testing.T) {
+	req := &request.Request{
+		Method:  http.MethodGet,
+		BaseURL: "https://api.example.com",
+		Path:    "/pets",
+	}
+
+	got := Render(req)
+
+	// GET is curl's default here, so naming it would be noise.
+	if strings.Contains(got, "-X") {
+		t.Errorf("Render() = %s\nwant no -X: a bodyless GET is what curl sends anyway", got)
+	}
+}
+
 func TestRenderUsesDashIForHEAD(t *testing.T) {
 	req := &request.Request{
 		Method:  http.MethodHead,

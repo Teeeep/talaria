@@ -16,11 +16,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -35,6 +37,11 @@ const (
 	specPath  = "testdata/e2e-api.yaml"
 	spec2Path = "testdata/e2e-api-2.0.json"
 )
+
+// reproSpecPath describes the same API in the shapes whose rendered curl could
+// diverge from the executed one — a GET with a body, a HEAD, a cookie, a form
+// body. It is separate so the pair above stays symmetrical.
+const reproSpecPath = "testdata/e2e-reproduce.yaml"
 
 // binary is the talaria under test, built once by TestMain.
 //
@@ -188,6 +195,24 @@ func (h *harness) runOK(args ...string) result {
 	}
 
 	return res
+}
+
+// reproduce runs the command `--dry-run` printed, in a shell holding the same
+// environment talaria had, so a $TALARIA_AUTH_BEARER in it expands to the same
+// credential the real call resolved.
+//
+// This is the only way to test what --dry-run claims. Comparing the rendered
+// string against another rendering of the same request compares talaria with
+// itself; only curl can say what the printed command actually sends.
+func (h *harness) reproduce(command string) {
+	h.t.Helper()
+
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Env = h.env
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		h.t.Fatalf("running the rendered command: %v\n%s\n%s", err, command, out)
+	}
 }
 
 // written returns every file talaria left behind — the history store, the spec
@@ -448,12 +473,17 @@ func TestTheDocumentedAgentWorkflowRunsEndToEnd(t *testing.T) {
 		t.Fatalf("`call --dry-run` reached the server %d time(s)", len(srv.requests()))
 	}
 
-	// 5. call — the same request, sent. The curl the dry run showed is the curl
-	// the real call ran: that equality is the whole claim of --dry-run.
+	// 5. call — the same request, sent. The claim of --dry-run is that the
+	// command it printed is the call, so the command is run and the two are
+	// compared as the server saw them. Comparing the printed string against
+	// another rendering of it would only compare talaria with itself.
+	h.reproduce(dry.Request.Curl)
 	called := decode[callVw](t, h.runOK("call", specPath, id, "--base-url", srv.URL, "--output", "json"))
-	if called.Request.Curl != dry.Request.Curl {
-		t.Errorf("the real call ran a different command than --dry-run previewed:\n dry: %s\nreal: %s",
-			dry.Request.Curl, called.Request.Curl)
+	if got := srv.requests(); len(got) != 2 {
+		t.Fatalf("the server saw %d requests, want 2 (the previewed command, then the call): %+v", len(got), got)
+	} else if diff := requestDiff(got[0], got[1]); diff != "" {
+		t.Errorf("the previewed command sent something else than the call did: %s\npreviewed: %s",
+			diff, dry.Request.Curl)
 	}
 	if called.Response == nil || called.Response.Status != http.StatusOK {
 		t.Fatalf("`call %s` did not observe a 200: %s", id, called.stdoutOf())
@@ -523,6 +553,94 @@ func namesOperation(found searchView, id string) bool {
 	}
 
 	return false
+}
+
+// requestDiff names everything on which two requests the server recorded
+// disagree, or "" when they are the same request twice.
+//
+// The headers are compared in full rather than by an allow-list: talaria and
+// the rendered command run the same curl against the same server, so anything
+// curl adds on its own it adds to both, and a difference is a real one.
+func requestDiff(previewed, called recordedRequest) string {
+	var diffs []string
+	if previewed.Method != called.Method {
+		diffs = append(diffs, fmt.Sprintf("method: previewed %s, call %s", previewed.Method, called.Method))
+	}
+	if previewed.Path != called.Path {
+		diffs = append(diffs, fmt.Sprintf("path: previewed %s, call %s", previewed.Path, called.Path))
+	}
+	if previewed.Body != called.Body {
+		diffs = append(diffs, fmt.Sprintf("body: previewed %q, call %q", previewed.Body, called.Body))
+	}
+
+	names := map[string]bool{}
+	for name := range previewed.Header {
+		names[name] = true
+	}
+	for name := range called.Header {
+		names[name] = true
+	}
+	for _, name := range slices.Sorted(maps.Keys(names)) {
+		if a, b := previewed.Header.Values(name), called.Header.Values(name); !slices.Equal(a, b) {
+			diffs = append(diffs, fmt.Sprintf("header %s: previewed %v, call %v", name, a, b))
+		}
+	}
+
+	return strings.Join(diffs, "; ")
+}
+
+// TestThePreviewedCommandSendsWhatTheCallSends executes the curl `--dry-run`
+// printed and compares what the server received with what the real call sent.
+//
+// It covers the request shapes where the two can drift, because the rendered
+// command and the config document curl reads are written by different code and
+// spell the same request differently. A GET with a body is the case that
+// motivated it: --data-raw makes curl send POST unless the method is named,
+// while the config document always names it, so the divergence is invisible
+// anywhere but the wire.
+func TestThePreviewedCommandSendsWhatTheCallSends(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"a GET carrying a body", []string{"searchPets", "--body", `{"name":"Rex"}`}},
+		// -I rather than -X HEAD, which pasted would wait for a body the server
+		// never sends.
+		{"a HEAD", []string{"checkPets"}},
+		// One -b holding every cookie, because curl keeps only the last of several.
+		{"a cookie parameter", []string{"sessionPets", "--param", "petId=42", "--param", "session=s3ss10n"}},
+		// A media type that is not the JSON curl would otherwise assume.
+		{"a form body", []string{"createPetForm", "--body", "name=Rex", "--allow-mutations"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": "reproduce-token"})
+			srv := newServer(t)
+
+			args := []string{"call", reproSpecPath}
+			args = append(args, tc.args...)
+			args = append(args, "--base-url", srv.URL, "--output", "json")
+
+			dry := decode[callVw](t, h.runOK(append(slices.Clone(args), "--dry-run")...))
+			h.reproduce(dry.Request.Curl)
+			h.runOK(args...)
+
+			got := srv.requests()
+			if len(got) != 2 {
+				t.Fatalf("the server saw %d requests, want 2 (the previewed command, then the call): %+v",
+					len(got), got)
+			}
+			if diff := requestDiff(got[0], got[1]); diff != "" {
+				t.Errorf("the previewed command sent something else than the call did: %s\npreviewed: %s",
+					diff, dry.Request.Curl)
+			}
+		})
+	}
 }
 
 // TestNoStepOfTheWorkflowLeaksTheCredential runs the whole sequence with a
