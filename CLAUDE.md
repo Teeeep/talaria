@@ -4,7 +4,9 @@ An OpenAPI CLI an agent can drive without ever seeing your credentials.
 
 **This file is how the codebase is written. It is not what to build** — that is
 `docs/design/DESIGN.md` (currently v0.5), the source of truth for scope and behaviour, and
-`docs/plans/2026-08-02-phase-2-boundary-design.md` for what comes next. Record patterns here as
+`docs/plans/` for what comes next — `2026-08-02-phase-2-boundary-design.md` is the rationale,
+and the phase docs beside it (`phase-2a-remediation`, `phase-2b-boundary`,
+`phase-2c-distribution`) are the work, one autonomous run each. Record patterns here as
 you establish them; the next session starts with no memory of this one.
 
 ## Commands
