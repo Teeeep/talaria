@@ -32,6 +32,37 @@ func checkSplit(kind, name, value string) error {
 		"early and append a header the caller did not write (its value is not echoed)", kind, name)
 }
 
+// basicPair is the last gate on a basic-auth credential: it strips the `Basic `
+// prefix resolve added and refuses a value curl would not read as a
+// user:password pair.
+//
+// curl treats a -u value with no colon as a username and asks for the password
+// on /dev/tty, which is not the config pipe and never answers — the call blocks
+// until its own max-time and then reports that curl outlived its timeout, which
+// sends the reader looking for a slow API. A tool whose §3.1 promise is "never
+// prompt, never page" refuses the value instead. An empty username is the same
+// mistake read from the other end (`:password`, or a bare `:`), and no request
+// talaria builds wants it.
+//
+// Only the variable is named, never the value: this function is downstream of
+// resolve, so what it holds is the credential itself.
+func basicPair(v request.Value, resolved string) (string, error) {
+	pair := strings.TrimPrefix(resolved, v.Prefix())
+
+	if user, _, ok := strings.Cut(pair, ":"); ok && user != "" {
+		return pair, nil
+	}
+
+	if name := v.Ref().Name; name != "" {
+		return "", clierr.CredentialMissing(
+			"$%s must be user:password; without a username and a colon curl asks for the "+
+				"password on the terminal, and talaria never prompts (its value is not echoed)", name)
+	}
+
+	return "", clierr.CredentialMissing(
+		"the basic-auth credential must be user:password (its value is not echoed)")
+}
+
 // inlinable reports whether a body can live in the config document. Valid UTF-8
 // under the size limit can; anything else takes the temp-file path, because a
 // NUL byte truncates a quoted value and arbitrary bytes have no escape sequence

@@ -1254,6 +1254,22 @@ process may have influenced.
 on `PATH` blocking on an NFS stall wedges `talaria call` before it has done anything, and per
 finding 14 SIGTERM will not end it.
 
+**Built, with one deviation.** Green step 3 — "apply the same colon guard on the render path" — is
+not implementable and was not implemented. `headerArgs` (`render.go:88`) emits
+`-u "$TALARIA_AUTH_BASIC"` built from `h.Value.Ref().Symbolic()`; `EncodeBasic` is only ever set by
+`request.Secret`, so the value is always a ref and `Render` never calls `Resolve`. There is no
+resolved string on that path whose shape a guard could read, and adding one would be the §5a
+firewall breach the whole design exists to prevent. The consequence is stated rather than fixed:
+`--dry-run` prints a command for a malformed `TALARIA_AUTH_BASIC` and exits 0 where the real call
+exits 5, the same way it cannot tell an expired token from a live one. The guard is `basicPair` in
+`internal/curl/firewall.go`, one seam called from `document.auth`, so if a resolving render path is
+ever added it has a function to call.
+
+Decision on adversarial item 5, the process-wide `sync.Once`: dropped. It cached the first result
+for the life of the process, and now that `preflight` takes the caller's context a cancelled
+Ctrl-C would have poisoned every later call. Replaced by `preflightCache`, keyed by path and
+holding only verdicts about a binary that actually answered.
+
 ---
 
 ### Task 17: The history lock has a deadline — finding 17

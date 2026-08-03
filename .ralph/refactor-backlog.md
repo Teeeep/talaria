@@ -59,6 +59,14 @@ that pass — and task 6's before it — deliberately did not do, and why.
   as fields rather than positions. Not attempted mid-task: it touches nine files and every
   golden-output test in `cmd/talaria`.
 
+- `internal/curl/exec_test.go` is 789 lines and now holds three subjects, against the
+  file-is-one-concern rule the package otherwise follows (`config_test.go` / `firewall_test.go`
+  split exactly that way). `TestCheckVersionEnforcesTheFloor` and the seven `TestPreflight*`
+  cases task 16 added are `version.go`'s, not the executor's, and they bring their own fixtures
+  (`fakeCurl`, `fakeBanner`). The seam is a new `internal/curl/version_test.go` holding those
+  eight plus the two helpers; nothing else moves. Task 16 left them where its plan said to put
+  them.
+
 ## Examined and deliberately not consolidated
 
 - The bounded-read idiom in `internal/corpus/file.go` (`readStore`) and `internal/spec/source.go`

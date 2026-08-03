@@ -212,6 +212,34 @@ missing-parameter complaints that are artefacts of the interruption. The tests a
 in `TestMain` before any fixture exists) because the assertion is that a signal kills the
 process, and this process is the suite.
 
+**The version preflight is a subprocess like any other, and gets the same three bounds.**
+`preflight(ctx, path)` (`internal/curl/version.go`) execs `curl --version` before talaria has done
+anything at all, so a wrapper script on `PATH` blocking on an NFS stall used to wedge the process
+where nothing could reach it. It now runs under `exec.CommandContext` with `preflightTimeout` (5s,
+its own deadline — the call's `--max-time` has not started), `WaitDelay = killGrace` and
+`isolate`, exactly as `ExecuteWith` bounds the call. Its stdout goes into `boundedBuffer`, never
+`Output()`: the first `maxVersionBytes` (64 KiB) is kept and the rest discarded with the write
+still reported as accepted, so a curl that writes gigabytes on `--version` neither exhausts this
+process nor gets an EPIPE for trying. **The banner is the answer**, so `runErr` is reported only
+when `versionLine` did not match — a wrapper that exits non-zero after printing it, or leaves a
+grandchild holding the pipe past `WaitDelay`, has still said which curl this is. The memo is
+`preflightCache`, keyed by *path* and holding only a verdict about a binary that answered. The
+process-wide `sync.Once` it replaced cached the first result forever, so one transient failure —
+now including the caller's own Ctrl-C, since the preflight takes the context — poisoned every
+later call. Never re-add a memo that caches a result the binary did not produce.
+
+**A basic credential is `user:password` or it is refused.** `basicPair`
+(`internal/curl/firewall.go`), called from `document.auth`, is the gate: curl reads a `-u` value
+with no username and colon as a prompt for the password on `/dev/tty` — which is not the config
+pipe and never answers — so the call blocked for its whole `max-time` and then reported *"curl
+outlived its 30s timeout"*, sending the reader after a slow API that was working fine. It is
+`clierr.CredentialMissing` (exit 5), naming the variable and never the value, because it runs
+downstream of `resolve`. `user:` is legal (an empty password) and so is `user:pass:word` (curl
+splits at the first colon); `:password` and a bare `:` are not. There is deliberately no
+counterpart on the render path: `headerArgs` emits `-u "$TALARIA_AUTH_BASIC"` from
+`Ref().Symbolic()` and never resolves, so it has no value whose shape it could check — `--dry-run`
+cannot diagnose a malformed credential any more than it can an expired one.
+
 **The spec is untrusted input, and so is the history file.** Both are fetched or edited outside
 this process. Bound every read, size-check before allocating, and treat any spec-derived string
 that reaches the wire as hostile until checked — a media type became a header-injection vector

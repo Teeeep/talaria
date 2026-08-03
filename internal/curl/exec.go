@@ -59,7 +59,7 @@ func ExecuteWith(ctx context.Context, req *request.Request, opts Options) (*Resp
 	if err != nil {
 		return nil, clierr.RequestFailed("curl is not installed or not on PATH: %w", err)
 	}
-	if err := preflight(path); err != nil {
+	if err := preflight(ctx, path); err != nil {
 		return nil, err
 	}
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/request"
 	"github.com/Teeeep/talaria/internal/secret"
 )
@@ -380,6 +381,102 @@ func TestBuildConfigRendersBasicAuthAsTheUserDirective(t *testing.T) {
 	}
 	if bytes.Contains(config, []byte(`header = "Authorization:`)) {
 		t.Errorf("basic auth was also emitted as a header:\n%s", config)
+	}
+}
+
+// basicRequest is a GET carrying one basic-auth credential, the shape every
+// case below varies only the environment of.
+func basicRequest() *request.Request {
+	return &request.Request{
+		Method:  "GET",
+		BaseURL: "https://api.example.com",
+		Path:    "/pets",
+		Headers: []request.Pair{{
+			Name:  "Authorization",
+			Value: request.Secret(secret.Env("TALARIA_AUTH_BASIC"), request.EncodeBasic),
+		}},
+	}
+}
+
+func TestBuildConfigRefusesABasicCredentialThatIsNotUserPassword(t *testing.T) {
+	// curl reads a -u value with no colon as a username and asks for the password
+	// on /dev/tty, which in a tool that never prompts means the call hangs until
+	// its own timeout and then reports a slow API. The value is refused instead,
+	// before a single directive is written.
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"no colon at all", "alice" + canary},
+		{"only a colon", ":"},
+		{"no user", ":" + canary},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TALARIA_AUTH_BASIC", tc.value)
+
+			config, _, cleanup, err := BuildConfig(basicRequest(), Capture{})
+			t.Cleanup(cleanup)
+
+			cerr := requireCLIError(t, err)
+			if cerr.Code != clierr.CodeCredentialMissing {
+				t.Errorf("Code = %d, want %d", cerr.Code, clierr.CodeCredentialMissing)
+			}
+			if !strings.Contains(cerr.Message, "$TALARIA_AUTH_BASIC must be user:password") {
+				t.Errorf("Message = %q, want it to name the variable and the shape", cerr.Message)
+			}
+			// The refusal names the variable, never what was in it. The canary is
+			// what makes that assertable — a bare ":" is a substring of the
+			// sentence itself.
+			if strings.Contains(cerr.Message, canary) {
+				t.Errorf("Message = %q, echoed the credential", cerr.Message)
+			}
+			if config != nil {
+				t.Errorf("a document was built for a credential curl would prompt on:\n%s", config)
+			}
+		})
+	}
+}
+
+func TestBuildConfigRefusesABasicCredentialThatWouldSplitTheRequest(t *testing.T) {
+	t.Setenv("TALARIA_AUTH_BASIC", "alice:"+canary+"\r\nX-Injected: 1")
+
+	config, _, cleanup, err := BuildConfig(basicRequest(), Capture{})
+	t.Cleanup(cleanup)
+
+	cerr := requireCLIError(t, err)
+	if strings.Contains(cerr.Message, canary) {
+		t.Errorf("Message = %q, echoed the credential", cerr.Message)
+	}
+	if config != nil {
+		t.Errorf("a document was built for a credential carrying CRLF:\n%s", config)
+	}
+}
+
+func TestBuildConfigAcceptsEveryBasicCredentialCurlCanSplit(t *testing.T) {
+	// curl splits at the first colon, so everything after it is the password —
+	// including nothing at all, and including more colons.
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"user and password", "alice:" + canary},
+		{"empty password", "alice:"},
+		{"a colon in the password", "alice:" + canary + ":more"},
+		{"a megabyte of password", "alice:" + strings.Repeat("p", 1<<20)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TALARIA_AUTH_BASIC", tc.value)
+
+			config, _, _ := buildConfig(t, basicRequest(), Capture{})
+
+			if !hasDirective(config, `user = "`+tc.value+`"`) {
+				t.Errorf("basic auth is not a user directive of %d bytes", len(tc.value))
+			}
+		})
 	}
 }
 

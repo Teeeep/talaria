@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -373,6 +374,161 @@ func TestCheckVersionEnforcesTheFloor(t *testing.T) {
 				t.Errorf("error = %q, want the %s floor named in it", err, minVersion)
 			}
 		})
+	}
+}
+
+// fakeCurl stages an executable script named curl and returns its path. The
+// preflight tests need a binary that misbehaves in a named way, which the real
+// curl cannot be asked to do.
+func fakeCurl(t *testing.T, script string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "curl")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
+		t.Fatalf("staging a fake curl: %v", err)
+	}
+
+	return path
+}
+
+// fakeBanner is the first line of a real `curl --version`, which is all the
+// preflight reads.
+const fakeBanner = "curl 8.14.1 (x86_64-pc-linux-gnu) libcurl/8.14.1"
+
+func TestPreflightGivesUpOnACurlThatNeverAnswers(t *testing.T) {
+	// A wrapper script on PATH that blocks — an NFS stall, a helper waiting on a
+	// tty — used to wedge talaria before it had done anything, with no context,
+	// no WaitDelay and no process group to end it.
+	path := fakeCurl(t, "sleep 60")
+
+	done := make(chan error, 1)
+	go func() { done <- preflightWith(context.Background(), path, 200*time.Millisecond) }()
+
+	select {
+	case err := <-done:
+		cerr := requireCLIError(t, err)
+		if cerr.Code != clierr.CodeRequestFailed {
+			t.Errorf("Code = %d, want %d", cerr.Code, clierr.CodeRequestFailed)
+		}
+		if !strings.Contains(cerr.Message, "did not answer") {
+			t.Errorf("Message = %q, want it to say the version check timed out", cerr.Message)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("preflightWith() did not return after its own deadline passed")
+	}
+}
+
+func TestPreflightIsCancelledWithTheCallersContext(t *testing.T) {
+	path := fakeCurl(t, "sleep 60")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- preflightWith(ctx, path, 30*time.Second) }()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		cerr := requireCLIError(t, err)
+		// The same sentence ExecuteWith reports for a cancelled call: a Ctrl-C
+		// during the preflight is still a Ctrl-C, not a timeout.
+		if !strings.Contains(cerr.Message, "cancel") {
+			t.Errorf("Message = %q, want it to say the request was cancelled", cerr.Message)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("preflightWith() outlived its caller's context")
+	}
+}
+
+func TestPreflightStopsReadingABannerThatNeverEnds(t *testing.T) {
+	// Four times the bound, then the banner: a curl that writes gigabytes on
+	// --version buffered every byte, because Output() has no limit. Past the
+	// bound the version line is never reached, which is what makes the bound
+	// observable — without it this script preflights clean.
+	padding := strings.Repeat("x", 63)
+	path := fakeCurl(t, "yes '"+padding+"' | head -n "+strconv.Itoa(4*maxVersionBytes/64)+"\necho '"+fakeBanner+"'")
+
+	err := preflightWith(context.Background(), path, 30*time.Second)
+
+	cerr := requireCLIError(t, err)
+	if !strings.Contains(cerr.Message, "cannot determine the curl version") {
+		t.Errorf("Message = %q, want the banner past the bound to be unread", cerr.Message)
+	}
+}
+
+func TestPreflightRunsTheVersionCheckOncePerBinary(t *testing.T) {
+	// The memoisation is a claim about subprocesses, so it is counted rather
+	// than assumed.
+	runs := filepath.Join(t.TempDir(), "runs")
+	path := fakeCurl(t, "echo x >> "+runs+"\necho '"+fakeBanner+"'")
+
+	for range 3 {
+		if err := preflightWith(context.Background(), path, 30*time.Second); err != nil {
+			t.Fatalf("preflightWith() error = %v", err)
+		}
+	}
+
+	counted, err := os.ReadFile(runs)
+	if err != nil {
+		t.Fatalf("reading the run log: %v", err)
+	}
+	if got := strings.Count(string(counted), "x"); got != 1 {
+		t.Errorf("ran curl --version %d times, want 1", got)
+	}
+}
+
+func TestPreflightDoesNotCacheACurlThatCouldNotBeRun(t *testing.T) {
+	// A process-wide sync.Once cached the *first* result, so one transient
+	// failure — a timeout, a cancelled context, a binary mid-upgrade — poisoned
+	// every later call in the process. Only a verdict about the binary itself
+	// is worth keeping.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "seen")
+	path := fakeCurl(t, "if [ -f "+marker+" ]; then echo '"+fakeBanner+"'; else touch "+marker+"; exit 1; fi")
+
+	if err := preflightWith(context.Background(), path, 30*time.Second); err == nil {
+		t.Fatal("preflightWith() error = nil, want the first run to fail")
+	}
+	if err := preflightWith(context.Background(), path, 30*time.Second); err != nil {
+		t.Errorf("preflightWith() error = %v, want the second run to see the working curl", err)
+	}
+}
+
+func TestPreflightReportsACurlItCannotExecute(t *testing.T) {
+	// A PATH entry that is a directory, and a curl without the execute bit.
+	dir := t.TempDir()
+	unreadable := filepath.Join(dir, "curl")
+	if err := os.WriteFile(unreadable, []byte("#!/bin/sh\necho "+fakeBanner+"\n"), 0o600); err != nil {
+		t.Fatalf("staging a non-executable curl: %v", err)
+	}
+
+	for _, path := range []string{dir, unreadable} {
+		err := preflightWith(context.Background(), path, 30*time.Second)
+
+		cerr := requireCLIError(t, err)
+		if !strings.Contains(cerr.Message, "cannot run") {
+			t.Errorf("Message = %q, want it to say curl could not be run", cerr.Message)
+		}
+	}
+}
+
+func TestPreflightAcceptsABannerFromAProcessThatOutlivesIt(t *testing.T) {
+	// A wrapper that leaves a child holding the stdout pipe open: the banner is
+	// already in hand, so how the process ended is not the story. WaitDelay is
+	// what stops the reaping itself from blocking.
+	path := fakeCurl(t, "sleep 30 &\necho '"+fakeBanner+"'")
+
+	done := make(chan error, 1)
+	go func() { done <- preflightWith(context.Background(), path, 30*time.Second) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("preflightWith() error = %v, want the banner to be enough", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("preflightWith() waited on a grandchild holding the pipe open")
 	}
 }
 

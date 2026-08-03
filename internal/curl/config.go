@@ -242,7 +242,11 @@ func (d *document) auth(req *request.Request) error {
 		}
 
 		if h.Value.Encoding() == request.EncodeBasic {
-			d.directive("user", strings.TrimPrefix(value, h.Value.Prefix()))
+			pair, err := basicPair(h.Value, value)
+			if err != nil {
+				return err
+			}
+			d.directive("user", pair)
 			continue
 		}
 
