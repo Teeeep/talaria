@@ -85,6 +85,17 @@ func Tree(label, root string) ([]Surface, error) {
 // point of the indirection.
 func Formats() []string { return output.Formats() }
 
+// escapable is spliced into the middle of every canary so the value differs
+// from its percent-encoded form.
+//
+// Without it a canary is label plus hex, url.QueryEscape is the identity on it,
+// and the percent needle in needles below is never constructed for any value
+// this package generates — so a credential that reached a URL field encoded
+// would go unseen. Both characters are sub-delims: QueryEscape escapes them,
+// and they are legal unquoted in a header value, a cookie-octet, a URL's
+// userinfo and a YAML scalar, which is where the suite's cases put a canary.
+const escapable = "!*"
+
 // Value returns a fresh canary: the label, so a failure says which mechanism
 // leaked, plus 128 bits of entropy, so a match in an output stream cannot be a
 // coincidence or a value some fixture happened to contain.
@@ -97,7 +108,9 @@ func Value(label string) string {
 		panic("canary: reading random bytes: " + err.Error())
 	}
 
-	return label + "-" + hex.EncodeToString(buf)
+	encoded := hex.EncodeToString(buf)
+
+	return label + "-" + encoded[:len(encoded)/2] + escapable + encoded[len(encoded)/2:]
 }
 
 // Leak is one canary found on one surface.
@@ -139,7 +152,8 @@ type needle struct {
 
 // needles returns the forms a canary could appear in. Raw covers every output
 // surface talaria writes directly. Percent-encoding covers a value that reached
-// a URL field. Base64 covers basic auth, where the credential is encoded before
+// a URL field, and Value carries escapable so that form is always distinct from
+// the raw one. Base64 covers basic auth, where the credential is encoded before
 // it is anything else — and is checked at all three alignments, because where
 // the value starts inside the encoded string decides which of the three
 // encodings its interior matches.

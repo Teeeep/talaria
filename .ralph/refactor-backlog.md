@@ -40,6 +40,15 @@ that pass — and task 6's before it — deliberately did not do, and why.
   file in the command layer. No seam identified — nobody has read it end to end recently. Worth
   a look during the next refactor pass, not a change on suspicion.
 
+- `internal/canary/canary_test.go` is 1300 lines and holds the whole leak suite in one file. The
+  seam the file already implies is three: the harness and its surfaces (`TestMain`,
+  `readSources`, `harness`, `recordingServer`, `writeConfig`, `assertNoLeak`) → `harness_test.go`;
+  the mechanism sweep and the error-path stages → `mechanism_test.go`; and the individual
+  named-threat cases (planted `.curlrc`, injected media type, base-url userinfo, body file,
+  redaction controls) → `threats_test.go`. Task 13 added ~140 lines to it and did not split,
+  because a table-driven suite whose subject is "every surface" is exactly where a mid-task
+  split loses coverage silently.
+
 ## Examined and deliberately not consolidated
 
 - The bounded-read idiom in `internal/corpus/file.go` (`readStore`) and `internal/spec/source.go`

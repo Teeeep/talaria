@@ -2,6 +2,7 @@ package canary_test
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -92,6 +93,12 @@ type mechanism struct {
 	op   string
 	// env builds the environment carrying the canary, keyed by variable name.
 	env func(value string) map[string]string
+	// config is the config file the mechanism needs, if any, and args the flags
+	// that select it. Together they cover the credential path that does not go
+	// through talaria's own TALARIA_AUTH_* naming: a profile mapping a scheme to
+	// a variable the caller chose.
+	config string
+	args   []string
 	// received reports whether the server saw the canary on the request.
 	received func(req recordedRequest, value string) bool
 }
@@ -148,6 +155,21 @@ var mechanisms = []mechanism{
 			return req.Cookies[v] || strings.Contains(req.Header.Get("Cookie"), v)
 		},
 	},
+	{
+		// The profile path. Every mechanism above sets a TALARIA_AUTH_* variable,
+		// which means the suite only ever proved talaria does not leak a value it
+		// found under a name it chose itself. A profile maps the scheme to an
+		// arbitrary variable, and the config file naming it is an extra surface —
+		// one an error path is free to quote.
+		name:   "profile",
+		op:     "getBearer",
+		env:    func(v string) map[string]string { return map[string]string{"MY_TOKEN": v} },
+		config: "profiles:\n  canary:\n    auth:\n      bearerAuth: ${MY_TOKEN}\n",
+		args:   []string{"--profile", "canary"},
+		received: func(req recordedRequest, v string) bool {
+			return req.Header.Get("Authorization") == "Bearer "+v
+		},
+	},
 }
 
 // result is one talaria invocation.
@@ -199,6 +221,23 @@ func newHarness(t *testing.T, vars map[string]string) *harness {
 	}
 
 	return h
+}
+
+// setEnv replaces a variable in the harness environment, so a case can change
+// what a credential resolves to between two runs against the same history and
+// the same config.
+func (h *harness) setEnv(name, value string) {
+	h.t.Helper()
+
+	prefix := name + "="
+	for i, entry := range h.env {
+		if strings.HasPrefix(entry, prefix) {
+			h.env[i] = prefix + value
+			return
+		}
+	}
+
+	h.env = append(h.env, prefix+value)
 }
 
 // run executes talaria and captures both streams.
@@ -345,23 +384,34 @@ func TestNoAuthMechanismLeaksIntoAnyOutputSurface(t *testing.T) {
 				value := canary.Value(mech.name)
 				h := newHarness(t, mech.env(value))
 				srv := newServer(t, `{"id":"42","name":"Rex"}`)
+				if mech.config != "" {
+					writeConfig(t, h, mech.config)
+				}
+
+				// mech.args goes on every invocation, not only the ones that
+				// resolve a credential: --profile is persistent on the root, and
+				// a command that reads it while rendering something else is
+				// exactly the surface a profile mechanism exists to check.
+				run := func(args ...string) result {
+					return h.runOK(append(args, mech.args...)...)
+				}
 
 				var runs []result
 				runs = append(runs,
-					h.runOK("call", specPath, mech.op,
+					run("call", specPath, mech.op,
 						"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", format, "--dry-run"),
-					h.runOK("call", specPath, mech.op,
+					run("call", specPath, mech.op,
 						"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", format),
 					// Exits 5: the fixture declares every scheme and this case
 					// sets one. The report is the surface being checked, and it
 					// is written on the way to that exit code.
-					h.run("auth", "check", specPath, "--output", format),
-					h.runOK("history", "--output", format),
-					h.runOK("history", "show", "1", "--output", format),
-					h.runOK("history", "replay", "1", "--spec", specPath,
+					h.run(append([]string{"auth", "check", specPath, "--output", format}, mech.args...)...),
+					run("history", "--output", format),
+					run("history", "show", "1", "--output", format),
+					run("history", "replay", "1", "--spec", specPath,
 						"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", format),
-					h.runOK("describe", specPath, mech.op, "--output", format),
-					h.runOK("list", specPath, "--output", format),
+					run("describe", specPath, mech.op, "--output", format),
+					run("list", specPath, "--output", format),
 				)
 
 				// The credential reached the server. Without this the rest of
@@ -390,13 +440,15 @@ func TestNoAuthMechanismLeaksIntoAnyOutputSurface(t *testing.T) {
 // redaction bugs live": a failure at each stage of a call, with a credential
 // present throughout.
 func TestErrorPathsDoNotLeakTheCredential(t *testing.T) {
-	// A response-validation failure is not here because response validation is
-	// not built yet (plan tasks 26 and 27). Whoever adds --fail-on-error adds
-	// the case; the stages that exist are all covered.
 	stages := []struct {
 		name string
 		args func(serverURL string) []string
 		code int
+		// check asserts the stage failed for the reason it was written for. An
+		// exit code alone does not say that: exit 4 is also what an HTTP error
+		// status produces, so a stage whose response never reached the validator
+		// would scan a surface that was never built.
+		check func(t *testing.T, res result)
 	}{
 		{
 			name: "spec load",
@@ -443,6 +495,39 @@ func TestErrorPathsDoNotLeakTheCredential(t *testing.T) {
 			args: func(string) []string { return []string{"history", "show", "99"} },
 			code: 2,
 		},
+		{
+			// §5a names "validation errors quoting the request" as a leak
+			// channel. getValidated declares a required property the canary
+			// server's `{}` omits, so the errors are built with the bearer
+			// token attached to the request they describe.
+			name: "response validation",
+			args: func(url string) []string {
+				return []string{"call", specPath, "getValidated",
+					"--base-url", url, "--allow-host", "127.0.0.1",
+					"--fail-on-error", "--output", "json"}
+			},
+			code: 4,
+			check: func(t *testing.T, res result) {
+				t.Helper()
+
+				var view struct {
+					Validation *struct {
+						Errors []struct {
+							Message string `json:"message"`
+							Reason  string `json:"reason"`
+							Field   string `json:"field"`
+						} `json:"errors"`
+					} `json:"validation"`
+				}
+				if err := json.Unmarshal([]byte(res.stdout), &view); err != nil {
+					t.Fatalf("parsing the envelope: %v\n%s", err, res.stdout)
+				}
+				if view.Validation == nil || len(view.Validation.Errors) == 0 {
+					t.Fatalf("no validation errors were rendered; exit 4 came from somewhere else "+
+						"and the surface this stage scans was never built:\n%s", res.stdout)
+				}
+			},
+		},
 	}
 
 	for _, stage := range stages {
@@ -461,6 +546,9 @@ func TestErrorPathsDoNotLeakTheCredential(t *testing.T) {
 			if strings.TrimSpace(res.stderr) == "" {
 				t.Errorf("talaria %s failed silently; there is no error surface to check",
 					strings.Join(res.args, " "))
+			}
+			if stage.check != nil {
+				stage.check(t, res)
 			}
 
 			assertNoLeak(t, value, append(res.surfaces(), h.written()...))
@@ -1075,6 +1163,76 @@ func TestABodyFileSecretReachesNoOutputSurface(t *testing.T) {
 	}
 
 	assertNoLeak(t, value, append(res.surfaces(), h.written()...))
+}
+
+// TestAProfileReplayResolvesFromTheCurrentProfile holds the rule Task 3 made
+// structural when it deleted replayableEnv: a stored entry names a credential,
+// it does not carry one, so a replay resolves against the profile in force
+// *now*.
+//
+// Two canaries, because one would not tell the two answers apart: the call is
+// made with one value in MY_TOKEN and the replay with another, and the wire is
+// the assertion. A replay that reused what it read from history.jsonl would send
+// the first value, and a replay that read a value out of the store at all is the
+// leak this suite exists to catch.
+func TestAProfileReplayResolvesFromTheCurrentProfile(t *testing.T) {
+	t.Parallel()
+
+	called := canary.Value("profile-called")
+	replayed := canary.Value("profile-replayed")
+
+	h := newHarness(t, map[string]string{"MY_TOKEN": called})
+	writeConfig(t, h, "profiles:\n  canary:\n    auth:\n      bearerAuth: ${MY_TOKEN}\n")
+	srv := newServer(t, `{"ok":true}`)
+
+	base := []string{"--profile", "canary", "--base-url", srv.URL,
+		"--allow-host", "127.0.0.1", "--output", "json"}
+
+	call := h.runOK(append([]string{"call", specPath, "getBearer"}, base...)...)
+	if got := srv.received().Header.Get("Authorization"); got != "Bearer "+called {
+		t.Fatalf("the call did not carry the profile's credential; the assertions below prove nothing")
+	}
+
+	h.setEnv("MY_TOKEN", replayed)
+	replay := h.runOK(append([]string{"history", "replay", "1", "--spec", specPath}, base...)...)
+
+	switch got := srv.received().Header.Get("Authorization"); got {
+	case "Bearer " + replayed:
+		// The profile was re-resolved, which is the whole point.
+	case "Bearer " + called:
+		t.Error("the replay re-sent the credential the recorded call used; " +
+			"a value was carried through history.jsonl instead of being resolved again")
+	default:
+		t.Errorf("the replay sent %q, which is neither canary", got)
+	}
+
+	surfaces := append(call.surfaces(), replay.surfaces()...)
+	surfaces = append(surfaces, h.written()...)
+	for _, value := range []string{called, replayed} {
+		assertNoLeak(t, value, surfaces)
+	}
+}
+
+// TestACanaryIsAlwaysDistinctFromItsPercentEncoding keeps the percent needle
+// alive. canary.Value used to be label plus hex, which url.QueryEscape leaves
+// untouched, so the needle was never built for any value this package
+// generates and a credential that reached a URL field encoded would have been
+// missed. The scan below is the half that would go quiet if Value stopped
+// carrying an escapable character.
+func TestACanaryIsAlwaysDistinctFromItsPercentEncoding(t *testing.T) {
+	t.Parallel()
+
+	value := canary.Value("needle")
+	escaped := url.QueryEscape(value)
+	if escaped == value {
+		t.Fatalf("canary.Value produced %q, which percent-encodes to itself; "+
+			"the percent needle can never fire", value)
+	}
+
+	leaks := canary.Scan(value, canary.Stream("a url", "https://example.invalid/?k="+escaped))
+	if len(leaks) != 1 || leaks[0].Encoding != "percent" {
+		t.Errorf("scanning a percent-encoded canary found %v, want one percent leak", leaks)
+	}
 }
 
 // assertNoLeak fails the test naming every surface the canary reached.

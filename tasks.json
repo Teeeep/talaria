@@ -106,7 +106,7 @@
       "title": "The canary gate covers the validation error path and profile auth \u2014 findings 19 and 20",
       "line_start": 1018,
       "line_end": 1089,
-      "done": false
+      "done": true
     },
     {
       "id": 14,

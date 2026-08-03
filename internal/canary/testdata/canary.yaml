@@ -97,6 +97,27 @@ paths:
       responses:
         "200":
           description: OK
+  /validated:
+    get:
+      # The response schema the exit-4 path needs: the canary server answers
+      # `{}`, which omits a required property, so --fail-on-error has something
+      # to fail on and the validation errors have a request to quote.
+      operationId: getValidated
+      summary: Declares a response schema a `{}` body violates
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - id
+                properties:
+                  id:
+                    type: string
   /things:
     post:
       operationId: createThing

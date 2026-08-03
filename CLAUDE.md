@@ -245,6 +245,22 @@ attacker-controlled, or crossing a trust boundary. The existing suite is 2.4× t
 code and caught none of the review's findings because it only ever asserted what the feature
 should do.
 
+**The canary suite is the release gate, and every part of it must be able to fire.** A case in
+`internal/canary` proves nothing unless the credential actually reached the server, so each one
+asserts that first (`mech.received`, `srv.received()`) and treats a miss as `Fatalf` — the leak
+assertions after it are vacuous otherwise. Three shapes carry that: a `mechanism` is one way of
+authenticating (its `env` names the variables, and `config`+`args` cover the profile path, whose
+credential is named by a file rather than by talaria's `TALARIA_AUTH_*` convention); a *stage* in
+`TestErrorPathsDoNotLeakTheCredential` is one failure point, and its optional `check` asserts the
+stage failed for the reason it was written for — exit 4 alone does not distinguish a validation
+error from an HTTP error status; and the standalone tests are one named threat each. `canary.Value`
+splices `escapable` (`internal/canary/surfaces.go`) into the middle of every canary precisely so
+`url.QueryEscape` is not the identity on it — a hex-only canary meant the `percent` needle was
+never constructed, so a credential that reached a URL field encoded went unseen.
+`TestACanaryIsAlwaysDistinctFromItsPercentEncoding` is what keeps that true. The config directory
+is deliberately outside `h.written()`: it is an input the user wrote, and a case that plants a
+canary there would otherwise catch its own fixture.
+
 **A test for a size bound is written so that failing it costs nothing.** An unbounded generator —
 a reader that never returns EOF, a handler that writes forever — is the faithful adversary, but
 its failure mode is an out-of-memory kill of the machine running the suite rather than a red
