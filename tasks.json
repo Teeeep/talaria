@@ -1,0 +1,33 @@
+{
+  "plan_file": "IMPLEMENTATION_PLAN.md",
+  "spec_file": "docs/plans/2026-08-03-phase-2a-remediation.md",
+  "generated_at": "2026-08-03T11:37:55+00:00",
+  "total_tasks": 25,
+  "tasks": [
+    { "id": 1, "section": "1", "title": "Substitute server variables in servers[].url", "line_start": 57, "line_end": 109, "done": false },
+    { "id": 2, "section": "2", "title": "Compute the allowed host set (no enforcement yet)", "line_start": 110, "line_end": 175, "done": false },
+    { "id": 3, "section": "3", "title": "Credentials bind to hosts, and replay re-derives — findings 1, 2, 3, 22", "line_start": 176, "line_end": 284, "done": false },
+    { "id": 4, "section": "4", "title": "An unsupported security scheme is reported, not hidden — findings 4 and 21", "line_start": 285, "line_end": 374, "done": false },
+    { "id": 5, "section": "5", "title": "A spec-supplied media type cannot inject headers — finding 5", "line_start": 375, "line_end": 439, "done": false },
+    { "id": 6, "section": "6", "title": "Compaction — tasks 1-5", "line_start": 440, "line_end": 487, "done": false },
+    { "id": 7, "section": "7", "title": "A request body carrying a secret does not print on stdout — finding 6", "line_start": 488, "line_end": 555, "done": false },
+    { "id": 8, "section": "8", "title": "internal/corpus stops importing internal/curl — finding 30", "line_start": 556, "line_end": 599, "done": false },
+    { "id": 9, "section": "9", "title": "History entries are size-bounded on read — finding 13", "line_start": 600, "line_end": 650, "done": false },
+    { "id": 10, "section": "10", "title": "A remote spec read is bounded — finding 9", "line_start": 651, "line_end": 694, "done": false },
+    { "id": 11, "section": "11", "title": "The config document's credential buffer is actually zeroed — finding 29", "line_start": 695, "line_end": 749, "done": false },
+    { "id": 12, "section": "12", "title": "Compaction — tasks 7-11", "line_start": 750, "line_end": 772, "done": false },
+    { "id": 13, "section": "13", "title": "The canary gate covers the validation error path and profile auth — findings 19 and 20", "line_start": 773, "line_end": 836, "done": false },
+    { "id": 14, "section": "14", "title": "--output tsv emits structurally valid rows — finding 8", "line_start": 837, "line_end": 885, "done": false },
+    { "id": 15, "section": "15", "title": "Ctrl-C works — finding 14", "line_start": 886, "line_end": 932, "done": false },
+    { "id": 16, "section": "16", "title": "curl subprocesses cannot hang the process — findings 10 and 15", "line_start": 933, "line_end": 987, "done": false },
+    { "id": 17, "section": "17", "title": "The history lock has a deadline — finding 17", "line_start": 988, "line_end": 1030, "done": false },
+    { "id": 18, "section": "18", "title": "Compaction — tasks 13-17", "line_start": 1031, "line_end": 1052, "done": false },
+    { "id": 19, "section": "19", "title": "History never lies about what it recorded — findings 23 and 24", "line_start": 1053, "line_end": 1107, "done": false },
+    { "id": 20, "section": "20", "title": "The spec cache expires and can be refreshed — finding 25", "line_start": 1108, "line_end": 1169, "done": false },
+    { "id": 21, "section": "21", "title": "history distinguishes a 0 ms call from no response — finding 31", "line_start": 1170, "line_end": 1205, "done": false },
+    { "id": 22, "section": "22", "title": "One pass over the history file per append — finding 16", "line_start": 1206, "line_end": 1248, "done": false },
+    { "id": 23, "section": "23", "title": "No comment asserts an invariant no test enforces", "line_start": 1249, "line_end": 1343, "done": false },
+    { "id": 24, "section": "24", "title": "The credential firewall holds end to end", "line_start": 1344, "line_end": 1399, "done": false },
+    { "id": 25, "section": "25", "title": "Compaction — end of phase", "line_start": 1400, "line_end": 1426, "done": false }
+  ]
+}
