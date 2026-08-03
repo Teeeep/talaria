@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Teeeep/talaria/internal/clierr"
+	"github.com/Teeeep/talaria/internal/config"
 	"github.com/Teeeep/talaria/internal/corpus"
 	"github.com/Teeeep/talaria/internal/spec"
 )
@@ -823,7 +824,7 @@ func TestReplayRejectsARecordedURLWhoseSchemeIsNotHTTP(t *testing.T) {
 		t.Run(raw, func(t *testing.T) {
 			entry := corpus.Entry{Source: corpus.SourceCall, Method: "GET", URL: raw}
 
-			_, err := replayRequest(io.Discard, entry)
+			_, err := replayRequest(io.Discard, entry, nil)
 			if err == nil {
 				t.Fatalf("replayRequest(%q) succeeded, want a usage error", raw)
 			}
@@ -850,7 +851,7 @@ func TestReplayRejectsARecordedURLCarryingCredentials(t *testing.T) {
 		URL:    "http://" + user + ":" + password + "@127.0.0.1:8898/pets",
 	}
 
-	_, err := replayRequest(io.Discard, entry)
+	_, err := replayRequest(io.Discard, entry, nil)
 	if err == nil {
 		t.Fatal("replayRequest accepted a recorded URL with userinfo, want a usage error")
 	}
@@ -897,7 +898,7 @@ func TestReplaySendsTheOriginalBytesOfABinaryBody(t *testing.T) {
 		},
 	}
 
-	req, err := replayRequest(io.Discard, entry)
+	req, err := replayRequest(io.Discard, entry, nil)
 	if err != nil {
 		t.Fatalf("replayRequest: %v", err)
 	}
@@ -920,7 +921,7 @@ func TestReplayRefusesABodyEncodingItDoesNotKnow(t *testing.T) {
 		Request: corpus.EntryRequest{Body: &corpus.Body{Data: "AAAA", Encoding: "zstd+base64"}},
 	}
 
-	_, err := replayRequest(io.Discard, entry)
+	_, err := replayRequest(io.Discard, entry, nil)
 	if err == nil {
 		t.Fatal("replayRequest accepted an unknown body encoding, want a usage error")
 	}
@@ -966,11 +967,143 @@ func TestHistoryShowDoesNotPrintABinaryBodyAsText(t *testing.T) {
 func TestReplayAcceptsARecordedHTTPURL(t *testing.T) {
 	entry := corpus.Entry{Source: corpus.SourceCall, Method: "GET", URL: "https://api.example.com/pets/42"}
 
-	req, err := replayRequest(io.Discard, entry)
+	req, err := replayRequest(io.Discard, entry, nil)
 	if err != nil {
 		t.Fatalf("replayRequest: %v", err)
 	}
 	if req.BaseURL != "https://api.example.com" {
 		t.Errorf("BaseURL = %q, want https://api.example.com", req.BaseURL)
+	}
+}
+
+// The store is a plain file, so `<redacted:env:NAME>` in it is an instruction
+// an attacker can write. Resolving any name it likes would make replay a
+// "read $ANY_VAR and send it to $ANY_URL" primitive, run from the one process
+// the deployment trusts with credentials — so the name has to be inside the
+// namespace the firewall is scoped to (§5a).
+func TestReplayRefusesAnEnvVarOutsideTheAuthNamespace(t *testing.T) {
+	const stolen = "AWS_SECRET_ACCESS_KEY"
+	entry := corpus.Entry{
+		Source:  corpus.SourceCall,
+		Method:  "GET",
+		URL:     "http://127.0.0.1:19950/exfil",
+		Request: corpus.EntryRequest{Headers: map[string]string{"X-Steal": "<redacted:env:" + stolen + ">"}},
+	}
+
+	_, err := replayRequest(io.Discard, entry, nil)
+	if err == nil {
+		t.Fatal("replayRequest resolved an env var outside the auth namespace, want a usage error")
+	}
+	if code := clierr.From(err).Code; code != clierr.CodeUsage {
+		t.Fatalf("error = %v (code %d), want usage (%d)", err, code, clierr.CodeUsage)
+	}
+	if !strings.Contains(err.Error(), stolen) {
+		t.Errorf("error %v does not name the variable it refused", err)
+	}
+	if !strings.Contains(err.Error(), "X-Steal") {
+		t.Errorf("error %v does not name the header the variable stood in", err)
+	}
+}
+
+// The query string is rebuilt by its own code path, and a credential in a query
+// parameter is the position DESIGN.md already warns about — so the refusal has
+// to hold there too.
+func TestReplayRefusesAnEnvVarOutsideTheAuthNamespaceInTheQuery(t *testing.T) {
+	const stolen = "GITHUB_TOKEN"
+	entry := corpus.Entry{
+		Source: corpus.SourceCall,
+		Method: "GET",
+		URL:    "http://127.0.0.1:19950/exfil?leak=%3Credacted%3Aenv%3A" + stolen + "%3E",
+	}
+
+	_, err := replayRequest(io.Discard, entry, nil)
+	if err == nil {
+		t.Fatal("replayRequest resolved an env var outside the auth namespace, want a usage error")
+	}
+	if code := clierr.From(err).Code; code != clierr.CodeUsage {
+		t.Fatalf("error = %v (code %d), want usage (%d)", err, code, clierr.CodeUsage)
+	}
+	if !strings.Contains(err.Error(), stolen) {
+		t.Errorf("error %v does not name the variable it refused", err)
+	}
+}
+
+// The three TALARIA_AUTH_* forms are what `call` records, so every one of them
+// has to survive the round trip: a replay that refuses its own recording would
+// be worse than the hole it closes.
+func TestReplayResolvesTheAuthNamespace(t *testing.T) {
+	for _, name := range []string{config.EnvBearer, config.EnvBasic, config.EnvAPIKeyPrefix + "PETKEY"} {
+		t.Run(name, func(t *testing.T) {
+			entry := corpus.Entry{
+				Source:  corpus.SourceCall,
+				Method:  "GET",
+				URL:     "https://api.example.com/pets/42",
+				Request: corpus.EntryRequest{Headers: map[string]string{"Authorization": "<redacted:env:" + name + ">"}},
+			}
+
+			req, err := replayRequest(io.Discard, entry, nil)
+			if err != nil {
+				t.Fatalf("replayRequest: %v", err)
+			}
+			if len(req.Headers) != 1 {
+				t.Fatalf("the replay carries %d headers, want the recorded 1", len(req.Headers))
+			}
+			if got := req.Headers[0].Value.Ref().Name; got != name {
+				t.Errorf("the replayed header resolves %q, want %q", got, name)
+			}
+		})
+	}
+}
+
+// A profile's `auth:` map is the other half of the namespace: it is how one
+// machine talks to staging and production at once, and a call made under it
+// records the variable *it* names, not the convention's.
+func TestReplayResolvesAVariableTheProfileNames(t *testing.T) {
+	prof := &config.Profile{Name: "staging", Auth: map[string]string{"bearerAuth": "${STAGING_TOKEN}"}}
+	entry := corpus.Entry{
+		Source:  corpus.SourceCall,
+		Method:  "GET",
+		URL:     "https://api.example.com/pets/42",
+		Request: corpus.EntryRequest{Headers: map[string]string{"Authorization": "Bearer <redacted:env:STAGING_TOKEN>"}},
+	}
+
+	req, err := replayRequest(io.Discard, entry, prof)
+	if err != nil {
+		t.Fatalf("replayRequest under profile staging: %v", err)
+	}
+	if len(req.Headers) != 1 {
+		t.Fatalf("the replay carries %d headers, want the recorded 1", len(req.Headers))
+	}
+	if got := req.Headers[0].Value.Ref().Name; got != "STAGING_TOKEN" {
+		t.Errorf("the replayed header resolves %q, want STAGING_TOKEN", got)
+	}
+	// Without the profile the same entry is outside the namespace: the profile is
+	// what admits the name, so dropping it must not leave the door open.
+	if _, err := replayRequest(io.Discard, entry, nil); err == nil {
+		t.Error("replayRequest resolved STAGING_TOKEN with no profile selected, want a usage error")
+	}
+}
+
+// End to end: the reproduction from the review, through the real command. The
+// refusal has to happen before curl runs, so the server sees nothing at all.
+func TestHistoryReplayDoesNotSendAnEnvVarOutsideTheAuthNamespace(t *testing.T) {
+	isolateHistory(t)
+	srv := newCallServer(t, jsonPet)
+
+	entry := seedEntry(corpus.SourceCall, time.Minute, "exfil", "GET", srv.URL+"/exfil", 0)
+	entry.Request.Headers = map[string]string{"X-Steal": "<redacted:env:MY_UNRELATED_SECRET>"}
+	seedHistory(t, entry)
+
+	t.Setenv("MY_UNRELATED_SECRET", callCanary)
+
+	code, _, stderr := runHistory(t, "replay", "1", "--output", "json")
+	if code != 2 {
+		t.Fatalf("history replay of an out-of-namespace variable = %d, want 2; stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "MY_UNRELATED_SECRET") {
+		t.Errorf("the refusal does not name the variable it refused: %s", stderr)
+	}
+	if rec := srv.received(); rec.Method != "" {
+		t.Errorf("the refused replay still reached the server: %+v", rec)
 	}
 }

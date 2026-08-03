@@ -50,7 +50,7 @@
       "title": "Restrict `history replay` to credentials inside the auth namespace",
       "line_start": 189,
       "line_end": 218,
-      "done": false
+      "done": true
     }
   ]
 }

@@ -212,7 +212,7 @@ not done. Build, `gofmt`, `go vet` and `go test -race ./...` are clean at HEAD a
    present in the profile's `auth:` map is accepted.
 
 **Verify:** `go test ./...`
-- [ ] A hand-written history entry naming an env var outside the auth namespace is refused with
+- [x] A hand-written history entry naming an env var outside the auth namespace is refused with
       exit 2 rather than resolved and sent.
-- [ ] Replay of an entry recorded by a normal `call` is unaffected.
-- [ ] The refusal message names the variable it refused.
+- [x] Replay of an entry recorded by a normal `call` is unaffected.
+- [x] The refusal message names the variable it refused.

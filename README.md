@@ -391,6 +391,13 @@ in the file to read back. It is gated the same way `call` is: replaying a `POST`
 `--allow-mutations`. A header whose value was a literal talaria redacted by name cannot be
 reproduced, and replay says so on stderr rather than pretending it sent one.
 
+The names replay will resolve are an allowlist, not whatever the file asks for: `TALARIA_AUTH_BEARER`,
+`TALARIA_AUTH_BASIC`, any `TALARIA_AUTH_APIKEY_*`, and the variables the selected profile's `auth:`
+map names. That is exactly the set talaria records, so a normal replay is unaffected — but the store
+is a plain file, and an entry edited to name some other variable would otherwise make replay a way to
+read it and send it to a host of the file's choosing. Such an entry is refused with exit 2, naming
+the variable and the field it stood in.
+
 Entries are written **redacted, at write time**. The store is the highest-risk artifact talaria
 produces, so un-redacted recording is not an option and there is no flag for it. It lives at
 `$XDG_STATE_HOME/talaria/history.jsonl` (falling back to `~/.local/state/talaria/`), directory

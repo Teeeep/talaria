@@ -314,6 +314,31 @@ func credentialFor(name string, scheme *v3high.SecurityScheme, prof *Profile) (C
 // envRef matches a profile auth entry: ${VAR} or $VAR, and nothing else.
 var envRef = regexp.MustCompile(`^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$`)
 
+// ReferencesEnv reports whether this profile's auth map names the given
+// environment variable.
+//
+// It exists for `history replay`, which reads a variable's *name* out of a file
+// on disk and would otherwise resolve whatever that file asked for. The set of
+// names a replay may resolve is the TALARIA_AUTH_* convention plus this: the
+// variables the profile in force deliberately points at. A literal entry — the
+// one profileRef refuses — names no variable and so admits none.
+//
+// The nil receiver is "no --profile was given", which names nothing rather than
+// everything.
+func (p *Profile) ReferencesEnv(name string) bool {
+	if p == nil || name == "" {
+		return false
+	}
+
+	for _, entry := range p.Auth {
+		if match := envRef.FindStringSubmatch(entry); match != nil && match[1] == name {
+			return true
+		}
+	}
+
+	return false
+}
+
 // profileRef reads the profile's entry for a scheme. A profile may only
 // *reference* an environment variable; a literal value is refused, because a
 // credential in a config file is a credential this process would have to carry,

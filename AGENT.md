@@ -245,7 +245,10 @@ replaying a mutation needs `--allow-mutations` too. Dry runs are never recorded.
 where a profile says so, or everywhere under `TALARIA_HISTORY=off` — if history is empty, that is
 usually why.
 
-Credentials are stored as names, so nothing in history can be read back into a value.
+Credentials are stored as names, so nothing in history can be read back into a value. On replay
+only the names talaria itself records are resolved — `TALARIA_AUTH_BEARER`, `TALARIA_AUTH_BASIC`,
+`TALARIA_AUTH_APIKEY_*`, and the variables the selected profile's `auth:` map names. An entry
+naming any other variable is refused with exit 2 rather than resolved.
 
 ## Rules
 
