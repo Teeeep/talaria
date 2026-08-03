@@ -211,6 +211,40 @@ func TestRenderNamesTheMethodAndBodyForAMutation(t *testing.T) {
 	}
 }
 
+// TestRenderOmitsAMediaTypeThatWouldSplitTheRequest covers the printed half of
+// the same gate BuildConfig refuses on. The emitted command is documentation a
+// human pastes into a shell, and a single-quoted word spans raw newlines — so
+// printing the media type verbatim would hand the reader the injection the call
+// itself refused to make. It is left out instead; the request it describes does
+// not exist, because
+// TestBuildConfigRejectsCRLFThatWouldSplitTheRequest/body_media_type refuses to
+// build one.
+func TestRenderOmitsAMediaTypeThatWouldSplitTheRequest(t *testing.T) {
+	req := &request.Request{
+		Method:  "POST",
+		BaseURL: "https://api.example.com",
+		Path:    "/pets",
+		Body: &request.Body{
+			ContentType: "application/json\r\nX-Injected: pwned",
+			Data:        []byte(`{"name":"Rex"}`),
+		},
+	}
+
+	got := Render(req)
+
+	if strings.ContainsAny(got, "\r\n") {
+		t.Errorf("Render() = %q\nwant no raw CR or LF inside the emitted command", got)
+	}
+	if strings.Contains(got, "X-Injected") {
+		t.Errorf("Render() = %s\nwant the injected header left out", got)
+	}
+	// The rest of the command still renders: a refused media type is one
+	// directive dropped, not a blank line where the reproduction should be.
+	if !strings.Contains(got, `--data-raw '{"name":"Rex"}'`) {
+		t.Errorf("Render() = %s\nwant the body still rendered", got)
+	}
+}
+
 // TestRenderNamesGETWhenItCarriesABody pins the emitted command to the config
 // document the executed call actually reads. --data-raw makes curl switch to
 // POST unless the method is named, while config.go always writes

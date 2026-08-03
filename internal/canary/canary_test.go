@@ -1008,6 +1008,37 @@ func TestAPlantedCurlrcCannotCaptureTheCredential(t *testing.T) {
 	assertNoLeak(t, value, surfaces)
 }
 
+// TestASpecMediaTypeCannotInjectAHeader is the wire-level end of the media-type
+// gate. It belongs in this suite rather than beside the unit tests because what
+// a hostile `content:` key buys an attacker is not a stray header — it is a
+// second request smuggled onto the connection that is already carrying the
+// bearer token, written by the one component that has resolved it.
+//
+// The spec is the untrusted party here: talaria's premise is that an agent
+// points it at a document it did not write.
+func TestASpecMediaTypeCannotInjectAHeader(t *testing.T) {
+	t.Parallel()
+
+	value := canary.Value("mediatype")
+	h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": value})
+	srv := newServer(t, `{"ok":true}`)
+
+	res := h.run("call", specPath, "postInjected",
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1",
+		"--allow-mutations", "--body", `{"a":1}`, "--output", "json")
+
+	if res.code != 2 {
+		t.Errorf("talaria call postInjected = %d, want 2; stderr: %s", res.code, res.stderr)
+	}
+	// Whatever the exit code, nothing may have reached the server carrying the
+	// injected header: that is the property, and the code is how it is reported.
+	if got := srv.received().Header.Get("X-Injected"); got != "" {
+		t.Errorf("the server received X-Injected: %q — the media type split the request", got)
+	}
+
+	assertNoLeak(t, value, append(res.surfaces(), h.written()...))
+}
+
 // assertNoLeak fails the test naming every surface the canary reached.
 func assertNoLeak(t *testing.T, value string, surfaces []canary.Surface) {
 	t.Helper()

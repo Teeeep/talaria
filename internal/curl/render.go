@@ -126,11 +126,40 @@ func bodyArgs(req *request.Request) []string {
 	}
 
 	var args []string
-	if req.Body.ContentType != "" && !hasHeader(req, "Content-Type") {
-		args = append(args, "-H", (&word{}).literal("Content-Type: "+req.Body.ContentType).String())
+	// A media type that would split the request is left out rather than
+	// printed. This command is documentation a human pastes into a shell, and a
+	// single-quoted word spans a raw newline happily, so printing it would hand
+	// the reader the injection the call itself refuses to make — BuildConfig
+	// returns the error for the same value and builds no document.
+	if ct, err := bodyContentType(req); err == nil && ct != "" {
+		args = append(args, "-H", (&word{}).literal(contentTypeHeader+": "+ct).String())
 	}
 
 	return append(args, "--data-raw", (&word{}).literal(string(req.Body.Data)).String())
+}
+
+// contentTypeHeader is the header a body's media type travels in.
+const contentTypeHeader = "Content-Type"
+
+// bodyContentType returns the media type the body needs its own Content-Type
+// directive for, empty when the request already carries the header explicitly,
+// and an error when the media type would end the header line early.
+//
+// It is one function because both surfaces read the same field: the config
+// document curl executes and the command Render prints. The media type is the
+// one header value that arrives without passing the binder's checks — it is a
+// key of the spec's `content:` map, and `history replay` rebuilds a Request
+// with no binder at all.
+func bodyContentType(req *request.Request) (string, error) {
+	if req.Body == nil || req.Body.ContentType == "" || hasHeader(req, contentTypeHeader) {
+		return "", nil
+	}
+
+	if err := checkSplit("header", contentTypeHeader, req.Body.ContentType); err != nil {
+		return "", err
+	}
+
+	return req.Body.ContentType, nil
 }
 
 func hasHeader(req *request.Request, name string) bool {

@@ -95,6 +95,17 @@ Never re-add a supportedness filter to `Schemes` or `declaredCredentials`: `cred
 apiKey branch is guarded, but the report is what an agent acts on, and an omitted scheme reads
 as "nothing to do here".
 
+**A media type is a header value, so it is checked like one.** The key of the spec's `content:`
+map becomes `Content-Type:` on the wire, and it was the one header value that reached the socket
+without passing a CRLF check. Two gates now, deliberately: `binder.contentType`
+(`internal/request/body.go`) refuses anything that is not `type/subtype` with optional
+`; parameter=value` — `isMediaType`, a whole-grammar check because the token charset rules out CR,
+LF, NUL, whitespace and the colon in one pass — and `curl.bodyContentType` (`internal/curl/render.go`)
+re-checks with `checkSplit` as the last gate, because `history replay` builds a `Request` with no
+binder. `bodyContentType` is the single seam both surfaces read: `document.body` returns its error,
+`bodyArgs` drops the directive, so the executed document and the printed reproduction cannot
+disagree. Do not re-inline `req.Body.ContentType` at either call site.
+
 **`auth check` and `call` may not disagree.** DESIGN.md:329 is a contract, not a nicety: the
 verdict lives in `config.Covers`/`config.Resolve`, and `cmd/talaria/auth.go`'s `satisfied` only
 asks it. Any change to one side needs the matrix test in `cmd/talaria/auth_test.go`

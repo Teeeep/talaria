@@ -56,7 +56,10 @@ talaria call getPet --param petId=42 --query verbose=true --header X-Trace=abc
 - `--param name=value` binds a parameter the operation declares, in any location. `--query` and
   `--header` add ones it does not. All three repeat.
 - `--body` takes a literal, `@file`, or `-` for stdin. Content type comes from your
-  `--header Content-Type`, else from the operation's declared media type.
+  `--header Content-Type`, else from the operation's declared media type. That media type is a
+  string the spec author chose, so it has to be one: `type/subtype` with optional
+  `; parameter=value`. A spec declaring anything else — most usefully, one carrying a newline
+  that would append a header of its own — is a usage error (exit 2), not a request.
 - Every binding problem is reported at once. Fix them in one edit, not one per run.
 - `--base-url` overrides the spec's server. `--profile` selects a named profile from the user's
   config file. Only `http` and `https` are accepted, from either source — a spec's own

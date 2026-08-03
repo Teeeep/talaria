@@ -106,3 +106,20 @@ paths:
       responses:
         "201":
           description: Created
+  /injected:
+    post:
+      # The media type is the key of this map, and a key is a string the spec
+      # author chose. This one ends the Content-Type header line and appends a
+      # header of its own, on the connection carrying the bearer token.
+      operationId: postInjected
+      summary: Declares a media type that would split the request
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          "application/json\r\nX-Injected: pwned":
+            schema:
+              type: object
+      responses:
+        "200":
+          description: OK

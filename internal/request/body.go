@@ -17,6 +17,13 @@ const fileFlagPrefix = "@"
 // contentTypeHeader is the header a body's media type travels in.
 const contentTypeHeader = "Content-Type"
 
+// maxMediaType bounds the media type an operation may declare. The value is a
+// spec-supplied string that ends up in a header, and the house rule for those
+// is to size-check before allocating: everything below splits it up to look at
+// it, and the error message that refuses it quotes it back. A real media type
+// is well under a hundred bytes.
+const maxMediaType = 1024
+
 // body resolves the --body flag into the bytes that will be sent and the media
 // type that describes them, or nil when no body was asked for.
 //
@@ -133,6 +140,12 @@ func (b *binder) fileBody(path string) ([]byte, bool) {
 // still be handed a form body deliberately. When the operation declares no body
 // at all the result is empty, and talaria sends no Content-Type rather than
 // guessing one.
+//
+// The spec's media type is checked here and nowhere earlier because this is
+// where it stops being a map key and becomes a header value. The --header
+// branch above is not checked again: those values were already refused for a
+// CRLF at bind time, and h.Value.String() is the redacted display form, which a
+// media-type check would reject for a credential-valued header.
 func (b *binder) contentType(req *Request) string {
 	for _, h := range req.Headers {
 		if strings.EqualFold(h.Name, contentTypeHeader) {
@@ -141,9 +154,75 @@ func (b *binder) contentType(req *Request) string {
 	}
 
 	rb := b.in.Op.RequestBody
-	if rb == nil || len(rb.Content) == 0 {
+	if rb == nil || len(rb.Content) == 0 || rb.Content[0].ContentType == "" {
 		return ""
 	}
 
-	return rb.Content[0].ContentType
+	declared := rb.Content[0].ContentType
+	if len(declared) > maxMediaType {
+		b.fail("the operation declares a request body media type of %d bytes, over the %d-byte limit",
+			len(declared), maxMediaType)
+		return ""
+	}
+	if !isMediaType(declared) {
+		b.fail("the operation declares the media type %q, which is not a type/subtype pair with "+
+			"optional ; parameter=value and cannot be sent as a header", declared)
+		return ""
+	}
+
+	return declared
+}
+
+// isMediaType reports whether s can be sent as a Content-Type value: a
+// type/subtype pair of tokens, followed by any number of `; parameter=value`
+// parameters (RFC 9110 §8.3.1).
+//
+// Checking the whole grammar rather than only for a CR or an LF is the cheaper
+// rule, not the stricter one: the token charset refuses the two split
+// characters along with the NUL, the whitespace and the colon that would name a
+// second header, all in one place. The parameter form has to be spelled out
+// either way, or `text/plain; charset=utf-8` would fail it.
+func isMediaType(s string) bool {
+	parts := strings.Split(s, ";")
+
+	kind, subtype, ok := strings.Cut(parts[0], "/")
+	if !ok || !isFieldName(kind) || !isFieldName(subtype) {
+		return false
+	}
+
+	for _, p := range parts[1:] {
+		name, value, ok := strings.Cut(strings.TrimLeft(p, " \t"), "=")
+		if !ok || !isFieldName(name) || !isParameterValue(value) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// isParameterValue reports whether v can follow a media type parameter's `=`:
+// a token, or the quoted string a multipart boundary uses to carry characters a
+// token cannot (RFC 9110 §5.6.6).
+func isParameterValue(v string) bool {
+	if len(v) >= 2 && strings.HasPrefix(v, `"`) && strings.HasSuffix(v, `"`) {
+		return isQuotedText(v[1 : len(v)-1])
+	}
+
+	return isFieldName(v)
+}
+
+// isQuotedText reports whether s can sit between a quoted string's quotes:
+// printable ASCII and the horizontal tab, with neither the quote that would end
+// it early nor the backslash that would escape whatever follows it.
+func isQuotedText(s string) bool {
+	for _, r := range s {
+		switch {
+		case r == '"' || r == '\\':
+			return false
+		case r != '\t' && (r < ' ' || r > '~'):
+			return false
+		}
+	}
+
+	return true
 }

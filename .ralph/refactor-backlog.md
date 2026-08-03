@@ -16,6 +16,15 @@ these mid-task.
 - `internal/request/build.go:345` — correction to the seam above: `hasControl` now has a second
   caller, `parseHostEntry` in `hosts.go`, so it belongs in the shared `wire.go` half, not in
   `server.go` with the substitution code.
+- `internal/request/body.go:145` — addendum to the `wire.go` seam above: Task 5 added
+  `isMediaType`, `isParameterValue`, `isQuotedText` and `maxMediaType`, which are wire-safety
+  charset helpers sitting in body.go only because `binder.contentType` is their one caller. They
+  belong with `SplitsRequest`/`isFieldName` in `internal/request/wire.go`, not beside the `--body`
+  reader.
+- `internal/curl/config.go:1` — 428 lines. The seam is the document builder (`document`, its
+  per-section methods, `directive`, `escapeDirective`, `tempFile`) versus the resolution and
+  cleanup half (`resolve`, `checkSplit`, `inlinable`, the zeroing) — the second is what the
+  §5a firewall actually lives in, and it is the half worth reading on its own.
 - `internal/corpus/replay.go:26` — the parameter locations `query`/`header`/`cookie` are now
   spelled out for the third time: `config.InQuery` etc. (auth.go:44), `internal/request`'s
   private `inQuery` aliases (build.go:24), and here, because corpus deliberately does not import

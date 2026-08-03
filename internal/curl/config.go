@@ -286,8 +286,12 @@ func (d *document) body(req *request.Request) error {
 		return nil
 	}
 
-	if req.Body.ContentType != "" && !hasHeader(req, "Content-Type") {
-		d.directive("header", "Content-Type: "+req.Body.ContentType)
+	ct, err := bodyContentType(req)
+	if err != nil {
+		return err
+	}
+	if ct != "" {
+		d.directive("header", contentTypeHeader+": "+ct)
 	}
 
 	if inlinable(req.Body.Data) {

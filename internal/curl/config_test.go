@@ -494,6 +494,23 @@ func TestBuildConfigRejectsCRLFThatWouldSplitTheRequest(t *testing.T) {
 			req.Method = "GET\r\nX-Injected: 1"
 			return req
 		}},
+		// The body's media type is the header value that does not come from a
+		// --header pair: it is a key of the spec's `content:` map, so it is the
+		// one Content-Type this package sees without the binder having checked
+		// it — and `history replay` rebuilds a Request without the binder at all.
+		{"body media type", func() *request.Request {
+			req := base()
+			req.Body = &request.Body{ContentType: "application/json" + injection, Data: []byte("{}")}
+			return req
+		}},
+		{"body media type ending the header block", func() *request.Request {
+			req := base()
+			req.Body = &request.Body{
+				ContentType: "application/json\r\n\r\nGET /admin HTTP/1.1\r\n",
+				Data:        []byte("{}"),
+			}
+			return req
+		}},
 	}
 
 	for _, tc := range tests {

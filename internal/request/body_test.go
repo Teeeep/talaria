@@ -261,6 +261,77 @@ func TestUserContentTypeHeaderIsNotSentTwice(t *testing.T) {
 	}
 }
 
+// withMediaType returns body inputs whose operation declares exactly one
+// request-body media type, so a case can name the hostile string directly
+// instead of carrying a spec fixture per variation.
+func withMediaType(t *testing.T, mediaType string) request.Inputs {
+	t.Helper()
+
+	in := bodyInputs(t)
+	in.Op.RequestBody = &operation.RequestBody{
+		Content: []operation.MediaType{{ContentType: mediaType}},
+	}
+	in.Body = []string{`{"a":1}`}
+
+	return in
+}
+
+// TestAHostileMediaTypeIsRefusedAtBindTime covers the one header value that
+// reaches the wire without ever passing the --header path's CRLF check: the key
+// of the spec's `content:` map. The spec is untrusted input by talaria's own
+// premise, and this value is read inside the component that holds resolved
+// credentials — a double CRLF ends the header block and smuggles a second
+// request onto the connection carrying the token.
+func TestAHostileMediaTypeIsRefusedAtBindTime(t *testing.T) {
+	cases := []struct{ name, mediaType string }{
+		{"CRLF injection", "application/json\r\nX-Injected: pwned"},
+		{"bare carriage return", "application/json\rX-Injected: pwned"},
+		{"bare newline", "application/json\nX-Injected: pwned"},
+		{"double CRLF smuggling a request", "application/json\r\n\r\nGET /admin HTTP/1.1\r\n"},
+		{"NUL byte", "application/json\x00"},
+		{"whitespace only", "   "},
+		{"non-ASCII", "application/jsön"},
+		{"names a header", "application/json: x"},
+		{"no subtype", "application"},
+		{"a parameter with no value", "text/plain; charset"},
+		{"a parameter carrying a newline", "text/plain; charset=utf-8\r\nX-Injected: pwned"},
+		{"a megabyte long", "application/" + strings.Repeat("j", 1<<20)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := bodyUsageErr(t, withMediaType(t, tc.mediaType))
+			if !strings.Contains(msg, "media type") {
+				t.Errorf("error = %q, want it to name the media type as the fault", msg)
+			}
+			// The message goes to stderr, where a raw CR or LF would let the
+			// rejected value forge lines of talaria's own output.
+			if strings.ContainsAny(msg, "\r\n") {
+				t.Errorf("error message carries a raw CR or LF: %q", msg)
+			}
+		})
+	}
+}
+
+// TestAnOrdinaryMediaTypeStillBinds is the other half of the gate: the check
+// refuses a header split, not the parameter form real specs use.
+func TestAnOrdinaryMediaTypeStillBinds(t *testing.T) {
+	for _, mediaType := range []string{
+		"application/json",
+		"application/vnd.api+json",
+		"application/x-www-form-urlencoded",
+		"text/plain; charset=utf-8",
+		"text/plain;charset=utf-8",
+		`multipart/form-data; boundary="----talaria0123"`,
+	} {
+		t.Run(mediaType, func(t *testing.T) {
+			if got := buildBody(t, withMediaType(t, mediaType)).ContentType; got != mediaType {
+				t.Errorf("content type = %q, want %q unchanged", got, mediaType)
+			}
+		})
+	}
+}
+
 func TestBodyWithNoDeclaredMediaTypeHasNoContentType(t *testing.T) {
 	doc, err := spec.LoadFile(filepath.Join("testdata", "request.yaml"))
 	if err != nil {
