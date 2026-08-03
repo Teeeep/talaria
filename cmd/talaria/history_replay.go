@@ -99,7 +99,8 @@ func newHistoryReplayCmd() *cobra.Command {
 			// so there is a contract to check the response against.
 			view := redactResponse(resp, redactors.Response)
 
-			return renderer.Render(callPayload(req, view, validateResponse(cmd.ErrOrStderr(), doc, req, view)))
+			return renderer.Render(callPayload(req, view,
+				validateResponse(cmd.ErrOrStderr(), doc, req, view), redactors.Response))
 		},
 	}
 

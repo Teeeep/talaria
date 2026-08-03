@@ -773,6 +773,17 @@ pattern that hides a value in the permanent artifact but not on the stdout an ag
 firewall backwards."* §3 principle 0 names stdout first among the surfaces a credential must never
 reach.
 
+**Built 2026-08-03, with one divergence.** The emitted form is `--data-binary @file` /
+`--data-binary @-`, not the `--data` this section named. `--data` strips newlines and carriage
+returns out of a file, so the reproduction would send different bytes than the call — the exact
+failure the rationale at `render.go:117-122` already described, and the reason the config document
+uses `data-binary` for its temp file. Proven rather than asserted: a `--body @file` case carrying a
+pretty-printed body was added to `TestThePreviewedCommandSendsWhatTheCallSends`
+(`internal/e2e/e2e_test.go`), and it fails with `--data` on both the body and Content-Length.
+One case the section's adversarial list raised needed a decision: `--body @-` names a file
+literally called `-`, which curl reads as stdin after the `@`, so `curl.fileRef` emits `@./-` for
+that path alone.
+
 ---
 
 ### Task 8: `internal/corpus` stops importing `internal/curl` — finding 30

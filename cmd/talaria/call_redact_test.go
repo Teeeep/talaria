@@ -116,6 +116,133 @@ func TestCallLeavesAnUnmatchedBodyExactlyAsItCame(t *testing.T) {
 	}
 }
 
+// bodyCanary is what a file the caller pointed --body at holds: a token some
+// CI job or human wrote, which the agent reading stdout never saw. §3 principle
+// 0 names stdout first among the surfaces a credential must not reach, and
+// history already redacts this field — printing it raw has the firewall
+// backwards.
+const bodyCanary = "file-refresh-CANARY-31d8ab"
+
+func TestCallRedactsASecretInARequestBodyReadFromAFile(t *testing.T) {
+	sent := `{"refresh_token":"` + bodyCanary + `"}`
+	path := filepath.Join(t.TempDir(), "body.json")
+	if err := os.WriteFile(path, []byte(sent), 0o600); err != nil {
+		t.Fatalf("writing the body file: %v", err)
+	}
+
+	srv := newCallServer(t, jsonPet)
+
+	code, stdout, stderr := runCall(t,
+		"testdata/call.yaml", "createPet", "--allow-mutations", "--body", "@"+path,
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
+	if code != 0 {
+		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	// The server received the real bytes. Redaction answers what talaria prints,
+	// never what it sends, and a call that quietly sent nothing would pass every
+	// assertion below.
+	if got := srv.received().Body; got != sent {
+		t.Errorf("the server received %q, want the file's bytes %q", got, sent)
+	}
+
+	if strings.Contains(stdout, bodyCanary) {
+		t.Fatalf("call printed a secret out of the request body file:\n%s", stdout)
+	}
+
+	var body struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal([]byte(decodeCall(t, stdout).Request.Body), &body); err != nil {
+		t.Fatalf("request.body is not JSON: %v", err)
+	}
+	if body.RefreshToken != "<redacted>" {
+		t.Errorf("request.body.refresh_token = %q, want <redacted>", body.RefreshToken)
+	}
+}
+
+// TestCallStillShowsABodyTheCallerTyped is the other half: --body given as a
+// literal is already in the agent's hands, so the reproduction inlines it
+// (DESIGN.md §3.4). Only the redaction of a credential-shaped field applies.
+func TestCallStillShowsABodyTheCallerTyped(t *testing.T) {
+	srv := newCallServer(t, jsonPet)
+
+	code, stdout, stderr := runCall(t,
+		"testdata/call.yaml", "createPet", "--allow-mutations", "--body", `{"name":"Rex"}`,
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
+	if code != 0 {
+		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	got := decodeCall(t, stdout)
+	if got.Request.Body != `{"name":"Rex"}` {
+		t.Errorf("request.body = %q, want the literal the caller typed", got.Request.Body)
+	}
+	if !strings.Contains(got.Request.Curl, `--data-raw '{"name":"Rex"}'`) {
+		t.Errorf("request.curl = %s\nwant the typed body inlined", got.Request.Curl)
+	}
+}
+
+// TestCallSendsABodyThatAlreadyReadsAsRedacted covers the body whose own
+// content looks like the placeholder. Redaction rewrites the displayed copy and
+// nothing else, so a second pass over an already-redacted value has to leave it
+// alone and the wire has to carry the literal text the caller wrote.
+func TestCallSendsABodyThatAlreadyReadsAsRedacted(t *testing.T) {
+	sent := `{"refresh_token":"<redacted>"}`
+	path := filepath.Join(t.TempDir(), "body.json")
+	if err := os.WriteFile(path, []byte(sent), 0o600); err != nil {
+		t.Fatalf("writing the body file: %v", err)
+	}
+
+	srv := newCallServer(t, jsonPet)
+
+	code, stdout, stderr := runCall(t,
+		"testdata/call.yaml", "createPet", "--allow-mutations", "--body", "@"+path,
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
+	if code != 0 {
+		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	if got := srv.received().Body; got != sent {
+		t.Errorf("the server received %q, want the file's bytes %q", got, sent)
+	}
+
+	var body struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal([]byte(decodeCall(t, stdout).Request.Body), &body); err != nil {
+		t.Fatalf("request.body is not JSON: %v", err)
+	}
+	if body.RefreshToken != "<redacted>" {
+		t.Errorf("request.body.refresh_token = %q, want it left as it came", body.RefreshToken)
+	}
+}
+
+// TestCallSendsABinaryBodyUnmangled is the wire half of the same rule: the
+// displayed copy is redacted, the bytes are not. A body that is not UTF-8 has
+// no JSON document to rewrite, and rewriting it anyway would corrupt every
+// upload.
+func TestCallSendsABinaryBodyUnmangled(t *testing.T) {
+	sent := string([]byte{0x00, 0xff, 0xfe, '{', '"', 'a', '"', ':', '1', '}', 0x80})
+	path := filepath.Join(t.TempDir(), "body.bin")
+	if err := os.WriteFile(path, []byte(sent), 0o600); err != nil {
+		t.Fatalf("writing the body file: %v", err)
+	}
+
+	srv := newCallServer(t, jsonPet)
+
+	code, _, stderr := runCall(t,
+		"testdata/call.yaml", "createPet", "--allow-mutations", "--body", "@"+path,
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
+	if code != 0 {
+		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	if got := srv.received().Body; got != sent {
+		t.Errorf("the server received %q, want the file's bytes byte for byte", got)
+	}
+}
+
 func TestCallWarnsOnceThatAQueryStringKeyReachesServerLogs(t *testing.T) {
 	// getKeyed authenticates with an apiKey in the query string. §5a: talaria
 	// keeps it out of its own output, and cannot keep it out of the server's

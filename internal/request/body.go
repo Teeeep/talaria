@@ -37,21 +37,23 @@ const maxMediaType = 1024
 // req is read for the headers already bound, so a user's own Content-Type can
 // beat the operation's declared media type.
 func (b *binder) body(req *Request) *Body {
-	data, ok := b.bodyData()
+	data, origin, path, ok := b.bodyData()
 	if !ok {
 		return nil
 	}
 
-	return &Body{ContentType: b.contentType(req), Data: data}
+	return &Body{ContentType: b.contentType(req), Data: data, Origin: origin, Path: path}
 }
 
-// bodyData reads whichever of the three sources --body named. The second return
-// is false when there is no body to send, either because none was asked for or
-// because reading it failed — in which case the problem is already recorded and
-// Build will return it.
-func (b *binder) bodyData() ([]byte, bool) {
+// bodyData reads whichever of the three sources --body named, and says which
+// one it was: the bytes are the same on the wire either way, but only the argv
+// case may be printed back to the caller. The last return is false when there
+// is no body to send, either because none was asked for or because reading it
+// failed — in which case the problem is already recorded and Build will return
+// it.
+func (b *binder) bodyData() (data []byte, origin BodyOrigin, path string, ok bool) {
 	if len(b.in.Body) == 0 {
-		return nil, false
+		return nil, BodyArgv, "", false
 	}
 	// A repeated --body is a mistake worth naming rather than resolving by
 	// last-one-wins: the two values are usually a literal and a file, and
@@ -69,17 +71,20 @@ func (b *binder) bodyData() ([]byte, bool) {
 
 		b.fail("--body was given %d times (%s); a request has one body",
 			len(b.in.Body), strings.Join(kinds, ", "))
-		return nil, false
+		return nil, BodyArgv, "", false
 	}
 
 	raw := b.in.Body[0]
 	switch {
 	case raw == stdinFlag:
-		return b.stdinBody()
+		data, ok := b.stdinBody()
+		return data, BodyStdin, "", ok
 	case strings.HasPrefix(raw, fileFlagPrefix):
-		return b.fileBody(strings.TrimPrefix(raw, fileFlagPrefix))
+		file := strings.TrimPrefix(raw, fileFlagPrefix)
+		data, ok := b.fileBody(file)
+		return data, BodyFile, file, ok
 	default:
-		return []byte(raw), true
+		return []byte(raw), BodyArgv, "", true
 	}
 }
 

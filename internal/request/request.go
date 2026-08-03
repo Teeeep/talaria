@@ -176,13 +176,39 @@ type Pair struct {
 	Value Value  `json:"value"`
 }
 
+// BodyOrigin says which of --body's three sources the bytes came from. It is
+// carried on the request because it decides whether a surface a caller reads
+// may print them: bytes typed on the command line are already in that caller's
+// hands, and bytes read from a file or stdin were written by someone else
+// (DESIGN.md §3 principle 0, §3.4).
+type BodyOrigin int
+
+const (
+	// BodyArgv is a body given literally as the --body value. It is the zero
+	// value because it is the one origin whose bytes a display surface may show,
+	// and a Body assembled by hand — in a test, or by the future twin — carries
+	// bytes its assembler already had.
+	BodyArgv BodyOrigin = iota
+	// BodyFile is a body read from the file `--body @path` named.
+	BodyFile
+	// BodyStdin is a body read from this process's standard input, `--body -`.
+	BodyStdin
+)
+
 // Body is the request body: the bytes --body resolved to, and the media type
 // they will be sent as. Data is already the final bytes — the Go process reads
 // a file or stdin before curl exists, so nothing downstream has to open
 // anything (DESIGN.md §5a).
+//
+// Origin and Path do not change what goes on the wire. They are what the
+// emitted curl reads to decide between inlining the bytes and naming where they
+// came from; Path is the filename --body @path gave, empty for the other two
+// origins.
 type Body struct {
 	ContentType string
 	Data        []byte
+	Origin      BodyOrigin
+	Path        string
 }
 
 // MarshalJSON renders the body as text alongside its content type.

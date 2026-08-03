@@ -573,11 +573,23 @@ func requestDiff(previewed, called recordedRequest) string {
 func TestThePreviewedCommandSendsWhatTheCallSends(t *testing.T) {
 	t.Parallel()
 
+	// A pretty-printed body in a file, so the reproduction has newlines to lose.
+	// It is the case that decides between --data and --data-binary for the file
+	// reference: --data strips every newline and carriage return out of a file,
+	// which would send different bytes than the call did.
+	bodyFile := filepath.Join(t.TempDir(), "body.json")
+	if err := os.WriteFile(bodyFile, []byte("{\n  \"name\": \"Rex\"\n}\n"), 0o600); err != nil {
+		t.Fatalf("writing the body file: %v", err)
+	}
+
 	cases := []struct {
 		name string
 		args []string
 	}{
 		{"a GET carrying a body", []string{"searchPets", "--body", `{"name":"Rex"}`}},
+		// The emitted command references the file rather than inlining it, so this
+		// is also the case that proves the reference resolves to the same bytes.
+		{"a body read from a file", []string{"searchPets", "--body", "@" + bodyFile}},
 		// -I rather than -X HEAD, which pasted would wait for a body the server
 		// never sends.
 		{"a HEAD", []string{"checkPets"}},

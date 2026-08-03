@@ -121,6 +121,19 @@ binder. `bodyContentType` is the single seam both surfaces read: `document.body`
 `bodyArgs` drops the directive, so the executed document and the printed reproduction cannot
 disagree. Do not re-inline `req.Body.ContentType` at either call site.
 
+**A request body is redacted where it is displayed, and referenced where it was not typed.**
+`request.Body` carries its origin — `BodyArgv` (the zero value), `BodyFile` with `Path`, or
+`BodyStdin` — set by `binder.bodyData` from which branch of `--body` ran. Two consequences, and
+neither changes a byte on the wire. `curl.bodyDirective` (`internal/curl/render.go`) inlines
+only `BodyArgv` as `--data-raw`; the other two become `--data-binary @path` / `--data-binary @-`,
+because a body a human or a CI job wrote is not a body the agent reading stdout already has
+(§3 principle 0). `--data-binary`, not `--data`: `--data` strips newlines out of a file, and
+`TestThePreviewedCommandSendsWhatTheCallSends` fails on a pretty-printed body file if you change
+it. And `callPayload` passes `view.Request.Body` through `redactors.Response.Body` — the same
+list history uses — because the body is raw `[]byte` and never becomes a `request.Value`, so it
+is the one display field no `Value` method protects. Never assign `string(req.Body.Data)` to a
+field a caller reads.
+
 **`auth check` and `call` may not disagree.** DESIGN.md:329 is a contract, not a nicety: the
 verdict lives in `internal/config` — `Covers`, `Resolve` and `Unsatisfied(ops, creds)`, which is
 the whole of `auth check`'s exit code — and `cmd/talaria/auth.go` only calls it. Never re-derive

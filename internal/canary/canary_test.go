@@ -278,6 +278,7 @@ type recordedRequest struct {
 	Header  http.Header
 	Query   url.Values
 	Cookies map[string]bool
+	Body    string
 }
 
 type recordingServer struct {
@@ -299,11 +300,17 @@ func newServer(t *testing.T, body string) *recordingServer {
 			cookies[c.Value] = true
 		}
 
+		sent, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading the request body: %v", err)
+		}
+
 		rs.mu.Lock()
 		rs.last = recordedRequest{
 			Header:  r.Header.Clone(),
 			Query:   r.URL.Query(),
 			Cookies: cookies,
+			Body:    string(sent),
 		}
 		rs.mu.Unlock()
 
@@ -1033,6 +1040,38 @@ func TestASpecMediaTypeCannotInjectAHeader(t *testing.T) {
 	// injected header: that is the property, and the code is how it is reported.
 	if got := srv.received().Header.Get("X-Injected"); got != "" {
 		t.Errorf("the server received X-Injected: %q — the media type split the request", got)
+	}
+
+	assertNoLeak(t, value, append(res.surfaces(), h.written()...))
+}
+
+// TestABodyFileSecretReachesNoOutputSurface closes the blind spot §5a's suite
+// had: every mechanism above puts the canary in a *credential* position, and
+// none put one in the request body. A body read from `--body @file` was written
+// by a human or a CI job, not by the agent reading stdout, so it is exactly the
+// asymmetry §3 principle 0 forbids — and history was already redacting it while
+// stdout printed it whole.
+func TestABodyFileSecretReachesNoOutputSurface(t *testing.T) {
+	t.Parallel()
+
+	value := canary.Value("requestbody")
+	h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": canary.Value("bodybearer")})
+	srv := newServer(t, `{"ok":true}`)
+
+	sent := `{"refresh_token":"` + value + `"}`
+	path := filepath.Join(t.TempDir(), "body.json")
+	if err := os.WriteFile(path, []byte(sent), 0o600); err != nil {
+		t.Fatalf("writing the body file: %v", err)
+	}
+
+	res := h.runOK("call", specPath, "createThing",
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1",
+		"--allow-mutations", "--body", "@"+path, "--output", "json")
+
+	// The body reached the server. Without this the leak assertions below would
+	// pass for a talaria that sent no body at all.
+	if got := srv.received().Body; got != sent {
+		t.Fatalf("the server received %q, want the file's bytes", got)
 	}
 
 	assertNoLeak(t, value, append(res.surfaces(), h.written()...))

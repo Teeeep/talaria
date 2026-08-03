@@ -173,7 +173,7 @@ func newCallCmd() *cobra.Command {
 				// not a request, and history answers "what have I already tried".
 				// Nothing is validated either — an empty validation block would
 				// read as "checked, and fine".
-				return renderer.Render(callPayload(req, nil, nil))
+				return renderer.Render(callPayload(req, nil, nil, redactors.Response))
 			}
 
 			resp, execErr := curl.ExecuteWith(cmd.Context(), req, timeoutOptions(timeout))
@@ -192,7 +192,7 @@ func newCallCmd() *cobra.Command {
 			// what the process exits with, not what the caller gets to read. An
 			// agent that asked for the flag still gets the full observation on
 			// stdout to act on.
-			if err := renderer.Render(callPayload(req, view, result)); err != nil {
+			if err := renderer.Render(callPayload(req, view, result, redactors.Response)); err != nil {
 				return err
 			}
 			if !failOnError {
@@ -430,11 +430,20 @@ func pluralise(n int, noun string) string {
 // is a dry run: the request block is identical either way, which is what makes
 // `--dry-run` a faithful preview rather than a separate code path.
 //
-// The view is built from the request's *redacted* representation throughout —
-// requestView holds Value.String() and curl.Render's symbolic form, never a
-// resolved credential. The only code that resolves one is internal/curl, at
-// exec time, and it hands back a Response rather than a Request (§5a).
-func callPayload(req *request.Request, resp *responseView, result *validate.Result) output.Payload {
+// Every field of the view is a redacted representation — requestView holds
+// Value.String() and curl.Render's symbolic form, never a resolved credential —
+// except the body, which is raw bytes and never becomes a request.Value at all.
+// That one is passed through red, the same list history is redacted with: a
+// pattern that hides a value in the permanent artifact but not on the stdout an
+// agent reads has the firewall backwards. The only code that resolves a
+// credential is internal/curl, at exec time, and it hands back a Response
+// rather than a Request (§5a).
+func callPayload(
+	req *request.Request,
+	resp *responseView,
+	result *validate.Result,
+	red *secret.ResponseRedactor,
+) output.Payload {
 	view := callView{
 		DryRun: resp == nil,
 		Request: requestView{
@@ -446,7 +455,7 @@ func callPayload(req *request.Request, resp *responseView, result *validate.Resu
 		},
 	}
 	if req.Body != nil {
-		view.Request.Body = string(req.Body.Data)
+		view.Request.Body = string(red.Body(req.Body.Data))
 	}
 	view.CredentialsWithheld = req.Withheld
 

@@ -2,11 +2,17 @@
 // `--dry-run` prints and every executed call reports, the config document curl
 // actually reads, and the executor that spawns it (DESIGN.md §3.4).
 //
-// This file is symbolic. It reads request.Value's Symbolic and redacted forms
-// and never calls SecretRef.Resolve, so an emitted command references
-// $TALARIA_AUTH_BEARER rather than a token: "runnable in a shell where the env
-// var is set, useless to exfiltrate" (§5a). Resolution happens in exactly one
-// place, config.go's resolve, and nothing outside this package can reach it.
+// This file is symbolic about credentials. It reads request.Value's Symbolic
+// and redacted forms and never calls SecretRef.Resolve, so every header, cookie
+// and query value in an emitted command references $TALARIA_AUTH_BEARER rather
+// than a token: "runnable in a shell where the env var is set, useless to
+// exfiltrate" (§5a). Resolution happens in exactly one place, config.go's
+// resolve, and nothing outside this package can reach it.
+//
+// The body is the exception, because it is raw bytes and never becomes a
+// request.Value at all. A body the caller typed is printed as typed — it is
+// already in that caller's hands (§3.4) — and one read from a file or stdin is
+// referenced instead of inlined; see bodyArgs.
 package curl
 
 import (
@@ -115,11 +121,12 @@ func cookieWord(req *request.Request) *word {
 }
 
 // bodyArgs renders the request body and the content type that describes it.
-// --data-raw rather than --data or --data-binary, matching the config document
-// for the same reason (config.go's body): those two read a value starting with
-// @ as a filename, so the emitted command would read a local file and send it
-// to the API where the call sent the text. --data also strips newlines, which
-// changes the bytes a signed or whitespace-sensitive payload carries.
+//
+// Only a body the caller typed is printed. A body read from a file or from
+// stdin was written by someone other than whoever reads this command — a human,
+// a CI job — and §3 principle 0 puts stdout first among the surfaces such a
+// value must not reach, so those two are referenced rather than inlined. The
+// bytes on the wire are the same either way; this changes only what is shown.
 func bodyArgs(req *request.Request) []string {
 	if req.Body == nil {
 		return nil
@@ -135,8 +142,46 @@ func bodyArgs(req *request.Request) []string {
 		args = append(args, "-H", (&word{}).literal(contentTypeHeader+": "+ct).String())
 	}
 
-	return append(args, "--data-raw", (&word{}).literal(string(req.Body.Data)).String())
+	flag, value := bodyDirective(req.Body)
+
+	return append(args, flag, (&word{}).literal(value).String())
 }
+
+// bodyDirective picks the curl option that carries the body and the value it
+// takes.
+//
+// --data-raw for a typed body, matching the config document for the same reason
+// (config.go's body): --data and --data-binary read a value starting with @ as
+// a filename, so a JSON body beginning with @ would make the emitted command
+// read a local file and send it to the API. --data-binary for the two
+// references, because that is the option that reads a file verbatim — --data
+// strips newlines and carriage returns out of it, which would send different
+// bytes than the call sent. TestThePreviewedCommandSendsWhatTheCallSends fails
+// on a pretty-printed body file if this is --data.
+func bodyDirective(body *request.Body) (flag, value string) {
+	switch body.Origin {
+	case request.BodyFile:
+		return "--data-binary", "@" + fileRef(body.Path)
+	case request.BodyStdin:
+		return "--data-binary", "@-"
+	default:
+		return "--data-raw", string(body.Data)
+	}
+}
+
+// fileRef is a path spelled so curl reads it as a file. A bare `-` after the @
+// is curl's spelling of stdin, and `--body @-` asked for a file called `-`, so
+// that one path is made relative to say which it meant.
+func fileRef(path string) string {
+	if path == stdinPath {
+		return "./" + path
+	}
+
+	return path
+}
+
+// stdinPath is the filename curl reads as standard input rather than as a file.
+const stdinPath = "-"
 
 // contentTypeHeader is the header a body's media type travels in.
 const contentTypeHeader = "Content-Type"
