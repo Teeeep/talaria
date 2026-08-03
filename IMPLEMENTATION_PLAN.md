@@ -27,6 +27,58 @@ Confirmed by reading the source, not assumed:
 - `docs/plans/2026-08-02-phase-2-boundary-design.md:234` marks the cache TTL "applied in v0.5".
   That is false against this tree — none of it exists. Do not trust that row.
 
+### Signatures this phase builds on, read off the source
+
+Copied here so no task has to re-derive them. Verified 2026-08-03; still grep before you edit.
+
+```go
+func Build(in Inputs) (*Request, error)                                  // request/build.go:69
+type Inputs struct {                                                     // request/build.go:32
+    Op operation.Operation; Doc *spec.Document; Profile *config.Profile
+    Creds []config.Credential; BaseURL string
+    Params, Query, Headers, Body []string   // "name=value" STRINGS, not pairs
+    Redactor *secret.Redactor; Stdin io.Reader
+}
+type Request struct { OperationID, Method, BaseURL, Path string          // request/request.go:254
+                      Query, Headers, Cookies []Pair; Body *Body }
+func (ix *Index) Lookup(id string) (Operation, error)                    // operation/index.go:111
+func Resolve(op operation.Operation, doc *spec.Document, prof *Profile) ([]Credential, error)
+                                                                         // config/auth.go:133
+func loadSpec(cmd *cobra.Command, args []string) (*spec.Document, *operation.Index, error)
+                                                                         // cmd/talaria/list.go:170
+func validationInput(req *request.Request, view *responseView) validate.Input // call.go:394
+func validateResponse(w io.Writer, doc, req, view) *validate.Result      // call.go:366
+```
+
+`config.Credential` is `{Scheme, Kind, In, Name, Ref}` (auth.go:53-64) — **no `Supported` field**.
+`Unsupported` is a `Coverage` enum constant (auth.go:78), not a credential state; unsupportedness
+is encoded today as *absence from the `byName` map*. `config.Profile` (config.go:56) is
+`{Name, BaseURL, Headers, Auth, History}` — no `AllowHosts`; `KnownFields(true)` is at config.go:134.
+
+### What a stored history entry actually holds — read this before Task 3
+
+`corpus.Entry` (entry.go:53): `ID, Timestamp, Source, OperationID, Method, URL, Request, Response`.
+`EntryRequest` (entry.go:78) is `{Headers map[string]string, Cookies map[string]string, Body *Body}`.
+
+Four consequences the replay rewrite must handle, none of them obvious:
+
+1. **There is no query field.** The query survives only inside `URL`; `replayQuery` walks
+   `parsed.RawQuery` by hand precisely to keep its order.
+2. **There is no path template and no base-URL field.** The entry holds the *concrete* path
+   (`/pets/42`); `operation.Operation.Path` holds the template (`/pets/{petId}`). Recovering
+   `petId=42` is a matching problem the task must solve, or `Build` fails "petId is required".
+3. **Headers and cookies are maps** — order is already lost, and repeated names are joined
+   HTTP-style.
+4. **Stored credential values are the literal placeholder text** `<redacted:env:NAME>`. Feeding
+   them back through `Inputs.Headers` sends the placeholder *and* duplicates the credential
+   `binder.credentials` re-adds. They must be dropped, not replayed.
+
+### Two behaviours that look like one rule and are not
+
+DESIGN.md §5a:374-375 — `call` with an off-set `--base-url` **still runs**, withholds every
+credential, exits 0. §5a:403-409 replay table — replay with an off-set *stored* host **refuses**,
+exit 2. Same host set, deliberately different outcomes. Do not unify them.
+
 ## Order
 
 Two hard constraints from the design doc, both encoded in the dependencies below:
@@ -200,8 +252,11 @@ after.
 
 *Host binding (finding 1) — the assertion must be wire-level:*
 1. Spec server `https://api.example.com`, `TALARIA_AUTH_BEARER` set to a canary, `--base-url`
-   pointed at an `httptest` listener (use the existing `callServer` harness in
-   `cmd/talaria/call_test.go`, which records what the server received). Assert **the canary is
+   pointed at an `httptest` listener (use the existing `callServer` harness,
+   `cmd/talaria/call_test.go:55-95` — `newCallServer` records `{Method, Path, Query, Header, Body}`
+   and `call_test.go:174` already asserts on a received `Authorization` header, so the shape is
+   proven. **It keeps only the *last* request**, so a test that makes two calls must read
+   `received()` between them). Assert **the canary is
    absent from every header the server actually received**. This is the acceptance criterion the
    design doc names; an output-level assertion cannot catch this bug and is why the canary suite
    passes today.
@@ -266,11 +321,36 @@ Assume every field was written by an attacker.
 4. Do the same in `cmd/talaria/auth.go` so `auth check` agrees.
 
 *Replay:*
-5. Rewrite `newHistoryReplayCmd`'s `RunE` to: `loadSpec` → `index.Lookup(entry.OperationID)` →
-   recover path params by matching the stored path against `op.Path` segment-wise → collect
-   non-credential query params in order → collect non-credential stored headers → refuse a body
-   containing `secret.Placeholder`, else pass it as the `--body` literal → `config.Resolve` →
-   `request.Build` with the same `HostSet`.
+5. Rewrite `newHistoryReplayCmd`'s `RunE` (`history.go:163`) to: `loadSpec` →
+   `index.Lookup(entry.OperationID)` → rebuild `Inputs` → `config.Resolve` → `request.Build` with
+   the same `HostSet`. **`Inputs` takes `[]string` of `name=value`, not pairs** — see "What a
+   stored history entry actually holds" at the top of this plan before writing a line of this.
+   Concretely:
+
+   - **Path params.** The entry stores `/pets/42`; `op.Path` is `/pets/{petId}`. Split both on `/`,
+     require equal segment counts, and for each `{name}` segment take the stored segment as
+     `name=value` in `Inputs.Params`. A length mismatch, or a literal segment that differs, is
+     exit 2 — never a request to a half-substituted path.
+   - **Query.** Parse `entry.URL`'s `RawQuery` in order (as `replayQuery` does today), drop any
+     pair whose value contains `secret.Placeholder`, and pass the rest as `name=value` in
+     `Inputs.Query`. `binder.credentials` re-adds the real ones.
+   - **Headers and cookies.** `EntryRequest.Headers`/`Cookies` are `map[string]string`. Drop every
+     entry whose value contains `secret.Placeholder` and every header a credential would occupy;
+     pass the remainder as `name=value`. Order is already lost in the store — do not pretend to
+     preserve it.
+   - **Body.** Refuse with exit 2 when the decoded body contains `secret.Placeholder` (finding 22).
+     Otherwise pass it as an argv-style `--body` literal in `Inputs.Body`.
+
+   **Trap — deleting the helpers deletes checks that exist nowhere else.** `replayRequest` and
+   friends currently enforce userinfo rejection, non-http scheme rejection and truncated-body
+   rejection. `binder.baseURL` covers userinfo and scheme **for the base URL only**. Re-assert the
+   truncated-body refusal on the new path or it silently disappears — the adversarial list below
+   assumes it is still there.
+
+   **Trap — the stored URL folds the path prefix into `Path`.** `replayRequest` sets
+   `BaseURL: scheme + "://" + host` (history.go:578) and puts everything else in `Path`, while
+   `binder.baseURL` returns `scheme://host[/prefix]` from the spec. Matching the stored path
+   against `op.Path` must account for the server prefix, or every spec with a `/v1` base fails.
 
    **Trap — call `loadSpec(cmd, nil)`, not `loadSpec(cmd, args)`.** `loadSpec`
    (`cmd/talaria/list.go:170`) takes `args[0]` as the spec ref, and `spec.Resolve`
@@ -282,8 +362,13 @@ Assume every field was written by an attacker.
    `--spec` or `$TALARIA_SPEC` only. Replay with neither set now fails `clierr.Usage` ("no spec
    given"), which is a deliberate contract change — step 9's `Long` rewrite must say so.
 6. Refuse with exit 2 when the stored host is outside the allowed set, before building.
-7. Emit the `validation` block using the same `validate.Response` path `call` uses
-   (`cmd/talaria/call.go` already has `validationInput`; reuse it rather than writing a second).
+7. Emit the `validation` block using the same path `call` uses. **Reuse `validateResponse`
+   (`call.go:366`), not `validationInput` (`call.go:394`)** — `validateResponse` is the one that
+   also runs `reportValidation`, which downgrades a validator error to a stderr warning instead of
+   failing the call. `callPayload` already renders the block from `callView.Validation`
+   (`call.go:34`, set at `call.go:477`), so replay only has to stop passing `nil` as its third
+   argument (`history.go:231`). Do **not** reach for `validateWith` (`call.go:380`) — it is dead
+   code with zero callers and a doc comment describing the deleted `run`; Task 6 removes it.
 8. Delete `replayRequest`, `replayQuery`, `replayPairs`, `replayValue`, `replayableEnv` and
    `encodingPrefix`. Keep `warnUnreplayable` for dropped fields. Delete the now-false comment at
    `history.go:230-231` ("replay reads a recorded request and needs no spec").
@@ -339,10 +424,12 @@ The security-scheme block comes from the spec, which is untrusted.
    message and `auth check` output. Assert it is quoted/escaped and cannot forge a second line of
    structured stderr JSON.
 3. An `apiKey` scheme with `in: "path"` or `in: ""` — unsupported, reported, not silently dropped.
-4. **`in: Header` with a capital H.** `schemeReason` (`auth.go:225`) compares `scheme.In`
-   case-**sensitively** against the lowercase `InHeader`/`InQuery`/`InCookie` constants, while the
-   type check on the line above uses `EqualFold`. A spec written that way is currently reported
-   unsupported. Decide whether that is right and assert the decision either way.
+4. **`in: Header` with a capital H.** `schemeReason` (`auth.go:225`) tests the location with a
+   plain `switch scheme.In { case InHeader, InQuery, InCookie:` at **auth.go:230-231** against the
+   lowercase constants (`auth.go:43-46`), while the type test one line up uses
+   `strings.EqualFold(scheme.Type, "apiKey")` (`auth.go:229`) and `isHTTP` (`auth.go:387-389`) uses
+   `EqualFold` on both fields. So `in: "Header"` falls to `default` and is reported unsupported.
+   Decide whether that is right and assert the decision either way.
 5. A spec with 1,000 alternative security requirements — the report is bounded and the exit code
    deterministic.
 6. `components.securitySchemes` present but null; a `security` entry naming a scheme that is not
@@ -354,8 +441,9 @@ The security-scheme block comes from the spec, which is untrusted.
    Supportedness is currently encoded structurally, by *omission* — `Schemes` and
    `supportedCredentials` filter on `schemeReason(...) == ""` and leave unsupported schemes out,
    and `Covers` reads "absent from the map" as `Unsupported`.
-2. `Schemes` (`auth.go:179`) stops filtering at line 184; it emits rejected schemes with
-   `Supported: false, present: false`.
+2. `Schemes` (`auth.go:179`) stops filtering at **line 183** (`if schemeReason(name, scheme) == ""`);
+   it emits rejected schemes with `Supported: false, present: false`. `supportedCredentials`
+   (`auth.go:260`) is the second call site that pre-filters the same way — check it too.
 3. **Trap — read this before changing `Schemes`.** `credentialFor` (`auth.go:288`) has **no
    supportedness check of its own**: its `default` branch assumes apiKey and reads `scheme.In` /
    `scheme.Name`. It is safe today only because both call sites pre-filter on `schemeReason`.
@@ -373,10 +461,18 @@ The security-scheme block comes from the spec, which is untrusted.
    empty case plus an inverted default.
 7. `authPayload` (`cmd/talaria/auth.go:91`) iterates only the pre-filtered `creds`, so an
    unsupported scheme produces **no row at all** today. It must now produce one.
-6. Rewrite README ~165-171 (*"bring your own token and let a `bearer` scheme carry it"* does not
+8. Rewrite README ~165-171 (*"bring your own token and let a `bearer` scheme carry it"* does not
    describe a reachable workaround — a spec declaring only `oauth2` has no bearer scheme, so say
    what actually happens) and ~254 (*"left out rather than reported missing"* is now forbidden).
    Add an AGENT.md subsection under `## Credentials`.
+
+**The behaviour is already written down — copy it, do not re-derive it.** DESIGN.md:321-328 gives
+the exact rule and the exact report shape (`{"scheme":"oauth2","supported":false,"present":false}`,
+exit 5), and DESIGN.md:329-331 is the agreement clause. Two cautions: DESIGN.md:327 still reads
+*"`call` and `run` exit 5"* — `run` was cut in v0.5, so implement the `call` half only and do not
+reintroduce `run`; and the unsupported-scheme shape uses `supported`/`present`, **not** the
+`source` field the §4 envelope sketch (DESIGN.md:217) shows, so `authScheme` needs a fourth field
+rather than a repurposed one.
 
 **Verify:** `go test ./...`
 
@@ -397,8 +493,8 @@ documents the behaviour this task deletes.
 - `internal/canary/canary_test.go` (modify) — a hostile media type on the wire
 
 **Implementation files:**
-- `internal/curl/config.go` (modify) — `document.body` (~line 284) calls `checkSplit` before
-  `d.directive("header", "Content-Type: "+…)` at line 290
+- `internal/curl/config.go` (modify) — `document.body` (`config.go:284`) calls `checkSplit`
+  (`config.go:273`) before the `d.directive("header", "Content-Type: "+…)` at `config.go:289-290`
 - `internal/request/body.go` (modify) — `binder.contentType` (~line 136) rejects a non-token media type
 - `internal/curl/render.go` (modify) — the emitted curl's `-H "Content-Type: …"` (~line 130)
 
@@ -599,9 +695,13 @@ assuming it.
 1. Define `Observed` in `internal/corpus`, mirroring the fields `NewEntry` actually reads.
 2. Change `NewEntry`'s signature and delete the `internal/curl` import.
 3. Fill `Observed` at the two `cmd/talaria` call sites.
-4. Extend `boundary_test.go` so `corpus` has its own forbidden set including `internal/curl`, and
-   fix the prose at `boundary_test.go:21-31`, which currently reads as though `corpus` is already
-   constrained when it is not.
+4. Extend `boundary_test.go` so `corpus` has its own forbidden set including `internal/curl`. The
+   test's loop (`boundary_test.go:48-71`) iterates only `shared` = `{internal/operation,
+   internal/validate}` (`:16-19`); `corpus` appears solely as a forbidden *target* (`:21-36`), never
+   as a checked *source*, which is exactly why it passes today. Fix the prose too — it reads as
+   though `corpus` is already constrained. **Do not re-add `internal/gen` to `shared`** even though
+   DESIGN.md:285 still names it: the package was deleted, and a guard naming a package that does
+   not exist proves nothing.
 
 **Verify:** `go test ./...`
 
@@ -671,7 +771,8 @@ a process-level failure where the design mandates an entry-level one.
 - `internal/spec/source_test.go` (modify) — oversized body, redirect behaviour
 
 **Implementation files:**
-- `internal/spec/source.go` (modify) — `fetch` (line 111) wraps `resp.Body` in `io.LimitReader`; `io.ReadAll` is at line 127
+- `internal/spec/source.go` (modify) — `fetch` (`source.go:110`) wraps `resp.Body` in
+  `io.LimitReader`; the unbounded `io.ReadAll` is at `source.go:127`
 
 **Red — write failing tests:**
 1. An `httptest` server streaming past the cap: `Load` returns `clierr.SpecLoad` naming the limit,
@@ -747,9 +848,11 @@ defect, different medium, and not one of the 25 findings — do not fix it here,
    Appending into an owned `[]byte` is what removes them, not a tidier `Reset`.
 3. `discard` (line 370) and `cleanupWith` (382) both `clear()`.
 4. **The error path returns the wrong cleanup.** `config.go:117` returns `doc.cleanup` (temp files
-   only), never `cleanupWith`, so a build that failed *after* writing a resolved credential into
-   the buffer zeroes nothing. Fix that too — it is the same defect on the path nobody tests.
-4. **Either** make the comment at `config.go:85-88` true, **or** narrow it to what the code does.
+   only) after `doc.discard()` at `:116`, never `cleanupWith` — and `discard` (`config.go:370`) is
+   just `d.b.Reset()`, which zeroes nothing. A build that failed *after* writing a resolved
+   credential into the buffer therefore scrubs nothing at all. Fix that too — it is the same defect
+   on the path nobody tests.
+5. **Either** make the comment at `config.go:85-88` true, **or** narrow it to what the code does.
    The current wording — *"the resolved values do not linger in a buffer the rest of the process
    can still reach"* — is precisely the CLAUDE.md-forbidden pattern of a comment asserting an
    invariant no test enforces.
@@ -796,8 +899,8 @@ several others. Green before and after; net-negative diff.
 **Implementation files:** none — this task is tests. If a leak is found, fix it and say so.
 
 **Red — write failing tests:**
-1. **Finding 19 — the exit-4 stage.** `TestErrorPathsDoNotLeakTheCredential`
-   (`canary_test.go:384`) has seven stages — spec load, operation lookup, parameter binding,
+1. **Finding 19 — the exit-4 stage.** `TestErrorPathsDoNotLeakTheCredential`'s `stages` table
+   (`canary_test.go:388-438`) has seven stages — spec load, operation lookup, parameter binding,
    mutation gate, body read, curl exec, history index — and **no validation-failure stage**. Add
    one: an operation returning a schema-violating body with a credential set, called with
    `--fail-on-error`, asserting exit 4 and scanning stdout, stderr and `validation.errors[]` for the
@@ -811,13 +914,21 @@ several others. Green before and after; net-negative diff.
    whose harness writes `profiles: {p: {auth: {bearerAuth: "${MY_TOKEN}"}}}`, driven through the
    same `call` / `history` / `history show` / `replay` sequence as the env-var mechanisms.
 3. Both new cases must be run against **every** output surface `canary.Formats()` enumerates, so a
-   fourth format inherits them automatically. The surfaces swept by
-   `TestNoAuthMechanismLeaksIntoAnyOutputSurface` are built at `canary_test.go:342-357`:
-   `call --dry-run`, `call`, `auth check`, `history`, `history show`, `history replay`, `describe`,
-   `list`.
+   fourth format inherits them automatically. `TestNoAuthMechanismLeaksIntoAnyOutputSurface`
+   (`canary_test.go:332-379`) sweeps eight runs × two streams — `call --dry-run`, `call`,
+   `auth check`, `history`, `history show 1`, `history replay 1`, `describe`, `list` — plus
+   `h.written()` (`:258-274`), which walks the history and cache dirs. The config dir is
+   deliberately excluded (`:254-257`); leave it that way.
 4. **A third gap, found while surveying and worth closing here:** no canary test injects a
    credential into a request **body**. That is the blind spot behind finding 6 (Task 7). Add a
    mechanism or stage that puts the canary in a `--body @file` and scans every surface.
+
+   **This one needs the harness widened first.** The canary package has its *own* recorder —
+   `recordingServer`/`newServer` at `canary_test.go:283-323`, whose `recordedRequest` is
+   `{Header, Query, Cookies}` with **no `Body`, no `Method`, no `Path`**. It cannot see a body
+   today, so a body case asserts nothing until you add the field. Do not confuse it with
+   `cmd/talaria/call_test.go:44-53`, which is a different `recordedRequest` in a different package
+   that *does* capture `Body`.
 5. **`needles()` has a dead branch.** `canary.Value` returns `label + "-" + hex(...)`, which is
    URL-safe, so `url.QueryEscape(value) == value` and the `percent` needle at `surfaces.go:149-151`
    is **never added for any canary this package generates**. A credential that reached a URL field
@@ -954,8 +1065,10 @@ interactivity, ever."* currently cannot be interrupted at all on a reachable pat
 - `internal/curl/exec_test.go` (modify) — the version preflight is bounded
 
 **Implementation files:**
-- `internal/curl/config.go` (modify) — `document.auth` at line 214, `user` directive at 226
-- `internal/curl/version.go` (modify) — `preflight` at line 40 takes a context
+- `internal/curl/config.go` (modify) — `document.auth` at `config.go:214`, the `user` directive at
+  `config.go:229`
+- `internal/curl/version.go` (modify) — `preflight(path string) error` at `version.go:40` gains a
+  context; the `sync.Once` that memoises it process-wide is at `version.go:30-31`
 - `internal/curl/exec.go` (modify) — the sole caller, line 62, already holds a `ctx`
 
 **Red — write failing tests:**
@@ -1008,7 +1121,8 @@ finding 14 SIGTERM will not end it.
 - `internal/corpus/store_test.go` (modify) — a held lock fails within a bounded time
 
 **Implementation files:**
-- `internal/corpus/lock_unix.go` (modify) — `lock` at line 23, `LOCK_EX` at 36
+- `internal/corpus/lock_unix.go` (modify) — `lock(path string) (func(), error)` at
+  `lock_unix.go:22`; the `LOCK_EX` with no `LOCK_NB` at `lock_unix.go:34`
 - `internal/corpus/store.go` (modify) — `Append` at 99 passes a context
 
 **Red — write failing tests:**
@@ -1073,7 +1187,8 @@ The lock file lives in a user-writable state directory.
 - `internal/corpus/store_test.go` (modify) — trim failure after a successful write; unreadable store
 
 **Implementation files:**
-- `internal/corpus/store.go` (modify) — `Append` at 99 (`return trim(path)` at 125); `storedIDs` at 160
+- `internal/corpus/store.go` (modify) — `Append` at `store.go:99` (`return trim(path)` at `:125`);
+  `storedIDs` at `:160`; `write` at `:213`; `trim` at `:247`
 
 **Red — write failing tests:**
 1. **Finding 23:** with the line already durably written and `trim` made to fail (a read-only
@@ -1084,9 +1199,9 @@ The lock file lives in a user-writable state directory.
 2. The entry is present in the store afterwards — assert it, do not infer it.
 3. **Finding 24:** with the history file mode changed to 0400 (readable-but-erroring on the write
    path) or an injected read error, `Append` **aborts** rather than assigning a duplicate id.
-   Today `storedIDs` collapses every `os.ReadFile` error to `return nil`, so every candidate id
-   looks free — contrast `Read` at `store.go:190-196`, which distinguishes `fs.ErrNotExist`
-   correctly.
+   Today `storedIDs` collapses every `os.ReadFile` error to `return nil` (`store.go:161-164`), so
+   every candidate id looks free — contrast `Read` at `store.go:187-193`, which distinguishes
+   `fs.ErrNotExist` correctly. `trim` (`store.go:248-251`) does not special-case it at all.
 4. A missing store file still yields an empty id set with no error — the one case the current code
    is right about.
 5. Two entries never share an id: assert `history replay <id>` and `history show <id>` resolve to
@@ -1129,11 +1244,13 @@ than `history show <id>` displayed — precisely the failure the id field exists
 - `cmd/talaria/flags_test.go` (modify) — `--refresh` is registered
 
 **Implementation files:**
-- `internal/spec/source.go` (modify) — `loadURL` at 82 (unconditional cache hit at 86-90), `fetch` at 111, `cachePath` at 138, `writeCache` at 156
+- `internal/spec/source.go` (modify) — `loadURL` at `source.go:81` (unconditional cache hit at
+  `:85-89`, where *any* read error silently falls through to a fetch), `fetch` at `:110`,
+  `cachePath` at `:136`, `writeCache` at `:156`
 - `cmd/talaria/root.go` (modify) — register `--refresh` as a persistent flag beside `--spec`
 - `cmd/talaria/list.go` (modify) — `loadSpec` at 170 reads the flag; replace the bare `spec.Load(ref)` at 186 with an explicit `Loader`
 
-**Policy is already settled — do not invent it.** DESIGN.md §4 lines 235-239: cached with its
+**Policy is already settled — do not invent it.** DESIGN.md §4 lines 235-239 (verified verbatim): cached with its
 `ETag`/`Last-Modified`; inside 24 hours served from cache with no network call; past that
 revalidated with a conditional GET; a 304 refreshes the timestamp without re-downloading;
 `--refresh` forces a fetch.
@@ -1144,9 +1261,11 @@ revalidated with a conditional GET; a 304 refreshes the timestamp without re-dow
    merely extended — it currently locks in the defect.
 2. A `Load` past the TTL sends `If-None-Match`/`If-Modified-Since` and, on a 304, serves the cached
    bytes and refreshes the timestamp without re-downloading. Note `fetch` currently treats any
-   non-200 as an error (`source.go:123`) — 304 must become a success path.
+   non-200 as an error (`source.go:123-125`) — 304 must become a success path.
 3. A 200 on revalidation replaces the cached bytes and metadata.
-4. `--refresh` fetches unconditionally even inside the TTL.
+4. `--refresh` fetches unconditionally even inside the TTL. Note the flag is specified only in
+   §4's policy prose — it is **absent from §4's CLI-surface flag block** (DESIGN.md:184-219), as is
+   `--allow-host` from Task 2. Do not conclude from that block that either flag is out of scope.
 5. Cache metadata is stored somewhere the current layout has no room for — `cachePath` is a bare
    hex digest with no extension and no sidecar. Assert whatever layout you choose is private
    (0600/0700), matching `TestLoaderWritesCacheFilesPrivately`.
