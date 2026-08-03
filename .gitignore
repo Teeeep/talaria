@@ -23,3 +23,8 @@ coverage.*
 .env
 .env.*
 config.local.yaml
+
+# Ralph loop session logs — raw model output, tens of MB, no archival value
+.ralph/*.log
+.ralph/review_history
+.ralph/state
