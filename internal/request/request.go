@@ -265,6 +265,20 @@ type Request struct {
 	Headers []Pair `json:"headers,omitempty"`
 	Cookies []Pair `json:"cookies,omitempty"`
 	Body    *Body  `json:"body,omitempty"`
+	// Withheld names the credentials this request will *not* carry because
+	// BaseURL's host is outside the allowed set. The request is still runnable:
+	// §5a withholds rather than refuses, because pointing --base-url at a local
+	// twin is the common case and must not need a flag.
+	Withheld []Withheld `json:"credentials_withheld,omitempty"`
+}
+
+// Withheld is one credential the host-binding rule kept off a request
+// (DESIGN.md §5a). It names the scheme and the host so an agent can act on the
+// omission rather than infer it from a downstream 401.
+type Withheld struct {
+	Scheme string `json:"scheme"`
+	Reason string `json:"reason"`
+	Host   string `json:"host"`
 }
 
 // URL builds the full request URL, rendering any credential in the query string

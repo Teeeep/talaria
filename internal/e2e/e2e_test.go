@@ -447,7 +447,7 @@ func TestTheDocumentedAgentWorkflowRunsEndToEnd(t *testing.T) {
 
 	// 4. call --dry-run — the request, sent nowhere.
 	dry := decode[callVw](t, h.runOK("call", specPath, id,
-		"--base-url", srv.URL, "--output", "json", "--dry-run"))
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json", "--dry-run"))
 	if !dry.DryRun || dry.Response != nil {
 		t.Fatalf("`call --dry-run` reported dry_run=%v with a response block=%v",
 			dry.DryRun, dry.Response != nil)
@@ -461,7 +461,7 @@ func TestTheDocumentedAgentWorkflowRunsEndToEnd(t *testing.T) {
 	// compared as the server saw them. Comparing the printed string against
 	// another rendering of it would only compare talaria with itself.
 	h.reproduce(dry.Request.Curl)
-	called := decode[callVw](t, h.runOK("call", specPath, id, "--base-url", srv.URL, "--output", "json"))
+	called := decode[callVw](t, h.runOK("call", specPath, id, "--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json"))
 	if got := srv.requests(); len(got) != 2 {
 		t.Fatalf("the server saw %d requests, want 2 (the previewed command, then the call): %+v", len(got), got)
 	} else if diff := requestDiff(got[0], got[1]); diff != "" {
@@ -488,7 +488,8 @@ func TestTheDocumentedAgentWorkflowRunsEndToEnd(t *testing.T) {
 
 	// 7. history replay — the index `history` printed is the index `replay`
 	// takes, and it re-issues the call without the spec being named again.
-	replayed := decode[callVw](t, h.runOK("history", "replay", "1", "--output", "json"))
+	replayed := decode[callVw](t, h.runOK("history", "replay", "1", "--spec", specPath,
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json"))
 	if replayed.Response == nil || replayed.Response.Status != http.StatusOK {
 		t.Fatalf("`history replay 1` did not observe a 200: %s", replayed.stdoutOf())
 	}
@@ -626,11 +627,12 @@ func TestNoStepOfTheWorkflowLeaksTheCredential(t *testing.T) {
 		h.runOK("list", specPath, "--output", "json"),
 		h.runOK("search", specPath, "pet", "--output", "json"),
 		h.runOK("describe", specPath, "listPets", "--output", "json"),
-		h.runOK("call", specPath, "listPets", "--base-url", srv.URL, "--dry-run", "--output", "json"),
-		h.runOK("call", specPath, "listPets", "--base-url", srv.URL, "--output", "json"),
+		h.runOK("call", specPath, "listPets", "--base-url", srv.URL, "--allow-host", "127.0.0.1", "--dry-run", "--output", "json"),
+		h.runOK("call", specPath, "listPets", "--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json"),
 		h.runOK("history", "--output", "json"),
 		h.runOK("history", "show", "1", "--output", "json"),
-		h.runOK("history", "replay", "1", "--output", "json"),
+		h.runOK("history", "replay", "1", "--spec", specPath,
+			"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json"),
 		// Exits 5: secureKey is unset. The report is written on the way to that
 		// exit code, with the bearer canary in reach the whole time.
 		h.run("auth", "check", specPath, "--output", "json"),
@@ -814,7 +816,7 @@ func TestASwagger2SpecFlowsThroughTheWholeLoop(t *testing.T) {
 	// The curl builder: the converted securityDefinition is a header API key
 	// referenced by name, and the path template is filled from --param.
 	called := decode[callVw](t, h.runOK("call", spec2Path, "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--output", "json"))
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json"))
 	if !strings.HasSuffix(called.Request.URL, "/pets/42") {
 		t.Errorf("the converted path template produced %q", called.Request.URL)
 	}

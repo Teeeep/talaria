@@ -31,6 +31,11 @@ type callExecJSON struct {
 		URL     string            `json:"url"`
 		Headers map[string]string `json:"headers"`
 	} `json:"request"`
+	CredentialsWithheld []struct {
+		Scheme string `json:"scheme"`
+		Reason string `json:"reason"`
+		Host   string `json:"host"`
+	} `json:"credentials_withheld"`
 	Response *struct {
 		Status  int                 `json:"status"`
 		Headers map[string][]string `json:"headers"`
@@ -39,6 +44,31 @@ type callExecJSON struct {
 		// local server that legitimately rounded to 0ms.
 		TimingMS *int64 `json:"timing_ms"`
 	} `json:"response"`
+	Validation *struct {
+		Errors []json.RawMessage `json:"errors"`
+	} `json:"validation"`
+}
+
+// assertNoCanaryOnTheWire fails if the credential reached the server in any
+// header. It is the acceptance criterion for §5a's host binding: an
+// output-level assertion cannot catch a credential that was withheld from the
+// envelope and delivered to the socket.
+func assertNoCanaryOnTheWire(t *testing.T, rec recordedRequest) {
+	t.Helper()
+
+	for name, values := range rec.Header {
+		for _, value := range values {
+			if strings.Contains(value, callCanary) {
+				t.Errorf("the server received the credential in header %s: %q", name, value)
+			}
+		}
+	}
+	if strings.Contains(rec.Query, callCanary) {
+		t.Errorf("the server received the credential in the query string: %q", rec.Query)
+	}
+	if strings.Contains(rec.Body, callCanary) {
+		t.Error("the server received the credential in the request body")
+	}
 }
 
 // recordedRequest is what actually arrived at the test server, credential
@@ -166,7 +196,7 @@ func TestCallSendsTheCredentialButReportsTheReference(t *testing.T) {
 
 	code, stdout, stderr := runCall(t,
 		"testdata/call.yaml", "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--output", "json")
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
 	if code != 0 {
 		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
 	}
@@ -221,6 +251,100 @@ func TestCallBaseURLOverridesTheSpecServer(t *testing.T) {
 	}
 	if rec := srv.received(); rec.Path != "/public" {
 		t.Errorf("server saw path %q, want /public", rec.Path)
+	}
+}
+
+// §5a's host binding, asserted where it matters: at the wire. The spec declares
+// api.invalid, --base-url points somewhere else, and the credential does not
+// follow. An output-level assertion passes whether or not this holds, which is
+// why the canary suite did not catch it.
+func TestCallWithholdsCredentialsFromAHostTheSpecDoesNotDeclare(t *testing.T) {
+	srv := newCallServer(t, jsonPet)
+
+	code, stdout, stderr := runCall(t,
+		"testdata/call.yaml", "getPet", "--param", "petId=42",
+		"--base-url", srv.URL, "--output", "json")
+	// Withheld, not refused: pointing --base-url at a local twin is the common
+	// case and §5a is explicit that it must not need a flag.
+	if code != 0 {
+		t.Fatalf("call to an off-spec host = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	rec := srv.received()
+	assertNoCanaryOnTheWire(t, rec)
+	if rec.Path != "/pets/42" {
+		t.Errorf("server saw path %q, want /pets/42: the call must still run", rec.Path)
+	}
+
+	host := strings.TrimPrefix(srv.URL, "http://")
+	withheld := decodeCall(t, stdout).CredentialsWithheld
+	if len(withheld) != 1 {
+		t.Fatalf("credentials_withheld has %d entries, want 1:\n%s", len(withheld), stdout)
+	}
+	if withheld[0].Scheme != "bearerAuth" {
+		t.Errorf("credentials_withheld[0].scheme = %q, want bearerAuth", withheld[0].Scheme)
+	}
+	if withheld[0].Host != host {
+		t.Errorf("credentials_withheld[0].host = %q, want %q", withheld[0].Host, host)
+	}
+	if withheld[0].Reason == "" {
+		t.Error("credentials_withheld[0].reason is empty")
+	}
+
+	// Exactly one line, so a human is told once rather than once per scheme.
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("stderr has %d lines, want exactly 1:\n%s", len(lines), stderr)
+	}
+	if !strings.Contains(lines[0], "bearerAuth") || !strings.Contains(lines[0], host) {
+		t.Errorf("the warning names neither the scheme nor the host: %s", lines[0])
+	}
+	if !strings.Contains(lines[0], "--allow-host") {
+		t.Errorf("the warning does not name the flag that overrides it: %s", lines[0])
+	}
+}
+
+// The override. A human who names the host gets the credential delivered to it,
+// and nothing is reported as withheld.
+func TestCallDeliversCredentialsToAnAllowedHost(t *testing.T) {
+	srv := newCallServer(t, jsonPet)
+
+	code, stdout, stderr := runCall(t,
+		"testdata/call.yaml", "getPet", "--param", "petId=42",
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
+	if code != 0 {
+		t.Fatalf("call --allow-host = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	if got, want := srv.received().Header.Get("Authorization"), "Bearer "+callCanary; got != want {
+		t.Errorf("server saw Authorization %q, want %q", got, want)
+	}
+	if got := decodeCall(t, stdout).CredentialsWithheld; len(got) != 0 {
+		t.Errorf("credentials_withheld = %+v, want nothing withheld from an allowed host", got)
+	}
+	if stderr != "" {
+		t.Errorf("an allowed host still warned: %s", stderr)
+	}
+}
+
+// A --base-url inside the spec's own servers[] is the unremarkable case, and
+// must stay silent: a warning on every call would train an agent to ignore it.
+func TestCallToASpecServerWithholdsNothing(t *testing.T) {
+	code, stdout, stderr := runCall(t,
+		"testdata/call.yaml", "getPet", "--param", "petId=42",
+		"--base-url", "https://api.invalid/v1", "--dry-run", "--output", "json")
+	if code != 0 {
+		t.Fatalf("call --base-url https://api.invalid/v1 = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	if got := decodeCall(t, stdout).CredentialsWithheld; len(got) != 0 {
+		t.Errorf("credentials_withheld = %+v, want nothing withheld from a spec server", got)
+	}
+	if stderr != "" {
+		t.Errorf("a call to a spec server warned: %s", stderr)
+	}
+	if got := decodeCall(t, stdout).Request.Headers["Authorization"]; got == "" {
+		t.Errorf("no Authorization header for a spec server:\n%s", stdout)
 	}
 }
 
@@ -353,7 +477,7 @@ func TestCallStopsWhenTheProcessIsCancelled(t *testing.T) {
 	var stdout, stderr strings.Builder
 	code := runContext(ctx, []string{
 		"call", "testdata/call.yaml", "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--output", "json",
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json",
 	}, &stdout, &stderr)
 
 	if code != int(clierr.CodeRequestFailed) {

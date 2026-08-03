@@ -16,3 +16,23 @@ these mid-task.
 - `internal/request/build.go:345` — correction to the seam above: `hasControl` now has a second
   caller, `parseHostEntry` in `hosts.go`, so it belongs in the shared `wire.go` half, not in
   `server.go` with the substitution code.
+- `internal/corpus/replay.go:26` — the parameter locations `query`/`header`/`cookie` are now
+  spelled out for the third time: `config.InQuery` etc. (auth.go:44), `internal/request`'s
+  private `inQuery` aliases (build.go:24), and here, because corpus deliberately does not import
+  config. `operation.Param.In` is the field they all describe, so `internal/operation` is the one
+  package all three may import — move them there and alias from the other two.
+- `cmd/talaria/auth.go:109` — `destinationWithholds` re-derives the base-URL precedence
+  (`--base-url`, then the profile, then the spec) that `binder.baseURL` (request/build.go:137)
+  already owns. Two copies of "where would this call go" is exactly how `auth check` and `call`
+  came to disagree before. Export a `request.Destination(Inputs) string` — or have `auth check`
+  build the same `Inputs` — and delete the copy.
+- `cmd/talaria/history.go:1` — 657 lines, and the file now holds three unrelated things: the
+  list/show view structs and their filters, the replay workflow (`buildReplay`), and the shared
+  store plumbing (`openHistory`, `loadHistory`, `selectEntry`). `buildReplay` is the seam:
+  it is 70 lines of decision-making in the command layer that could live beside
+  `corpus.Entry.Replay`, leaving history.go as views + wiring.
+- `cmd/talaria/history_test.go:1` — 1207 lines. Splits cleanly along the same seam as the source:
+  list/show/filter cases vs. the replay contract.
+- `cmd/talaria/call.go:453` — `callPayload` now renders four blocks (request, withheld, response,
+  validation) and `callView` has grown a fourth optional field. It is still one function per
+  block, but the next addition wants a builder rather than a fifth `if`.

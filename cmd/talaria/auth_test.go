@@ -217,7 +217,7 @@ func TestCallExitsFiveBeforeSendingWhenACredentialIsMissing(t *testing.T) {
 	var out, errOut strings.Builder
 	code := run([]string{
 		"call", "testdata/call.yaml", "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--output", "json",
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json",
 	}, &out, &errOut)
 
 	if code != int(clierr.CodeCredentialMissing) {
@@ -228,6 +228,55 @@ func TestCallExitsFiveBeforeSendingWhenACredentialIsMissing(t *testing.T) {
 	}
 	if err := decodeErr(t, errOut.String()); !strings.Contains(err.Error.Message, "$"+config.EnvBearer) {
 		t.Errorf("error message = %q, want it to name $%s", err.Error.Message, config.EnvBearer)
+	}
+}
+
+// `auth check` is the pre-flight an agent trusts before it calls. §5a says it
+// reports against the *resolved* host set, so "present" never means "will
+// actually be sent": a --base-url the spec does not declare has to show up here
+// rather than as an unexplained 401 one command later.
+func TestAuthCheckReportsACredentialWithheldByTheHostSet(t *testing.T) {
+	isolateAuthEnv(t)
+	t.Setenv(config.EnvBearer, authCanary)
+
+	code, stdout, stderr := runAuth(t,
+		"testdata/auth.yaml", "--base-url", "http://localhost:9000", "--output", "json")
+	if code != 0 {
+		t.Fatalf("auth check --base-url = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	entry := decodeAuthEntries(t, stdout)["bearerAuth"]
+	if !entry.Present {
+		t.Error("bearerAuth reported absent, but its variable is set")
+	}
+	if !entry.Withheld {
+		t.Errorf("bearerAuth reported as sendable to a host the spec does not declare:\n%s", stdout)
+	}
+
+	// The override agrees with `call`'s: naming the host makes it sendable.
+	code, stdout, stderr = runAuth(t, "testdata/auth.yaml",
+		"--base-url", "http://localhost:9000", "--allow-host", "localhost", "--output", "json")
+	if code != 0 {
+		t.Fatalf("auth check --allow-host = %d, want 0; stderr: %s", code, stderr)
+	}
+	if decodeAuthEntries(t, stdout)["bearerAuth"].Withheld {
+		t.Errorf("bearerAuth still reported withheld after --allow-host:\n%s", stdout)
+	}
+}
+
+// With no --base-url the call goes to the spec's own server, which is in the
+// set by definition — so the field must stay absent rather than appear on every
+// ordinary invocation.
+func TestAuthCheckReportsNothingWithheldForTheSpecsOwnServer(t *testing.T) {
+	isolateAuthEnv(t)
+	t.Setenv(config.EnvBearer, authCanary)
+
+	code, stdout, stderr := runAuth(t, "testdata/auth.yaml", "--output", "json")
+	if code != 0 {
+		t.Fatalf("auth check = %d, want 0; stderr: %s", code, stderr)
+	}
+	if strings.Contains(stdout, "withheld") {
+		t.Errorf("auth check against the spec's own server reports a withheld credential:\n%s", stdout)
 	}
 }
 
@@ -271,9 +320,10 @@ func TestAuthCheckAndCallPickTheSameAlternative(t *testing.T) {
 // authEntry is one decoded scheme report, for the tests that look at fields
 // rather than at the exact document.
 type authEntry struct {
-	Scheme  string `json:"scheme"`
-	Source  string `json:"source"`
-	Present bool   `json:"present"`
+	Scheme   string `json:"scheme"`
+	Source   string `json:"source"`
+	Present  bool   `json:"present"`
+	Withheld bool   `json:"withheld"`
 }
 
 func decodeAuthEntries(t *testing.T, stdout string) map[string]authEntry {

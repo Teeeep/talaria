@@ -49,6 +49,19 @@ func inputs(t *testing.T, id string) Inputs {
 	return Inputs{Op: op, Doc: doc}
 }
 
+// specHosts is the allowed host set a real invocation with no --allow-host
+// would have: the document's own servers and nothing else.
+func specHosts(t *testing.T, doc *spec.Document) HostSet {
+	t.Helper()
+
+	set, err := NewHostSet(ServerURLs(doc), nil, nil)
+	if err != nil {
+		t.Fatalf("NewHostSet: %v", err)
+	}
+
+	return set
+}
+
 func build(t *testing.T, in Inputs) *Request {
 	t.Helper()
 
@@ -946,7 +959,7 @@ func TestBuildPlacesCredentialsByLocation(t *testing.T) {
 		t.Fatalf("config.Resolve: %v", err)
 	}
 
-	req := build(t, Inputs{Op: op, Doc: doc, Creds: creds})
+	req := build(t, Inputs{Op: op, Doc: doc, Creds: creds, Hosts: specHosts(t, doc)})
 
 	if got, want := find(t, req.Headers, "Authorization").Symbolic(), "Bearer $TALARIA_AUTH_BEARER"; got != want {
 		t.Errorf("Authorization = %q, want %q", got, want)
@@ -971,7 +984,7 @@ func TestBuildNeverCarriesACredentialValue(t *testing.T) {
 		t.Fatalf("config.Resolve: %v", err)
 	}
 
-	req := build(t, Inputs{Op: op, Doc: doc, Creds: creds})
+	req := build(t, Inputs{Op: op, Doc: doc, Creds: creds, Hosts: specHosts(t, doc)})
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -1007,6 +1020,104 @@ func TestBuildNeverCarriesACredentialValue(t *testing.T) {
 	// The env var name is what an agent needs and is safe to print.
 	if !strings.Contains(string(body), "TALARIA_AUTH_BEARER") {
 		t.Errorf("marshalled request does not name the env var to set: %s", body)
+	}
+}
+
+// The §5a invariant, at the level of the type: a credential bound for a host
+// outside the allowed set is not on the request at all. Every later surface —
+// the config document, the emitted curl, history — reads the Request, so a
+// credential that never lands here cannot reach the wire by any route.
+func TestBuildWithholdsCredentialsFromAHostOutsideTheSet(t *testing.T) {
+	op, doc := fixture(t, "getSecured")
+
+	creds, err := config.Resolve(op, doc, nil)
+	if err != nil {
+		t.Fatalf("config.Resolve: %v", err)
+	}
+	if len(creds) == 0 {
+		t.Fatal("the fixture resolved no credentials, so this test proves nothing")
+	}
+
+	req := build(t, Inputs{
+		Op: op, Doc: doc, Creds: creds,
+		BaseURL: "http://localhost:9000",
+		Hosts:   specHosts(t, doc),
+	})
+
+	for _, group := range []struct {
+		where string
+		pairs []Pair
+	}{
+		{"header", req.Headers}, {"query", req.Query}, {"cookie", req.Cookies},
+	} {
+		for _, p := range group.pairs {
+			if p.Value.IsSecret() {
+				t.Errorf("%s %q carries a credential reference to an off-set host", group.where, p.Name)
+			}
+		}
+	}
+
+	if len(req.Withheld) != len(creds) {
+		t.Fatalf("credentials_withheld has %d entries, want one per resolved credential (%d): %+v",
+			len(req.Withheld), len(creds), req.Withheld)
+	}
+	for _, w := range req.Withheld {
+		if w.Scheme == "" {
+			t.Errorf("a withheld entry names no scheme: %+v", w)
+		}
+		if w.Host != "localhost:9000" {
+			t.Errorf("withheld host = %q, want localhost:9000", w.Host)
+		}
+		if w.Reason != WithheldOffSpec {
+			t.Errorf("withheld reason = %q, want %q", w.Reason, WithheldOffSpec)
+		}
+	}
+}
+
+// The override, and the reason withholding is not refusing: a human who names
+// the twin gets the credential delivered to it.
+func TestBuildDeliversCredentialsToAnAllowedHost(t *testing.T) {
+	op, doc := fixture(t, "getSecured")
+
+	creds, err := config.Resolve(op, doc, nil)
+	if err != nil {
+		t.Fatalf("config.Resolve: %v", err)
+	}
+
+	hosts, err := NewHostSet(ServerURLs(doc), []string{"localhost"}, nil)
+	if err != nil {
+		t.Fatalf("NewHostSet: %v", err)
+	}
+
+	req := build(t, Inputs{
+		Op: op, Doc: doc, Creds: creds,
+		BaseURL: "http://localhost:9000",
+		Hosts:   hosts,
+	})
+
+	if len(req.Withheld) != 0 {
+		t.Errorf("credentials_withheld = %+v, want nothing withheld from an allowed host", req.Withheld)
+	}
+	if got, want := find(t, req.Headers, "Authorization").Symbolic(), "Bearer $TALARIA_AUTH_BEARER"; got != want {
+		t.Errorf("Authorization = %q, want %q", got, want)
+	}
+}
+
+// Default-deny has to mean deny. A caller that never built a host set gets the
+// zero value, and the zero value must not be the shortcut that lets everything
+// through.
+func TestBuildWithholdsCredentialsUnderTheZeroHostSet(t *testing.T) {
+	op, doc := fixture(t, "getSecured")
+
+	creds, err := config.Resolve(op, doc, nil)
+	if err != nil {
+		t.Fatalf("config.Resolve: %v", err)
+	}
+
+	req := build(t, Inputs{Op: op, Doc: doc, Creds: creds})
+
+	if len(req.Withheld) != len(creds) {
+		t.Errorf("the zero HostSet delivered credentials: withheld %d of %d", len(req.Withheld), len(creds))
 	}
 }
 

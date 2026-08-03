@@ -342,16 +342,17 @@ func TestNoAuthMechanismLeaksIntoAnyOutputSurface(t *testing.T) {
 				var runs []result
 				runs = append(runs,
 					h.runOK("call", specPath, mech.op,
-						"--base-url", srv.URL, "--output", format, "--dry-run"),
+						"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", format, "--dry-run"),
 					h.runOK("call", specPath, mech.op,
-						"--base-url", srv.URL, "--output", format),
+						"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", format),
 					// Exits 5: the fixture declares every scheme and this case
 					// sets one. The report is the surface being checked, and it
 					// is written on the way to that exit code.
 					h.run("auth", "check", specPath, "--output", format),
 					h.runOK("history", "--output", format),
 					h.runOK("history", "show", "1", "--output", format),
-					h.runOK("history", "replay", "1", "--output", format),
+					h.runOK("history", "replay", "1", "--spec", specPath,
+						"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", format),
 					h.runOK("describe", specPath, mech.op, "--output", format),
 					h.runOK("list", specPath, "--output", format),
 				)
@@ -980,7 +981,7 @@ func TestAPlantedCurlrcCannotCaptureTheCredential(t *testing.T) {
 		t.Fatalf("planting the .curlrc: %v", err)
 	}
 
-	res := h.runOK("call", specPath, "getBearer", "--base-url", srv.URL, "--output", "json")
+	res := h.runOK("call", specPath, "getBearer", "--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
 
 	// The call has to have happened with the credential on it, or a missing
 	// trace file would mean nothing.

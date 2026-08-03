@@ -73,10 +73,33 @@ server contributes nothing, silently; a malformed *human* entry is exit 2, becau
 would read as allowed. There is no wildcard and the empty set allows nothing — never add an
 "empty means allow everything" shortcut.
 
+Enforcement is `request.Inputs.Hosts` (a `HostSet`): `binder.credentials` asks `Allows(BaseURL)`
+once and, on a no, appends `request.Withheld{Scheme, Reason, Host}` to `req.Withheld` instead of
+attaching the credential. The zero `HostSet` withholds everything, so forgetting to build one
+fails closed. `cmd/talaria/hosts.go` is the one place the set is assembled — `allowedHosts(cmd,
+doc, prof)` — and the one place the stderr line is written — `warnWithheld`. Every command that
+resolves a credential calls both; do not build a `HostSet` anywhere else, or `call`, `auth check`
+and `history replay` will start disagreeing about where a credential may go.
+
+**`call` withholds and runs; `history replay` refuses.** Same host set, deliberately different
+outcomes (§5a). An off-set `--base-url` is a human pointing at a twin, so the call still exits 0
+with `credentials_withheld` in the envelope. An off-set *stored* host is a line in a file asking
+to be sent somewhere, so replay is exit 2. Do not unify them.
+
 **The spec is untrusted input, and so is the history file.** Both are fetched or edited outside
 this process. Bound every read, size-check before allocating, and treat any spec-derived string
 that reaches the wire as hostile until checked — a media type became a header-injection vector
 exactly this way. Failures must be entry-level or request-level, never process-level.
+
+**Reading a stored entry back belongs to `internal/corpus`.** `Entry.Replay(op)` returns a
+`Replayable` — the `name=value` strings `request.Inputs` takes — and it is where the path-template
+match, the redaction-marker drops and the body refusals live, so they are testable without cobra.
+`history replay` only wires: spec → `index.Lookup` → `Entry.Replay` → `config.Resolve` →
+`request.Build`. Two rules the shape depends on: a stored value whose name the operation declares
+as a parameter goes back through `Inputs.Params`, not `Query`/`Headers`, so a *required* one is
+bound rather than reported missing; and a decoded body is handed over as `Inputs.Body = {"-"}`
+with `Inputs.Stdin` set, never as an argv-style literal, because a stored body starting with `@`
+or `-` would otherwise become a file read chosen by a line in a JSONL file.
 
 **`cmd/talaria` is wiring.** Parse flags, call a package, render the result. Decisions,
 transformations and multi-step workflows belong in a package that can be tested without cobra.

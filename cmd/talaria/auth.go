@@ -9,6 +9,7 @@ import (
 	"github.com/Teeeep/talaria/internal/config"
 	"github.com/Teeeep/talaria/internal/operation"
 	"github.com/Teeeep/talaria/internal/output"
+	"github.com/Teeeep/talaria/internal/spec"
 )
 
 // authView is the JSON payload: one entry per security scheme the spec
@@ -25,6 +26,11 @@ type authScheme struct {
 	Scheme  string `json:"scheme"`
 	Source  string `json:"source"`
 	Present bool   `json:"present"`
+	// Withheld reports that a call under these same flags would *not* send this
+	// credential, because the destination is outside the allowed host set (§5a).
+	// It is omitted when it is false, so the ordinary report is unchanged and an
+	// agent reads its presence as the thing to act on.
+	Withheld bool `json:"withheld,omitempty"`
 }
 
 func newAuthCmd() *cobra.Command {
@@ -76,7 +82,12 @@ func newAuthCheckCmd() *cobra.Command {
 				return err
 			}
 
-			if err := output.New(format, cmd.OutOrStdout()).Render(authPayload(creds)); err != nil {
+			withheld, err := destinationWithholds(cmd, doc, prof)
+			if err != nil {
+				return err
+			}
+
+			if err := output.New(format, cmd.OutOrStdout()).Render(authPayload(creds, withheld)); err != nil {
 				return err
 			}
 
@@ -88,31 +99,63 @@ func newAuthCheckCmd() *cobra.Command {
 	}
 }
 
-func authPayload(creds []config.Credential) output.Payload {
+// destinationWithholds reports whether a call made under these flags would have
+// its credentials withheld: whether the host it would go to is outside the
+// allowed set (§5a).
+//
+// The destination is --base-url, then the profile's, and then the spec's own
+// server — which is in the set by construction, so having neither flag nor
+// profile base URL is never a withholding.
+func destinationWithholds(cmd *cobra.Command, doc *spec.Document, prof *config.Profile) (bool, error) {
+	dest, err := cmd.Flags().GetString("base-url")
+	if err != nil {
+		return false, clierr.Usage("%w", err)
+	}
+	if dest == "" && prof != nil {
+		dest = prof.BaseURL
+	}
+	if dest == "" {
+		return false, nil
+	}
+
+	hosts, err := allowedHosts(cmd, doc, prof)
+	if err != nil {
+		return false, err
+	}
+
+	return !hosts.Allows(dest), nil
+}
+
+func authPayload(creds []config.Credential, withheld bool) output.Payload {
 	view := authView{Schemes: make([]authScheme, 0, len(creds))}
 	rows := make([][]string, 0, len(creds))
 
 	for _, cred := range creds {
 		present := cred.Present()
 		view.Schemes = append(view.Schemes, authScheme{
-			Scheme:  cred.Scheme,
-			Source:  cred.Ref.Location(),
-			Present: present,
+			Scheme:   cred.Scheme,
+			Source:   cred.Ref.Location(),
+			Present:  present,
+			Withheld: present && withheld,
 		})
-		rows = append(rows, []string{cred.Scheme, cred.Ref.Location(), presenceLabel(present)})
+		rows = append(rows, []string{cred.Scheme, cred.Ref.Location(), presenceLabel(present, withheld)})
 	}
 
 	return output.Payload{Data: view, Table: output.Table{Rows: rows}}
 }
 
 // presenceLabel is the pretty and TSV form of the present field. The words name
-// the two states a reader acts on, and "missing" is the one to go export.
-func presenceLabel(present bool) string {
-	if present {
+// the states a reader acts on: "missing" is the one to go export, and
+// "withheld" the one to pass --allow-host for.
+func presenceLabel(present, withheld bool) string {
+	switch {
+	case !present:
+		return "missing"
+	case withheld:
+		return "present but withheld"
+	default:
 		return "present"
 	}
-
-	return "missing"
 }
 
 // unsatisfied returns the exit-5 error naming the credentials that stand

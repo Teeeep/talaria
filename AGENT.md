@@ -64,6 +64,14 @@ talaria call getPet --param petId=42 --query verbose=true --header X-Trace=abc
   (exit 2) rather than a request. So is a base URL carrying credentials —
   `http://user:password@host` — because a base URL is copied whole into the emitted `curl` and
   into history; set `TALARIA_AUTH_BASIC=user:password` instead.
+- **A `--base-url` outside the spec's `servers[]` gets no credentials.** The call still runs and
+  still exits 0, but every credential is withheld, one line says so on stderr, and the envelope
+  carries `credentials_withheld: [{"scheme": …, "reason": …, "host": …}]`. If the 401 you get
+  back has that array beside it, that is why — do not retry, and do not ask for a new token.
+- `--allow-host HOST` (repeatable) adds a host to the allowed set, so a credential *is* sent
+  there. `HOST` is a bare host, matching any port, or `host:port`. This is the flag to reach for
+  when the withheld warning names a host you meant to talk to; a profile's `allow_hosts:` is the
+  same thing made permanent.
 - Every request is bounded: 10s to connect, 30s in total, `--timeout <seconds>` to change the
   total. An API that stops answering exits 1 with curl's status 28 in the message — talaria
   never hangs waiting for one.
@@ -174,7 +182,7 @@ than guessing again.
 |---|---|---|
 | 0 | Success. A 4xx/5xx response is still success | read `response.status` |
 | 1 | The request could not be completed: network, TLS, curl itself | check the host and `--base-url`; retrying once is reasonable |
-| 2 | Usage error: unknown command or operation, a group named without its subcommand (`talaria auth`), missing parameter, bad flag, or a mutation without `--allow-mutations` | fix the invocation using `valid_alternatives` and the message |
+| 2 | Usage error: unknown command or operation, a group named without its subcommand (`talaria auth`), missing parameter, bad flag, a mutation without `--allow-mutations`, a malformed `--allow-host`, or a replay with no spec, a retired `operation_id`, a stored host outside the allowed set, or a stored body still carrying a redaction placeholder | fix the invocation using `valid_alternatives` and the message |
 | 3 | The spec could not be read or parsed | check the path or URL; do not retry unchanged |
 | 4 | With `--fail-on-error`: the response was an HTTP error or violated the spec | read the `validation` block and `response.status` on stdout; report what failed |
 | 5 | A required credential is not set | tell a human which variable to export; do not retry until they have |
@@ -196,15 +204,24 @@ a row by index re-issue the same entry twice; two by id re-issue the two you ask
 is stable only under filters, which do not renumber it. An entry recorded by an older talaria has
 no id and lists as `-`; only its index can name it.
 
-`talaria history replay <id|n>` re-sends an entry and records the result as a new one;
-replaying a mutation needs `--allow-mutations` too. Dry runs are never recorded. Recording is off
-where a profile says so, or everywhere under `TALARIA_HISTORY=off` — if history is empty, that is
-usually why.
+`talaria history replay <id|n>` re-sends an entry and records the result as a new one. Dry runs
+are never recorded. Recording is off where a profile says so, or everywhere under
+`TALARIA_HISTORY=off` — if history is empty, that is usually why.
 
-Credentials are stored as names, so nothing in history can be read back into a value. On replay
-only the names talaria itself records are resolved — `TALARIA_AUTH_BEARER`, `TALARIA_AUTH_BASIC`,
-`TALARIA_AUTH_APIKEY_*`, and the variables the selected profile's `auth:` map names. An entry
-naming any other variable is refused with exit 2 rather than resolved.
+**Replay re-derives the request from the spec; it does not send the stored one.** A history file
+is data, never instruction. Consequences you have to invoke it with:
+
+- **Pass a spec** — `--spec` or `$TALARIA_SPEC`. The positional argument is the entry; with no
+  spec, replay exits 2.
+- Pass `--base-url` and, for a host the spec does not declare, `--allow-host`. The target comes
+  from the flags, the profile or the spec, never from the stored URL, and a stored host outside
+  the allowed set is refused with exit 2 rather than retargeted.
+- `--allow-mutations` is still required for a mutation — decided from the *spec's* method for the
+  entry's `operation_id`, not from the entry's stored one.
+
+Credentials are stored as names, so nothing in history can be read back into a value — and
+nothing stored is resolved at all any more. Every credential position in the entry is dropped and
+re-resolved from the current environment and profile, subject to the host rule above.
 
 ## Rules
 

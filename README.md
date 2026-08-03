@@ -170,14 +170,38 @@ resolves to the bearer token, and one offering either of two API keys resolves t
 you exported. When no alternative is fully covered, the first supported one is named in the
 exit-5 error, so there is always a variable to go set.
 
+### Credentials bind to hosts
+
+A resolved credential is sent only to a host the spec declares or a human explicitly allowed.
+The allowed set is every host in the spec's `servers[]` (after server-variable substitution),
+plus every `--allow-host HOST` (repeatable), plus every entry in the active profile's
+`allow_hosts:`. An entry is a bare host, which matches on any port, or `host:port`, which
+matches only that one. There is no wildcard.
+
+Point `--base-url` at a host outside that set — a local twin, most often — and the call **still
+runs**, but every credential is withheld. The omission is reported both ways: one line on
+stderr, and a `credentials_withheld` array in the JSON envelope naming the scheme, the reason and
+the host, so an agent can act on it instead of guessing at a 401.
+
+```console
+$ talaria call ./openapi.yaml getPet --param petId=42 --base-url http://localhost:9000
+warning: credentials withheld from localhost:9000 (bearerAuth): the spec does not declare that
+host; pass --allow-host localhost:9000 to send them
+```
+
+`auth check` reports against the same resolved set, so `present` never means "will actually be
+sent".
+
 For more than one environment, `~/.config/talaria/config.yaml` holds named profiles selected
-with `--profile`. `--profile` and `--base-url` are accepted by every command that makes
-requests:
+with `--profile`. `--profile`, `--base-url` and `--allow-host` are accepted by every command
+that makes requests:
 
 ```yaml
 profiles:
   staging:
     base-url: https://staging.example.com
+    allow_hosts:
+      - localhost:9000
     headers:
       X-Env: staging
     auth:
@@ -385,18 +409,28 @@ that does not move: it is assigned once, at record time, and both `show` and `re
 over an index. Entries written before ids existed have none and list as `-`.
 
 `history show <id|n>` prints one entry in full; `history replay <id|n>` sends it again and records
-the result as a new entry, leaving the original alone. Replay resolves credentials from the
-environment exactly as the original call did — history holds their *names*, so there is nothing
-in the file to read back. It is gated the same way `call` is: replaying a `POST` needs
-`--allow-mutations`. A header whose value was a literal talaria redacted by name cannot be
-reproduced, and replay says so on stderr rather than pretending it sent one.
+the result as a new entry, leaving the original alone.
 
-The names replay will resolve are an allowlist, not whatever the file asks for: `TALARIA_AUTH_BEARER`,
-`TALARIA_AUTH_BASIC`, any `TALARIA_AUTH_APIKEY_*`, and the variables the selected profile's `auth:`
-map names. That is exactly the set talaria records, so a normal replay is unaffected — but the store
-is a plain file, and an entry edited to name some other variable would otherwise make replay a way to
-read it and send it to a host of the file's choosing. Such an entry is refused with exit 2, naming
-the variable and the field it stood in.
+**Replay re-derives; it does not replay.** A stored entry is a plain file that may have been
+written by another machine or edited by hand, so nothing in it is treated as an instruction. The
+operation's method and path template come from the current spec, the target host from
+`--base-url`, the profile or the spec, and the credentials from the environment and the profile
+in force. The entry supplies values and nothing else. In practice that means:
+
+- Replay **requires a spec**, from `--spec` or `$TALARIA_SPEC`. The positional argument names the
+  entry, never a spec; with neither set, replay exits 2.
+- An entry whose `operation_id` is no longer in the spec fails with exit 2.
+- A stored host outside the allowed set (below) is **refused** with exit 2 rather than silently
+  retargeted. `--allow-host` is how you replay one deliberately.
+- The `--allow-mutations` gate is decided from the *spec's* method, not the stored one, so
+  editing a line in the file cannot turn a `DELETE` into an ungated replay.
+- A stored body still carrying a redaction placeholder is refused with exit 2, rather than
+  sending the literal text `<redacted>` to the API.
+- Every credential position in the entry is dropped and re-resolved. Nothing stored names a
+  variable talaria will read, so an edited entry cannot ask for one.
+- Replay emits a `validation` block, exactly as `call` does.
+
+Fields that could not be reproduced are reported on stderr rather than silently omitted.
 
 Entries are written **redacted, at write time**. The store is the highest-risk artifact talaria
 produces, so un-redacted recording is not an option and there is no flag for it. It lives at

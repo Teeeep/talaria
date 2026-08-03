@@ -28,10 +28,15 @@ import (
 // everything except the response and validation blocks, so an agent parses one
 // structure whether or not the request was sent.
 type callView struct {
-	DryRun     bool             `json:"dry_run"`
-	Request    requestView      `json:"request"`
-	Response   *responseView    `json:"response,omitempty"`
-	Validation *validate.Result `json:"validation,omitempty"`
+	DryRun  bool        `json:"dry_run"`
+	Request requestView `json:"request"`
+	// CredentialsWithheld is §5a's machine-readable half of the host-binding
+	// rule: the schemes this request does not carry because its host is not one
+	// the spec declares or a human allowed. Absent when nothing was withheld,
+	// so its presence alone is the signal an agent branches on.
+	CredentialsWithheld []request.Withheld `json:"credentials_withheld,omitempty"`
+	Response            *responseView      `json:"response,omitempty"`
+	Validation          *validate.Result   `json:"validation,omitempty"`
 }
 
 // requestView is what was, or would have been, sent. Curl is the symbolic
@@ -154,6 +159,7 @@ func newCallCmd() *cobra.Command {
 			// request's shape, and an emitted curl is a command the caller may
 			// well run.
 			warnQueryCredentials(cmd.ErrOrStderr(), warner, req)
+			warnWithheld(cmd.ErrOrStderr(), req)
 
 			store, err := openHistory(cmd, cfg)
 			if err != nil {
@@ -289,12 +295,18 @@ func buildRequest(
 		return nil, clierr.Usage("%w", err)
 	}
 
+	hosts, err := allowedHosts(cmd, doc, prof)
+	if err != nil {
+		return nil, err
+	}
+
 	return request.Build(request.Inputs{
 		Op:      op,
 		Doc:     doc,
 		Profile: prof,
 		Creds:   creds,
 		BaseURL: baseURL,
+		Hosts:   hosts,
 		Params:  params,
 		Query:   queries,
 		Headers: headers,
@@ -464,6 +476,7 @@ func callPayload(req *request.Request, resp *responseView, result *validate.Resu
 	if req.Body != nil {
 		view.Request.Body = string(req.Body.Data)
 	}
+	view.CredentialsWithheld = req.Withheld
 
 	// One line each: the request being described, then the command that makes
 	// it. A table would put the curl in a column and pad it into unreadability.

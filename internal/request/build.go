@@ -42,6 +42,11 @@ type Inputs struct {
 	Creds []config.Credential
 	// BaseURL is --base-url. It beats the profile, which beats the spec.
 	BaseURL string
+	// Hosts is the set of hosts a resolved credential may be sent to (§5a).
+	// It is default-deny: the zero HostSet allows nothing, so a caller that
+	// forgets to build one withholds every credential rather than delivering
+	// one to a host nobody vouched for.
+	Hosts HostSet
 	// Params are --param name=value for parameters the operation declares, in
 	// any location.
 	Params []string
@@ -666,11 +671,32 @@ func elided(raw string) string {
 	return " (its text is not echoed)"
 }
 
+// WithheldOffSpec is the reason credentials_withheld[] carries when the
+// request's host is not one the spec declared or a human allowed. It is the
+// only reason today; the field exists so a later one can be told apart without
+// parsing prose.
+const WithheldOffSpec = "host not in spec servers[]"
+
 // credentials puts each resolved credential where its scheme says it goes, as a
 // reference. This is the §5a boundary: what lands on the request is the name of
 // a credential and how to encode it, never the credential.
+//
+// The host decides first. Redaction answers *does it print*; the host set
+// answers *who receives it*, and a credential bound for a host outside that set
+// is diverted onto req.Withheld instead of onto the wire.
 func (b *binder) credentials(req *Request) {
+	allowed := b.in.Hosts.Allows(req.BaseURL)
+
 	for _, cred := range b.in.Creds {
+		if !allowed {
+			req.Withheld = append(req.Withheld, Withheld{
+				Scheme: cred.Scheme,
+				Reason: WithheldOffSpec,
+				Host:   b.in.Hosts.Key(req.BaseURL),
+			})
+			continue
+		}
+
 		pair := Pair{Name: cred.Name, Value: Secret(cred.Ref, encodingFor(cred.Kind))}
 
 		switch cred.In {

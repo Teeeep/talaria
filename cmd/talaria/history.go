@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/url"
@@ -18,7 +19,7 @@ import (
 	"github.com/Teeeep/talaria/internal/operation"
 	"github.com/Teeeep/talaria/internal/output"
 	"github.com/Teeeep/talaria/internal/request"
-	"github.com/Teeeep/talaria/internal/secret"
+	"github.com/Teeeep/talaria/internal/spec"
 )
 
 // historyEntryView is one line of `history`: enough to recognise a call and its
@@ -165,12 +166,15 @@ func newHistoryReplayCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "replay <id|n>",
-		Short: "Re-issue a recorded call",
-		Long: "Send a recorded request again, to the URL it went to, and record the\n" +
-			"result as a new entry. Credentials are resolved from the environment as\n" +
-			"they were the first time — history holds their names, never their values,\n" +
-			"so there is nothing there to read back. Name the entry by its id: a replay\n" +
-			"is itself recorded, so every index shifts as soon as one runs.",
+		Short: "Re-issue a recorded call, re-derived from the current spec",
+		Long: "Rebuild a recorded call against the current spec and send it again,\n" +
+			"recording the result as a new entry. Nothing stored is trusted as an\n" +
+			"instruction: the operation's method and path template come from the spec,\n" +
+			"the target host from --base-url, the profile or the spec, and credentials\n" +
+			"from the environment and profile in force. A spec is therefore required,\n" +
+			"from --spec or " + spec.EnvSpec + " — the positional argument names the\n" +
+			"entry, never a spec. Name the entry by its id: a replay is itself\n" +
+			"recorded, so every index shifts as soon as one runs.",
 		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, err := resolveFormat(cmd)
@@ -198,25 +202,33 @@ func newHistoryReplayCmd() *cobra.Command {
 				return err
 			}
 
-			// The same gate `call` applies, for the same reason: the method is what
-			// makes a request dangerous, and a recorded POST is still a POST.
-			if (operation.Operation{Method: entry.Method}).IsMutation() && !allowMutations {
+			// nil, not args: args[0] is the entry, and spec.Resolve gives a
+			// positional spec ref precedence over --spec and the environment, so
+			// threading args here would make `replay 3` load a spec named 3.
+			doc, index, err := loadSpec(cmd, nil)
+			if err != nil {
+				return err
+			}
+
+			op, err := index.Lookup(entry.OperationID)
+			if err != nil {
+				return err
+			}
+
+			// The same gate `call` applies, decided from the spec's method rather
+			// than the stored one: the entry is a line in a file, and believing its
+			// method is the one mistake here that sends a real DELETE.
+			if op.IsMutation() && !allowMutations {
 				return clierr.Usage(
 					"entry %s is a %s request and may change server state: pass --allow-mutations to replay it",
-					args[0], entry.Method)
+					args[0], op.Method)
 			}
 
-			// The profile is policy here, not connection detail: it is the other half
-			// of the set of credentials this replay is allowed to resolve.
-			prof, err := selectProfile(cmd, cfg)
+			req, err := buildReplay(cmd, cfg, entry, args[0], op, doc)
 			if err != nil {
 				return err
 			}
-
-			req, err := replayRequest(cmd.ErrOrStderr(), entry, prof)
-			if err != nil {
-				return err
-			}
+			warnWithheld(cmd.ErrOrStderr(), req)
 
 			renderer := output.New(format, cmd.OutOrStdout())
 			redactors := newRedactors(cfg)
@@ -227,9 +239,11 @@ func newHistoryReplayCmd() *cobra.Command {
 				return execErr
 			}
 
-			// No validation block: replay reads a recorded request and needs no
-			// spec to send one, so there is no contract here to check against.
-			return renderer.Render(callPayload(req, redactResponse(resp, redactors.Response), nil))
+			// The same validation `call` runs: a replay is re-derived from the spec,
+			// so there is a contract to check the response against.
+			view := redactResponse(resp, redactors.Response)
+
+			return renderer.Render(callPayload(req, view, validateResponse(cmd.ErrOrStderr(), doc, req, view)))
 		},
 	}
 
@@ -541,212 +555,93 @@ func parseStatusFilter(value string) (*statusFilter, error) {
 	return &statusFilter{low: code, high: code}, nil
 }
 
-// replayRequest rebuilds a runnable request from a stored entry.
+// buildReplay rebuilds a runnable request from a stored entry.
 //
-// Every credential position in the entry holds `<redacted:env:NAME>`, which
-// becomes a reference again here — the value is resolved from the environment
-// at exec time, exactly as it was on the original call. Nothing in this function
-// reads a credential, because there is none in the store to read (§5a).
+// Everything that decides where the request goes and what it carries comes from
+// the spec and the flags: op supplies the method and the path template, the
+// base URL comes from --base-url, the profile or the spec, and the credentials
+// from config.Resolve. The entry contributes values and nothing else, which is
+// §5a's "a history entry is data, never instruction".
 //
-// prof is the profile in force, and is policy rather than data: it decides,
-// with the TALARIA_AUTH_* convention, which variable names the store is allowed
-// to ask for. See replayableEnv.
-func replayRequest(stderr io.Writer, entry corpus.Entry, prof *config.Profile) (*request.Request, error) {
-	// The store is a file on disk, so what it holds is checked on the way out as
-	// well as on the way in: an edited entry must not be able to replay as a
-	// file read or a raw TCP write, nor to smuggle a credential into a URL that
-	// every later surface prints whole. Both checks come before the parse error
-	// below, which quotes the URL it could not read.
-	if host, ok := request.Userinfo(entry.URL); ok {
+// handle is what the caller named the entry by, so a refusal can quote the same
+// word they typed.
+func buildReplay(
+	cmd *cobra.Command,
+	cfg *config.Config,
+	entry corpus.Entry,
+	handle string,
+	op operation.Operation,
+	doc *spec.Document,
+) (*request.Request, error) {
+	// The profile is policy here, not connection detail: it is the other half of
+	// the set of credentials this replay resolves, and of the hosts they may go to.
+	prof, err := selectProfile(cmd, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	replayable, err := entry.Replay(op)
+	if err != nil {
+		return nil, err
+	}
+	for _, dropped := range replayable.Dropped {
+		warnUnreplayable(cmd.ErrOrStderr(), dropped)
+	}
+
+	hosts, err := allowedHosts(cmd, doc, prof)
+	if err != nil {
+		return nil, err
+	}
+	// Refused, where `call` would withhold and run. The two look like one rule
+	// and are not (§5a): an off-set --base-url is a human pointing at a twin,
+	// while an off-set *stored* host is a line in a file asking to be sent
+	// somewhere, and silently retargeting it would replay a request nobody wrote.
+	if !hosts.Allows(entry.URL) {
 		return nil, clierr.Usage(
-			"the recorded URL for %s carries a credential in its userinfo, so it will not be replayed; "+
-				"re-run the call with %s=user:password set instead", host, config.EnvBasic)
+			"entry %s was recorded against %s, which is not a host the spec declares; "+
+				"pass --allow-host %s to replay it", handle, hosts.Key(entry.URL), hosts.Key(entry.URL))
 	}
 
-	parsed, err := url.Parse(entry.URL)
-	if err != nil {
-		return nil, clierr.Usage("the recorded URL %q cannot be parsed: %v", entry.URL, err)
-	}
-	if !request.IsHTTPScheme(parsed.Scheme) {
-		return nil, clierr.Usage("the recorded URL %q has scheme %q; only http and https can be replayed",
-			entry.URL, parsed.Scheme)
-	}
-
-	req := &request.Request{
-		OperationID: entry.OperationID,
-		Method:      entry.Method,
-		BaseURL:     parsed.Scheme + "://" + parsed.Host,
-		Path:        parsed.EscapedPath(),
-	}
-
-	req.Query, err = replayQuery(stderr, parsed.RawQuery, prof)
-	if err != nil {
-		return nil, err
-	}
-	req.Headers, err = replayPairs(stderr, "header", entry.Request.Headers, prof)
-	if err != nil {
-		return nil, err
-	}
-	req.Cookies, err = replayPairs(stderr, "cookie", entry.Request.Cookies, prof)
+	creds, err := config.Resolve(op, doc, prof)
 	if err != nil {
 		return nil, err
 	}
 
-	if body := entry.Request.Body; body != nil {
-		if body.Truncated {
-			return nil, clierr.Usage(
-				"the recorded request body was truncated at %d bytes, so replaying it would send something the original did not",
-				corpus.MaxBody)
-		}
-		data, err := body.Bytes()
-		if err != nil {
-			return nil, err
-		}
-		req.Body = &request.Body{ContentType: body.ContentType, Data: data}
+	baseURL, err := cmd.Flags().GetString("base-url")
+	if err != nil {
+		return nil, clierr.Usage("%w", err)
 	}
 
-	return req, nil
-}
-
-// replayQuery rebuilds the query parameters in the order they were recorded.
-// The raw string is walked rather than url.ParseQuery'd because a map would lose
-// that order, and a replay that reorders the query string is not the same
-// request.
-func replayQuery(stderr io.Writer, raw string, prof *config.Profile) ([]request.Pair, error) {
-	var pairs []request.Pair
-
-	for _, field := range strings.Split(raw, "&") {
-		if field == "" {
-			continue
-		}
-
-		rawName, rawValue, _ := strings.Cut(field, "=")
-		name, err := url.QueryUnescape(rawName)
-		if err != nil {
-			return nil, clierr.Usage("the recorded query parameter %q cannot be parsed: %v", rawName, err)
-		}
-		value, err := url.QueryUnescape(rawValue)
-		if err != nil {
-			return nil, clierr.Usage("the recorded value of query parameter %q cannot be parsed: %v", name, err)
-		}
-
-		replayed, ok, err := replayValue(value, prof, "query parameter", name)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			warnUnreplayable(stderr, "query parameter", name)
-			continue
-		}
-		pairs = append(pairs, request.Pair{Name: name, Value: replayed})
+	in := request.Inputs{
+		Op:       op,
+		Doc:      doc,
+		Profile:  prof,
+		Creds:    creds,
+		BaseURL:  baseURL,
+		Hosts:    hosts,
+		Params:   replayable.Params,
+		Query:    replayable.Query,
+		Headers:  replayable.Headers,
+		Redactor: newRedactors(cfg).Request,
+	}
+	if replayable.HasBody {
+		// Handed over as this replay's stdin rather than as a --body literal: a
+		// stored body beginning with @ or - would otherwise be read as a filename
+		// or as the console, which is a file read chosen by a line in a JSONL file.
+		in.Body = []string{"-"}
+		in.Stdin = bytes.NewReader(replayable.Body)
 	}
 
-	return pairs, nil
-}
-
-// replayPairs rebuilds headers or cookies. The stored form is a map, so the
-// order is gone and is restored as sorted-by-name: emitted curl and the config
-// document both have to be deterministic, and byte-for-byte header order is not
-// something an HTTP request depends on.
-func replayPairs(stderr io.Writer, kind string, stored map[string]string, prof *config.Profile) ([]request.Pair, error) {
-	var pairs []request.Pair
-
-	for _, name := range sortedKeys(stored) {
-		value, ok, err := replayValue(stored[name], prof, kind, name)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			warnUnreplayable(stderr, kind, name)
-			continue
-		}
-		pairs = append(pairs, request.Pair{Name: name, Value: value})
-	}
-
-	return pairs, nil
-}
-
-// replayValue turns one stored value back into a request Value, reporting
-// false for one that cannot be reproduced and an error for one it refuses.
-//
-// A `<redacted:env:NAME>` — with or without a scheme prefix — becomes a
-// reference to the same variable, provided replayableEnv admits the name. A
-// bare `<redacted>` is a value the name-based matcher caught: a literal the
-// user typed, which was deliberately not written down and so cannot come back.
-// That is the firewall working, not a bug, and the caller says so on stderr
-// rather than silently sending a request missing a header the original had.
-//
-// kind and name describe the field this value stood in; they are only used to
-// say which one was refused.
-func replayValue(stored string, prof *config.Profile, kind, name string) (request.Value, bool, error) {
-	if stored == secret.Placeholder {
-		return request.Value{}, false, nil
-	}
-
-	// Longest prefix first, so the raw encoding's empty prefix is the fallback
-	// rather than the first match.
-	for _, enc := range []request.Encoding{request.EncodeBearer, request.EncodeBasic, request.EncodeRaw} {
-		prefix := encodingPrefix(enc)
-		if prefix != "" && !strings.HasPrefix(stored, prefix) {
-			continue
-		}
-
-		if ref, ok := secret.ParseRef(strings.TrimPrefix(stored, prefix)); ok {
-			if !replayableEnv(prof, ref) {
-				// Not a fall-through to Literal: that would put the string
-				// `<redacted:env:NAME>` itself on the wire, which is neither what was
-				// recorded nor anything the user asked for.
-				return request.Value{}, false, clierr.Usage(
-					"the recorded %s %q asks for %s, which is outside the credentials replay resolves; "+
-						"only %s, %s, %s* and the variables the selected profile's auth map names are replayed",
-					kind, name, ref.Location(), config.EnvBearer, config.EnvBasic, config.EnvAPIKeyPrefix)
-			}
-
-			return request.Secret(ref, enc), true, nil
-		}
-	}
-
-	return request.Literal(stored), true, nil
-}
-
-// replayableEnv is the allowlist of credentials `history replay` may resolve.
-//
-// The store is a plain JSONL file, so the name in `<redacted:env:NAME>` is an
-// instruction something with write access to that file chose, and the URL it
-// would be sent to comes from the same line. Resolving any name at all would
-// make talaria a "read $ANY_VAR and send it to $ANY_URL" primitive, run from
-// the one process the deployment trusts with credentials — the opposite of what
-// §5a claims. So the set is exactly what talaria itself records: the
-// TALARIA_AUTH_* convention, and the variables the profile in force names.
-func replayableEnv(prof *config.Profile, ref secret.SecretRef) bool {
-	if ref.Source != secret.SourceEnv {
-		return false
-	}
-
-	switch {
-	case ref.Name == config.EnvBearer, ref.Name == config.EnvBasic:
-		return true
-	case strings.HasPrefix(ref.Name, config.EnvAPIKeyPrefix):
-		return true
-	}
-
-	return prof.ReferencesEnv(ref.Name)
-}
-
-// encodingPrefix is the text a scheme puts in front of a credential — "Bearer "
-// and the rest. It is asked of internal/request rather than repeated here, so
-// the two cannot drift apart.
-func encodingPrefix(enc request.Encoding) string {
-	return request.Secret(secret.SecretRef{}, enc).Prefix()
+	return request.Build(in)
 }
 
 // warnUnreplayable reports a field the replay had to drop. It is a warning
 // rather than a failure: the request is still worth making, and a 401 with an
 // explanation on stderr is more useful than a refusal.
-func warnUnreplayable(stderr io.Writer, kind, name string) {
+func warnUnreplayable(stderr io.Writer, field string) {
 	fmt.Fprintf(stderr,
-		"warning: the recorded %s %q held a redacted literal, which history does not store; replaying without it\n",
-		kind, name)
+		"warning: the recorded %s held a credential or a redaction marker, which history does not store; replaying without it\n",
+		field)
 }
 
 // sortedKeys is the deterministic iteration order for the maps a stored entry

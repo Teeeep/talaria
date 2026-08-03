@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -12,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Teeeep/talaria/internal/clierr"
-	"github.com/Teeeep/talaria/internal/config"
 	"github.com/Teeeep/talaria/internal/corpus"
 	"github.com/Teeeep/talaria/internal/spec"
 )
@@ -581,7 +578,7 @@ func TestHistoryShowPrintsTheWholeRedactedEntry(t *testing.T) {
 
 	code, _, stderr := runCall(t,
 		"testdata/call.yaml", "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--output", "json")
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
 	if code != 0 {
 		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
 	}
@@ -651,6 +648,45 @@ func TestHistoryShowOnAnEmptyStoreSaysSo(t *testing.T) {
 		t.Errorf("error message %q does not say the history is empty", msg)
 	}
 }
+func TestHistoryDisabledInTheProfileRecordsNothing(t *testing.T) {
+	path := isolateHistory(t)
+	writeRedactConfig(t, "profiles:\n  quiet:\n    history:\n      enabled: false\n")
+	srv := newCallServer(t, jsonPet)
+
+	code, _, stderr := runCall(t,
+		"testdata/call.yaml", "getPet", "--param", "petId=42", "--profile", "quiet",
+		"--base-url", srv.URL, "--output", "json")
+	if code != 0 {
+		t.Fatalf("call --profile quiet = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("history.enabled: false still created %s", path)
+	}
+	if entries := readHistory(t); len(entries) != 0 {
+		t.Errorf("history.enabled: false recorded %d entries", len(entries))
+	}
+}
+
+// replayFlags is what every replay now needs. The positional argument names the
+// entry, so the spec can only come from --spec; the target host comes from the
+// flags rather than the stored URL; and the test server's host is off-spec, so
+// --allow-host is what lets a credential reach it.
+func replayFlags(srv *callServer) []string {
+	return []string{
+		"--spec", "testdata/call.yaml", "--base-url", srv.URL,
+		"--allow-host", "127.0.0.1", "--output", "json",
+	}
+}
+
+// runReplay runs `history replay <handle>` with the flags above plus extra.
+func runReplay(t *testing.T, srv *callServer, handle string, extra ...string) (int, string, string) {
+	t.Helper()
+
+	args := append([]string{"replay", handle}, replayFlags(srv)...)
+
+	return runHistory(t, append(args, extra...)...)
+}
 
 func TestHistoryReplayReissuesTheCallAndRecordsANewEntry(t *testing.T) {
 	isolateHistory(t)
@@ -658,12 +694,12 @@ func TestHistoryReplayReissuesTheCallAndRecordsANewEntry(t *testing.T) {
 
 	code, _, stderr := runCall(t,
 		"testdata/call.yaml", "getPet", "--param", "petId=42", "--query", "verbose=true",
-		"--base-url", srv.URL, "--output", "json")
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
 	if code != 0 {
 		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
 	}
 
-	code, stdout, stderr := runHistory(t, "replay", "1", "--output", "json")
+	code, stdout, stderr := runReplay(t, srv, "1")
 	if code != 0 {
 		t.Fatalf("history replay 1 = %d, want 0; stderr: %s", code, stderr)
 	}
@@ -702,6 +738,29 @@ func TestHistoryReplayReissuesTheCallAndRecordsANewEntry(t *testing.T) {
 	}
 }
 
+// A replay is re-derived from the spec, so there is a contract to check the
+// response against — and an agent that reads `call`'s validation block must be
+// able to read replay's too.
+func TestHistoryReplayEmitsAValidationBlock(t *testing.T) {
+	isolateHistory(t)
+	srv := newCallServer(t, jsonPet)
+
+	code, _, stderr := runCall(t,
+		"testdata/call.yaml", "getPet", "--param", "petId=42",
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
+	if code != 0 {
+		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	code, stdout, stderr := runReplay(t, srv, "1")
+	if code != 0 {
+		t.Fatalf("history replay = %d, want 0; stderr: %s", code, stderr)
+	}
+	if decodeCall(t, stdout).Validation == nil {
+		t.Errorf("replay emitted no validation block:\n%s", stdout)
+	}
+}
+
 // Two replays in a row is ordinary agent behaviour, and it is where the
 // positional index breaks: replay appends, so every index printed by the
 // listing the agent is reading has already shifted by the time it issues the
@@ -712,7 +771,7 @@ func TestReplayingTwoIDsInARowReissuesTwoDifferentEntries(t *testing.T) {
 
 	code, _, stderr := runCall(t,
 		"testdata/call.yaml", "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--output", "json")
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
 	if code != 0 {
 		t.Fatalf("call getPet = %d, want 0; stderr: %s", code, stderr)
 	}
@@ -735,7 +794,7 @@ func TestReplayingTwoIDsInARowReissuesTwoDifferentEntries(t *testing.T) {
 		t.Fatalf("history listed %q then %q, want getPublic then getPet", public.OperationID, pet.OperationID)
 	}
 
-	code, _, stderr = runHistory(t, "replay", public.ID, "--output", "json")
+	code, _, stderr = runReplay(t, srv, public.ID)
 	if code != 0 {
 		t.Fatalf("replay of the getPublic id = %d, want 0; stderr: %s", code, stderr)
 	}
@@ -743,7 +802,7 @@ func TestReplayingTwoIDsInARowReissuesTwoDifferentEntries(t *testing.T) {
 		t.Fatalf("the first replay sent %q, want /public", got)
 	}
 
-	code, _, stderr = runHistory(t, "replay", pet.ID, "--output", "json")
+	code, _, stderr = runReplay(t, srv, pet.ID)
 	if code != 0 {
 		t.Fatalf("replay of the getPet id = %d, want 0; stderr: %s", code, stderr)
 	}
@@ -769,12 +828,12 @@ func TestHistoryReplayStillRequiresAllowMutations(t *testing.T) {
 
 	code, _, stderr := runCall(t,
 		"testdata/call.yaml", "createPet", "--allow-mutations", "--body", `{"name":"Rex"}`,
-		"--base-url", srv.URL, "--output", "json")
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
 	if code != 0 {
 		t.Fatalf("call createPet = %d, want 0; stderr: %s", code, stderr)
 	}
 
-	code, _, stderr = runHistory(t, "replay", "1", "--output", "json")
+	code, _, stderr = runReplay(t, srv, "1")
 	if code != 2 {
 		t.Fatalf("history replay of a POST = %d, want 2; stderr: %s", code, stderr)
 	}
@@ -785,7 +844,7 @@ func TestHistoryReplayStillRequiresAllowMutations(t *testing.T) {
 		t.Errorf("a gated replay wrote %d entries, want the original 1", len(entries))
 	}
 
-	code, _, stderr = runHistory(t, "replay", "1", "--allow-mutations", "--output", "json")
+	code, _, stderr = runReplay(t, srv, "1", "--allow-mutations")
 	if code != 0 {
 		t.Fatalf("history replay --allow-mutations = %d, want 0; stderr: %s", code, stderr)
 	}
@@ -794,73 +853,286 @@ func TestHistoryReplayStillRequiresAllowMutations(t *testing.T) {
 	}
 }
 
-func TestHistoryDisabledInTheProfileRecordsNothing(t *testing.T) {
-	path := isolateHistory(t)
-	writeRedactConfig(t, "profiles:\n  quiet:\n    history:\n      enabled: false\n")
-	srv := newCallServer(t, jsonPet)
+// The mutation gate is decided from the spec, not from the entry. A one-word
+// edit to a JSONL line turned a DELETE replay into an ungated one, which is the
+// one place here where believing the file costs a write against a live API.
+func TestHistoryReplayGatesOnTheSpecsMethodNotTheStoredOne(t *testing.T) {
+	isolateHistory(t)
+	srv := newCallServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 
-	code, _, stderr := runCall(t,
-		"testdata/call.yaml", "getPet", "--param", "petId=42", "--profile", "quiet",
-		"--base-url", srv.URL, "--output", "json")
+	// Stored as GET; deleteAllPets is a DELETE in the spec.
+	seedHistory(t, seedEntry(corpus.SourceCall, time.Minute, "deleteAllPets", "GET", srv.URL+"/pets", 0))
+
+	code, _, stderr := runReplay(t, srv, "1")
+	if code != 2 {
+		t.Fatalf("replay of a spec DELETE stored as GET = %d, want 2; stderr: %s", code, stderr)
+	}
+	if rec := srv.received(); rec.Method != "" {
+		t.Errorf("the gated replay still reached the server: %+v", rec)
+	}
+
+	// And the inverse: the hostile file must not get to make replay *harder*
+	// either, or a stored "DELETE" turns every GET into a flag-gated call.
+	isolateHistory(t)
+	seedHistory(t, seedEntry(corpus.SourceCall, time.Minute, "getPublic", "DELETE", srv.URL+"/public", 0))
+
+	code, _, stderr = runReplay(t, srv, "1")
 	if code != 0 {
-		t.Fatalf("call --profile quiet = %d, want 0; stderr: %s", code, stderr)
+		t.Fatalf("replay of a spec GET stored as DELETE = %d, want 0; stderr: %s", code, stderr)
 	}
-
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("history.enabled: false still created %s", path)
-	}
-	if entries := readHistory(t); len(entries) != 0 {
-		t.Errorf("history.enabled: false recorded %d entries", len(entries))
+	if got := srv.received().Method; got != "GET" {
+		t.Errorf("the replay sent %q, want the spec's GET", got)
 	}
 }
 
-// A stored entry is a file an agent (or anything else with write access to the
-// history) can edit, so the scheme has to be checked again on the way back out
-// rather than trusted because it was checked on the way in.
-func TestReplayRejectsARecordedURLWhoseSchemeIsNotHTTP(t *testing.T) {
-	for _, raw := range []string{"gopher://127.0.0.1:1234/x", "file:///etc/passwd"} {
-		t.Run(raw, func(t *testing.T) {
-			entry := corpus.Entry{Source: corpus.SourceCall, Method: "GET", URL: raw}
+// Finding 2, at the wire. A hand-edited `url` must not decide where the request
+// goes: the destination is the spec and the flags, and the planted listener
+// must see nothing at all.
+func TestHistoryReplayIgnoresAHandEditedStoredURL(t *testing.T) {
+	isolateHistory(t)
+	real := newCallServer(t, jsonPet)
+	planted := newCallServer(t, jsonPet)
 
-			_, err := replayRequest(io.Discard, entry, nil)
-			if err == nil {
-				t.Fatalf("replayRequest(%q) succeeded, want a usage error", raw)
+	// Both are on 127.0.0.1, so --allow-host admits the planted host too: the
+	// point is that even an *allowed* stored URL does not choose the target.
+	seedHistory(t, seedEntry(corpus.SourceCall, time.Minute, "getPet", "GET", planted.URL+"/pets/42", 0))
+
+	code, _, stderr := runReplay(t, real, "1")
+	if code != 0 {
+		t.Fatalf("history replay = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	if got := real.received().Path; got != "/pets/42" {
+		t.Errorf("the replay sent %q to the host the flags name, want /pets/42", got)
+	}
+	if rec := planted.received(); rec.Method != "" {
+		t.Errorf("the replay reached the planted listener: %+v", rec)
+	}
+	assertNoCanaryOnTheWire(t, planted.received())
+}
+
+// §5a's replay table, row "Target host": a stored host outside the currently
+// allowed set is refused rather than silently retargeted. This is the one place
+// replay and `call` deliberately differ — `call` withholds and runs.
+func TestHistoryReplayRefusesAStoredHostOutsideTheAllowedSet(t *testing.T) {
+	isolateHistory(t)
+	srv := newCallServer(t, jsonPet)
+
+	seedHistory(t, seedEntry(corpus.SourceCall, time.Minute, "getPet", "GET", srv.URL+"/pets/42", 0))
+
+	code, _, stderr := runHistory(t, "replay", "1",
+		"--spec", "testdata/call.yaml", "--base-url", srv.URL, "--output", "json")
+	if code != 2 {
+		t.Fatalf("replay of an off-set stored host = %d, want 2; stderr: %s", code, stderr)
+	}
+	if msg := decodeErr(t, stderr).Error.Message; !strings.Contains(msg, "--allow-host") {
+		t.Errorf("error message %q does not name the flag that permits it", msg)
+	}
+	if rec := srv.received(); rec.Method != "" {
+		t.Errorf("the refused replay still reached the server: %+v", rec)
+	}
+}
+
+// An entry whose operationId no longer names anything in the spec fails that
+// entry, with the exit code an agent branches on — not the process, and not a
+// request built from the stored fields.
+func TestHistoryReplayFailsWhenTheOperationIsGoneFromTheSpec(t *testing.T) {
+	isolateHistory(t)
+	srv := newCallServer(t, jsonPet)
+
+	seedHistory(t, seedEntry(corpus.SourceCall, time.Minute, "retiredOperation", "GET", srv.URL+"/pets/42", 0))
+
+	code, _, stderr := runReplay(t, srv, "1")
+	if code != 2 {
+		t.Fatalf("replay of a retired operation = %d, want 2; stderr: %s", code, stderr)
+	}
+	if msg := decodeErr(t, stderr).Error.Message; !strings.Contains(msg, "retiredOperation") {
+		t.Errorf("error message %q does not name the operation it could not find", msg)
+	}
+	if rec := srv.received(); rec.Method != "" {
+		t.Errorf("the failed replay still reached the server: %+v", rec)
+	}
+}
+
+// Replay re-derives through the spec, so it needs one. Failing with a usage
+// error is a deliberate contract change: the alternative is a replay that
+// silently sends the stored fields.
+func TestHistoryReplayWithNoSpecIsAUsageError(t *testing.T) {
+	isolateHistory(t)
+	srv := newCallServer(t, jsonPet)
+
+	seedHistory(t, seedEntry(corpus.SourceCall, time.Minute, "getPet", "GET", srv.URL+"/pets/42", 0))
+
+	code, _, stderr := runHistory(t, "replay", "1", "--output", "json")
+	if code != 2 {
+		t.Fatalf("replay with no spec = %d, want 2; stderr: %s", code, stderr)
+	}
+	if rec := srv.received(); rec.Method != "" {
+		t.Errorf("the failed replay still reached the server: %+v", rec)
+	}
+}
+
+// The entry id must never be mistaken for a spec reference: loadSpec gives a
+// positional argument precedence over --spec and the environment, so threading
+// the replay's argument through would make `replay 1` load a spec named 1.
+func TestHistoryReplayTakesTheSpecFromTheFlagNotTheEntryHandle(t *testing.T) {
+	srv := newCallServer(t, jsonPet)
+
+	for _, form := range []string{"flag", "env"} {
+		t.Run(form, func(t *testing.T) {
+			isolateHistory(t)
+			seedHistory(t, seedEntry(corpus.SourceCall, time.Minute, "getPet", "GET", srv.URL+"/pets/42", 0))
+
+			args := []string{"replay", "1", "--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json"}
+			if form == "flag" {
+				args = append(args, "--spec", "testdata/call.yaml")
+			} else {
+				t.Setenv(spec.EnvSpec, "testdata/call.yaml")
 			}
-			if code := clierr.From(err).Code; code != clierr.CodeUsage {
-				t.Fatalf("replayRequest(%q) error = %v (code %d), want usage (%d)",
-					raw, err, code, clierr.CodeUsage)
+
+			code, _, stderr := runHistoryKeepingSpecEnv(t, form == "env", args...)
+			if code != 0 {
+				t.Fatalf("history replay 1 (%s) = %d, want 0; stderr: %s", form, code, stderr)
 			}
-			scheme, _, _ := strings.Cut(raw, ":")
-			if !strings.Contains(err.Error(), scheme) {
-				t.Errorf("error %v does not name the offending scheme %q", err, scheme)
+			if got := srv.received().Path; got != "/pets/42" {
+				t.Errorf("the replay sent %q, want /pets/42", got)
 			}
 		})
 	}
 }
 
-// Userinfo is the credential position a URL carries in cleartext, so a stored
-// entry someone edited to hold one must be refused on the way back out for the
-// same reason its scheme is — and the refusal must not quote what it refused.
-func TestReplayRejectsARecordedURLCarryingCredentials(t *testing.T) {
-	const user, password = "admin", "s3cr3t"
-	entry := corpus.Entry{
-		Source: corpus.SourceCall,
-		Method: "GET",
-		URL:    "http://" + user + ":" + password + "@127.0.0.1:8898/pets",
+// runHistoryKeepingSpecEnv is runHistory with the option of leaving TALARIA_SPEC
+// alone, so the environment form of the spec reference can be tested at all.
+func runHistoryKeepingSpecEnv(t *testing.T, keep bool, args ...string) (int, string, string) {
+	t.Helper()
+
+	if !keep {
+		t.Setenv(spec.EnvSpec, "")
+	}
+	t.Setenv("TALARIA_AUTH_BEARER", callCanary)
+	t.Setenv("TALARIA_AUTH_APIKEY_PETKEY", callCanary)
+
+	var out, errOut strings.Builder
+	code := run(append([]string{"history"}, args...), &out, &errOut)
+
+	if strings.Contains(out.String(), callCanary) {
+		t.Fatalf("history leaked the credential on stdout:\n%s", out.String())
 	}
 
-	_, err := replayRequest(io.Discard, entry, nil)
-	if err == nil {
-		t.Fatal("replayRequest accepted a recorded URL with userinfo, want a usage error")
+	return code, out.String(), errOut.String()
+}
+
+// Finding 22, verified as `{"refresh_token":"<redacted>"}` arriving at the API
+// with empty stderr. A stored body still carrying a redaction marker cannot be
+// replayed: sending the marker is a login attempt whose password is the literal
+// text `<redacted>`.
+func TestHistoryReplayRefusesABodyStillCarryingARedactionMarker(t *testing.T) {
+	isolateHistory(t)
+	srv := newCallServer(t, jsonPet)
+
+	entry := seedEntry(corpus.SourceCall, time.Minute, "createPet", "POST", srv.URL+"/pets", 0)
+	entry.Request.Body = &corpus.Body{
+		ContentType: "application/json",
+		Data:        `{"refresh_token":"<redacted>"}`,
 	}
-	if code := clierr.From(err).Code; code != clierr.CodeUsage {
-		t.Fatalf("replayRequest error = %v (code %d), want usage (%d)", err, code, clierr.CodeUsage)
+	seedHistory(t, entry)
+
+	code, _, stderr := runReplay(t, srv, "1", "--allow-mutations")
+	if code != 2 {
+		t.Fatalf("replay of a redacted body = %d, want 2; stderr: %s", code, stderr)
 	}
-	if strings.Contains(err.Error(), password) || strings.Contains(err.Error(), user) {
-		t.Errorf("the refusal echoes the userinfo it refused: %v", err)
+	if rec := srv.received(); rec.Method != "" {
+		t.Errorf("the refused replay still reached the server: %+v", rec)
 	}
-	if !strings.Contains(err.Error(), "127.0.0.1:8898") {
-		t.Errorf("error %v does not name the host it refused", err)
+}
+
+// Every credential position in a stored entry is dropped, whatever it names.
+// Nothing in an entry is resolved any more, so an edited `<redacted:env:NAME>`
+// is a value that goes nowhere rather than a variable talaria reads.
+func TestHistoryReplayDropsAStoredCredentialPosition(t *testing.T) {
+	isolateHistory(t)
+	srv := newCallServer(t, jsonPet)
+
+	entry := seedEntry(corpus.SourceCall, time.Minute, "getPet", "GET", srv.URL+"/pets/42", 0)
+	entry.Request.Headers = map[string]string{
+		"X-Steal":       "<redacted:env:MY_UNRELATED_SECRET>",
+		"Authorization": "Bearer a-plausible-looking-literal",
+	}
+	seedHistory(t, entry)
+
+	t.Setenv("MY_UNRELATED_SECRET", callCanary)
+
+	code, _, stderr := runReplay(t, srv, "1")
+	if code != 0 {
+		t.Fatalf("history replay = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	rec := srv.received()
+	if got := rec.Header.Get("X-Steal"); got != "" {
+		t.Errorf("the replay sent X-Steal %q; nothing in an entry is resolved", got)
+	}
+	// The credential comes from config.Resolve against the current environment,
+	// never from the entry — so the stored literal is gone and the real one is
+	// there in its place.
+	if got, want := rec.Header.Get("Authorization"), "Bearer "+callCanary; got != want {
+		t.Errorf("server saw Authorization %q, want the re-resolved %q", got, want)
+	}
+	if !strings.Contains(stderr, "X-Steal") {
+		t.Errorf("stderr does not report the dropped header: %s", stderr)
+	}
+}
+
+// A stored path that cannot be matched against the operation's template is exit
+// 2, never a request to a half-substituted path.
+func TestHistoryReplayFailsWhenTheStoredPathDoesNotMatchTheTemplate(t *testing.T) {
+	isolateHistory(t)
+	srv := newCallServer(t, jsonPet)
+
+	seedHistory(t, seedEntry(corpus.SourceCall, time.Minute, "getPet", "GET", srv.URL+"/dogs/42/extra", 0))
+
+	code, _, stderr := runReplay(t, srv, "1")
+	if code != 2 {
+		t.Fatalf("replay of a mismatched path = %d, want 2; stderr: %s", code, stderr)
+	}
+	if rec := srv.received(); rec.Method != "" {
+		t.Errorf("the failed replay still reached the server: %+v", rec)
+	}
+}
+
+// The design doc requires replayableEnv be *deleted*, not made unreachable: an
+// unreachable version passes every behaviour test and comes back next cycle.
+func TestReplayableEnvIsGoneFromTheTree(t *testing.T) {
+	paths, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("globbing the command package: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("the glob matched no Go files, so this test proves nothing")
+	}
+
+	checked := 0
+	for _, path := range paths {
+		// Test files are skipped because this one has to name the symbol to look
+		// for it; a test file that referenced the real thing would not compile.
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+
+		source, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		checked++
+
+		if strings.Contains(string(source), "replayableEnv") {
+			t.Errorf("%s still names replayableEnv; nothing in a stored entry is resolved any more", path)
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("no non-test Go file was read, so this test proves nothing")
 	}
 }
 
@@ -877,62 +1149,34 @@ func binaryBody() []byte {
 	return out
 }
 
-// A replay has to put the original bytes back on the wire. The entry stores a
-// non-UTF-8 body base64'd (internal/corpus), so replay has to decode it —
-// reading Data as text would send 2048 replacement-character bytes in place of
-// the 1024 that were sent.
-func TestReplaySendsTheOriginalBytesOfABinaryBody(t *testing.T) {
-	data := binaryBody()
-	entry := corpus.Entry{
-		Source: corpus.SourceCall,
-		Method: "POST",
-		URL:    "https://api.example.com/pets/42/photo",
-		Request: corpus.EntryRequest{
-			Body: &corpus.Body{
-				ContentType: "application/octet-stream",
-				Data:        base64.StdEncoding.EncodeToString(data),
-				Encoding:    corpus.EncodingBase64,
-			},
-		},
-	}
+// A replay has to put the original bytes back on the wire, so a stored body
+// beginning with @ or - must not be read as a filename or as the console: the
+// bytes are handed to the builder directly, never as an argv-style --body.
+func TestHistoryReplaySendsAStoredBodyVerbatim(t *testing.T) {
+	for _, body := range []string{`{"name":"Rex"}`, "@/etc/passwd", "-"} {
+		t.Run(body, func(t *testing.T) {
+			isolateHistory(t)
+			srv := newCallServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusCreated)
+			})
 
-	req, err := replayRequest(io.Discard, entry, nil)
-	if err != nil {
-		t.Fatalf("replayRequest: %v", err)
-	}
-	if req.Body == nil {
-		t.Fatal("the replayed request has no body")
-	}
-	if !bytes.Equal(req.Body.Data, data) {
-		t.Errorf("the replay carries %d bytes, want the recorded %d", len(req.Body.Data), len(data))
-	}
-}
+			entry := seedEntry(corpus.SourceCall, time.Minute, "createPet", "POST", srv.URL+"/pets", 0)
+			entry.Request.Body = &corpus.Body{ContentType: "application/json", Data: body}
+			seedHistory(t, entry)
 
-// An entry written by a newer talaria may use an encoding this build cannot
-// read. Replaying its Data as literal text would send something the original
-// call did not, so it is refused the way a truncated body already is.
-func TestReplayRefusesABodyEncodingItDoesNotKnow(t *testing.T) {
-	entry := corpus.Entry{
-		Source:  corpus.SourceCall,
-		Method:  "POST",
-		URL:     "https://api.example.com/pets",
-		Request: corpus.EntryRequest{Body: &corpus.Body{Data: "AAAA", Encoding: "zstd+base64"}},
-	}
-
-	_, err := replayRequest(io.Discard, entry, nil)
-	if err == nil {
-		t.Fatal("replayRequest accepted an unknown body encoding, want a usage error")
-	}
-	if code := clierr.From(err).Code; code != clierr.CodeUsage {
-		t.Fatalf("error = %v (code %d), want usage (%d)", err, code, clierr.CodeUsage)
-	}
-	if !strings.Contains(err.Error(), "zstd+base64") {
-		t.Errorf("error %v does not name the encoding it refused", err)
+			code, _, stderr := runReplay(t, srv, "1", "--allow-mutations")
+			if code != 0 {
+				t.Fatalf("history replay = %d, want 0; stderr: %s", code, stderr)
+			}
+			if got := srv.received().Body; got != body {
+				t.Errorf("server saw body %q, want the recorded %q", got, body)
+			}
+		})
 	}
 }
 
 // `history show` prints the entry for a human to read. A base64 body is not
-// text, and printing its encoded form as if it were the body would be a lie
+// text, and printing its stored form as if it were the body would be a lie
 // about what was sent.
 func TestHistoryShowDoesNotPrintABinaryBodyAsText(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString(binaryBody())
@@ -959,149 +1203,5 @@ func TestHistoryShowDoesNotPrintABinaryBodyAsText(t *testing.T) {
 	}
 	if !strings.Contains(printed, "1024") || !strings.Contains(printed, corpus.EncodingBase64) {
 		t.Errorf("history show does not say the body is %d base64-encoded bytes:\n%s", len(binaryBody()), printed)
-	}
-}
-
-func TestReplayAcceptsARecordedHTTPURL(t *testing.T) {
-	entry := corpus.Entry{Source: corpus.SourceCall, Method: "GET", URL: "https://api.example.com/pets/42"}
-
-	req, err := replayRequest(io.Discard, entry, nil)
-	if err != nil {
-		t.Fatalf("replayRequest: %v", err)
-	}
-	if req.BaseURL != "https://api.example.com" {
-		t.Errorf("BaseURL = %q, want https://api.example.com", req.BaseURL)
-	}
-}
-
-// The store is a plain file, so `<redacted:env:NAME>` in it is an instruction
-// an attacker can write. Resolving any name it likes would make replay a
-// "read $ANY_VAR and send it to $ANY_URL" primitive, run from the one process
-// the deployment trusts with credentials — so the name has to be inside the
-// namespace the firewall is scoped to (§5a).
-func TestReplayRefusesAnEnvVarOutsideTheAuthNamespace(t *testing.T) {
-	const stolen = "AWS_SECRET_ACCESS_KEY"
-	entry := corpus.Entry{
-		Source:  corpus.SourceCall,
-		Method:  "GET",
-		URL:     "http://127.0.0.1:19950/exfil",
-		Request: corpus.EntryRequest{Headers: map[string]string{"X-Steal": "<redacted:env:" + stolen + ">"}},
-	}
-
-	_, err := replayRequest(io.Discard, entry, nil)
-	if err == nil {
-		t.Fatal("replayRequest resolved an env var outside the auth namespace, want a usage error")
-	}
-	if code := clierr.From(err).Code; code != clierr.CodeUsage {
-		t.Fatalf("error = %v (code %d), want usage (%d)", err, code, clierr.CodeUsage)
-	}
-	if !strings.Contains(err.Error(), stolen) {
-		t.Errorf("error %v does not name the variable it refused", err)
-	}
-	if !strings.Contains(err.Error(), "X-Steal") {
-		t.Errorf("error %v does not name the header the variable stood in", err)
-	}
-}
-
-// The query string is rebuilt by its own code path, and a credential in a query
-// parameter is the position DESIGN.md already warns about — so the refusal has
-// to hold there too.
-func TestReplayRefusesAnEnvVarOutsideTheAuthNamespaceInTheQuery(t *testing.T) {
-	const stolen = "GITHUB_TOKEN"
-	entry := corpus.Entry{
-		Source: corpus.SourceCall,
-		Method: "GET",
-		URL:    "http://127.0.0.1:19950/exfil?leak=%3Credacted%3Aenv%3A" + stolen + "%3E",
-	}
-
-	_, err := replayRequest(io.Discard, entry, nil)
-	if err == nil {
-		t.Fatal("replayRequest resolved an env var outside the auth namespace, want a usage error")
-	}
-	if code := clierr.From(err).Code; code != clierr.CodeUsage {
-		t.Fatalf("error = %v (code %d), want usage (%d)", err, code, clierr.CodeUsage)
-	}
-	if !strings.Contains(err.Error(), stolen) {
-		t.Errorf("error %v does not name the variable it refused", err)
-	}
-}
-
-// The three TALARIA_AUTH_* forms are what `call` records, so every one of them
-// has to survive the round trip: a replay that refuses its own recording would
-// be worse than the hole it closes.
-func TestReplayResolvesTheAuthNamespace(t *testing.T) {
-	for _, name := range []string{config.EnvBearer, config.EnvBasic, config.EnvAPIKeyPrefix + "PETKEY"} {
-		t.Run(name, func(t *testing.T) {
-			entry := corpus.Entry{
-				Source:  corpus.SourceCall,
-				Method:  "GET",
-				URL:     "https://api.example.com/pets/42",
-				Request: corpus.EntryRequest{Headers: map[string]string{"Authorization": "<redacted:env:" + name + ">"}},
-			}
-
-			req, err := replayRequest(io.Discard, entry, nil)
-			if err != nil {
-				t.Fatalf("replayRequest: %v", err)
-			}
-			if len(req.Headers) != 1 {
-				t.Fatalf("the replay carries %d headers, want the recorded 1", len(req.Headers))
-			}
-			if got := req.Headers[0].Value.Ref().Name; got != name {
-				t.Errorf("the replayed header resolves %q, want %q", got, name)
-			}
-		})
-	}
-}
-
-// A profile's `auth:` map is the other half of the namespace: it is how one
-// machine talks to staging and production at once, and a call made under it
-// records the variable *it* names, not the convention's.
-func TestReplayResolvesAVariableTheProfileNames(t *testing.T) {
-	prof := &config.Profile{Name: "staging", Auth: map[string]string{"bearerAuth": "${STAGING_TOKEN}"}}
-	entry := corpus.Entry{
-		Source:  corpus.SourceCall,
-		Method:  "GET",
-		URL:     "https://api.example.com/pets/42",
-		Request: corpus.EntryRequest{Headers: map[string]string{"Authorization": "Bearer <redacted:env:STAGING_TOKEN>"}},
-	}
-
-	req, err := replayRequest(io.Discard, entry, prof)
-	if err != nil {
-		t.Fatalf("replayRequest under profile staging: %v", err)
-	}
-	if len(req.Headers) != 1 {
-		t.Fatalf("the replay carries %d headers, want the recorded 1", len(req.Headers))
-	}
-	if got := req.Headers[0].Value.Ref().Name; got != "STAGING_TOKEN" {
-		t.Errorf("the replayed header resolves %q, want STAGING_TOKEN", got)
-	}
-	// Without the profile the same entry is outside the namespace: the profile is
-	// what admits the name, so dropping it must not leave the door open.
-	if _, err := replayRequest(io.Discard, entry, nil); err == nil {
-		t.Error("replayRequest resolved STAGING_TOKEN with no profile selected, want a usage error")
-	}
-}
-
-// End to end: the reproduction from the review, through the real command. The
-// refusal has to happen before curl runs, so the server sees nothing at all.
-func TestHistoryReplayDoesNotSendAnEnvVarOutsideTheAuthNamespace(t *testing.T) {
-	isolateHistory(t)
-	srv := newCallServer(t, jsonPet)
-
-	entry := seedEntry(corpus.SourceCall, time.Minute, "exfil", "GET", srv.URL+"/exfil", 0)
-	entry.Request.Headers = map[string]string{"X-Steal": "<redacted:env:MY_UNRELATED_SECRET>"}
-	seedHistory(t, entry)
-
-	t.Setenv("MY_UNRELATED_SECRET", callCanary)
-
-	code, _, stderr := runHistory(t, "replay", "1", "--output", "json")
-	if code != 2 {
-		t.Fatalf("history replay of an out-of-namespace variable = %d, want 2; stderr: %s", code, stderr)
-	}
-	if !strings.Contains(stderr, "MY_UNRELATED_SECRET") {
-		t.Errorf("the refusal does not name the variable it refused: %s", stderr)
-	}
-	if rec := srv.received(); rec.Method != "" {
-		t.Errorf("the refused replay still reached the server: %+v", rec)
 	}
 }
