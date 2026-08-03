@@ -265,8 +265,28 @@ func recordCall(
 		return
 	}
 
-	if err := store.Append(corpus.NewEntry(source, req, resp, red)); err != nil {
+	if err := store.Append(corpus.NewEntry(source, req, observed(resp), red)); err != nil {
 		fmt.Fprintf(stderr, "warning: the call was not recorded in history: %v\n", err)
+	}
+}
+
+// observed narrows an executor response to the four fields the store records.
+//
+// This is the one place the two types meet: internal/corpus may not import
+// internal/curl, so something has to translate, and having it here keeps every
+// caller of recordCall passing the response it already holds. A nil response —
+// a dry run, or a call whose connection failed — stays nil, which NewEntry
+// records as a request that produced no observation.
+func observed(resp *curl.Response) *corpus.Observed {
+	if resp == nil {
+		return nil
+	}
+
+	return &corpus.Observed{
+		Status:   resp.Status,
+		Headers:  resp.Headers,
+		Body:     resp.Body,
+		TimingMS: resp.TimingMS,
 	}
 }
 

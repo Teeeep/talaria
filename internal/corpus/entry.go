@@ -21,7 +21,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/Teeeep/talaria/internal/clierr"
-	"github.com/Teeeep/talaria/internal/curl"
 	"github.com/Teeeep/talaria/internal/request"
 	"github.com/Teeeep/talaria/internal/secret"
 )
@@ -132,6 +131,21 @@ func (b Body) Bytes() ([]byte, error) {
 	}
 }
 
+// Observed is what came back, in the only shape this package needs to record
+// it: a status, the response headers, the body's bytes and how long the call
+// took.
+//
+// It exists so the store does not name the executor's response type. `curl` is
+// how talaria makes a call today and the twin will make its own with net/http,
+// so a corpus that imported internal/curl would tie the recording of a call to
+// one way of placing it — the edge internal/e2e/boundary_test.go forbids.
+type Observed struct {
+	Status   int
+	Headers  map[string][]string
+	Body     []byte
+	TimingMS int64
+}
+
 // Redactors are the two firewalls an entry passes through on its way to disk.
 // Both are nil-safe: the zero Redactors applies the built-in lists, so a caller
 // that forgets to configure them records less rather than more.
@@ -148,7 +162,7 @@ type Redactors struct {
 // Redaction happens here rather than at read time, and it happens before
 // truncation: cutting a JSON body first would leave a prefix the path redactor
 // can no longer parse, and a secret in that prefix would survive.
-func NewEntry(source Source, req *request.Request, resp *curl.Response, red Redactors) Entry {
+func NewEntry(source Source, req *request.Request, obs *Observed, red Redactors) Entry {
 	entry := Entry{
 		Timestamp: time.Now().UTC(),
 		Source:    source,
@@ -167,12 +181,12 @@ func NewEntry(source Source, req *request.Request, resp *curl.Response, red Reda
 		}
 	}
 
-	if resp != nil {
+	if obs != nil {
 		entry.Response = &EntryResponse{
-			Status:   resp.Status,
-			Headers:  red.Response.Headers(resp.Headers),
-			Body:     newBody(contentType(resp.Headers), red.Response.Body(resp.Body)),
-			TimingMS: resp.TimingMS,
+			Status:   obs.Status,
+			Headers:  red.Response.Headers(obs.Headers),
+			Body:     newBody(contentType(obs.Headers), red.Response.Body(obs.Body)),
+			TimingMS: obs.TimingMS,
 		}
 	}
 

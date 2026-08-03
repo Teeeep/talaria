@@ -52,9 +52,13 @@ plumbing, `history_replay.go` the replay command. Tests split the same way, with
 ## House rules
 
 **Package boundaries.** `operation` and `validate` may not import `curl`, `corpus` or `twin` — they are shared with the future twin server, which uses `net/http` directly. `corpus`
-may not import `curl` either: it takes a local observation struct, not a `*curl.Response`.
-`internal/e2e/boundary_test.go` asserts this against the real import graph; if you add a package
-that must not cross a boundary, add it there in the same commit.
+may not import `curl` either: `NewEntry` takes `corpus.Observed{Status, Headers, Body, TimingMS}`,
+not a `*curl.Response`. The one place the two types meet is `observed()` in `cmd/talaria/call.go`,
+called from `recordCall` so every command that records goes through it — do not translate at a
+call site. `internal/e2e/boundary_test.go` asserts all of this against the real import graph: its
+`boundaries` table is one entry per constrained package, and a package with no entry is not
+checked, which is how `corpus → curl` survived being written down. If you add a package that must
+not cross a boundary, give it its own entry there in the same commit.
 
 **Secrets are `SecretRef` everywhere except inside `internal/curl` at exec time.** If you are
 about to put a resolved credential in a field typed `string`, stop — that is the bug class the

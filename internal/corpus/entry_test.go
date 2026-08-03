@@ -127,3 +127,71 @@ func TestBodyBytesRefusesUndecodableBase64(t *testing.T) {
 		t.Fatal("Bytes() accepted a Data that is not base64, want an error")
 	}
 }
+
+// The store is written by the curl executor today and by the twin later, so
+// NewEntry takes an observation of its own shape rather than the executor's
+// response type. What it records may not change with the signature: the four
+// fields land where the *curl.Response form put them, and the response redactor
+// still runs over the headers and the body on the way in.
+func TestNewEntryRecordsTheObservationItWasGiven(t *testing.T) {
+	entry := NewEntry(SourceCall, nil, &Observed{
+		Status: 201,
+		Headers: map[string][]string{
+			"Set-Cookie":   {"session=" + canary},
+			"Content-Type": {"application/json"},
+		},
+		Body:     []byte(`{"access_token":"` + canary + `","id":42}`),
+		TimingMS: 137,
+	}, Redactors{})
+
+	resp := entry.Response
+	if resp == nil {
+		t.Fatal("the recorded entry has no response")
+	}
+	if resp.Status != 201 {
+		t.Errorf("status = %d, want 201", resp.Status)
+	}
+	if resp.TimingMS != 137 {
+		t.Errorf("timing_ms = %d, want 137", resp.TimingMS)
+	}
+	if got := resp.Headers["Content-Type"]; len(got) != 1 || got[0] != "application/json" {
+		t.Errorf("Content-Type = %q, want the header verbatim", got)
+	}
+	if resp.Body == nil {
+		t.Fatal("the recorded entry has no response body")
+	}
+	if resp.Body.ContentType != "application/json" {
+		t.Errorf("body content type = %q, want it read off the observed headers", resp.Body.ContentType)
+	}
+
+	line, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal entry: %v", err)
+	}
+	if bytes.Contains(line, []byte(canary)) {
+		t.Errorf("the credential survived into the entry: %s", line)
+	}
+}
+
+// A dry run and a connection failure both produce a request that was never
+// observed. entry.go documents the nil case as supported, so it has to stay
+// supported through the signature change: the request is still worth recording
+// as something that was tried.
+func TestNewEntryWithoutAnObservationRecordsTheRequestAlone(t *testing.T) {
+	entry := NewEntry(SourceCall, &request.Request{
+		OperationID: "getPet",
+		Method:      "GET",
+		BaseURL:     "https://api.example.com",
+		Path:        "/pets/42",
+	}, nil, Redactors{})
+
+	if entry.Response != nil {
+		t.Errorf("Response = %+v, want nil for an unobserved call", entry.Response)
+	}
+	if entry.OperationID != "getPet" {
+		t.Errorf("operation_id = %q, want getPet", entry.OperationID)
+	}
+	if entry.URL != "https://api.example.com/pets/42" {
+		t.Errorf("url = %q, want the request's", entry.URL)
+	}
+}

@@ -18,6 +18,11 @@ that pass deliberately did not do, and why.
 - `cmd/talaria/call.go:437` — `callPayload` now takes four arguments, three of which every
   caller derives from the same `RunE` locals (`req`, the response view, the validation result,
   the redactor). If a fifth appears, it wants a struct.
+- `cmd/talaria/call.go` is 562 lines and now holds three things that are not the `call` command:
+  `newRedactors`, `recordCall` and (task 8) `observed`, the `curl.Response` → `corpus.Observed`
+  translator. `history_replay.go` reaches into all three. That is the seam — a `record.go` beside
+  them holding the recording plumbing, leaving `call.go` the command, the binder wiring and the
+  views.
 - `cmd/talaria/history_replay.go:60` — `buildReplay` was going to move beside
   `corpus.Entry.Replay`. **Not done:** it needs `selectProfile`, `--base-url`, `--allow-host`
   and `config.Resolve`, so the move would make `internal/corpus` import `internal/config` —

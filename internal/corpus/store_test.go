@@ -2,7 +2,6 @@ package corpus
 
 import (
 	"encoding/json"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Teeeep/talaria/internal/curl"
 	"github.com/Teeeep/talaria/internal/request"
 	"github.com/Teeeep/talaria/internal/secret"
 )
@@ -58,10 +56,10 @@ func canaryRequest(t *testing.T) *request.Request {
 
 // canaryResponse is a response carrying the canary back off the wire, in the
 // two places §5a's leak-channel table names: Set-Cookie and a token field.
-func canaryResponse() *curl.Response {
-	return &curl.Response{
+func canaryResponse() *Observed {
+	return &Observed{
 		Status: 200,
-		Headers: http.Header{
+		Headers: map[string][]string{
 			"Set-Cookie":   {"session=" + canary},
 			"Content-Type": {"application/json"},
 		},
@@ -475,7 +473,7 @@ func TestAppendTruncatesLargeBodies(t *testing.T) {
 		Path:    "/pets",
 		Body:    &request.Body{ContentType: "text/plain", Data: []byte(big)},
 	}
-	resp := &curl.Response{Status: 200, Body: []byte(big), TimingMS: 4}
+	resp := &Observed{Status: 200, Body: []byte(big), TimingMS: 4}
 
 	if err := store.Append(NewEntry(SourceCall, req, resp, Redactors{})); err != nil {
 		t.Fatalf("Append: %v", err)
