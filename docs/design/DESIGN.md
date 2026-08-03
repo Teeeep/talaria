@@ -6,7 +6,13 @@
 > the agent is. This is what it wears to move fast. Fixes `cmd/talaria`, the binary on `$PATH`,
 > `TALARIA_AUTH_*` env vars, and the `"schema": "talaria/v1"` output field.
 
-**Changes from v0.2:** repositioned around a single idea — *an API client you can hand to an
+**Changes in v0.4:** three invariants the code needed and the doc never stated — credentials
+bind to the spec's `servers[]` (§5a), a history entry is untrusted input when read (§5a), and a
+security scheme v1 cannot resolve is reported rather than silently ignored (§5). Each was found
+by review finding the same defect in a new place; rationale in
+[docs/design/proposals/2026-08-03-amendments.md](proposals/2026-08-03-amendments.md).
+
+**Changes in v0.3:** repositioned around a single idea — *an API client you can hand to an
 agent*. The credential firewall moves from a design principle to the product's reason to exist
 (§1, §2, §5a). Postman / Insomnia / Bruno enter the landscape as the actual incumbents (§2).
 `history` added, unifying "what did I call" with the twin's corpus (§4, §5, §7). Name settled.
