@@ -1,264 +1,258 @@
 # Review findings — `ralph/design` vs `main`
 
-Four reviewers (security, spec-compliance, concurrency, integration) over the full branch diff
-(127 files, ~27k insertions). Baseline: `go build ./...`, `gofmt -l .`, `go vet ./...` clean;
-`go test ./...` fully green; `go test -race ./...` clean, including a cross-process corpus
-stress test (8 processes × 40 appends over the trim path, zero lost entries).
+Reviewers run: security, spec-compliance, concurrency, integration (`.ralph/stack.json`).
+Spec: `docs/design/DESIGN.md`. Conventions: `README.md`, `AGENT.md`,
+`docs/research/2026-08-02-design-review.md`.
 
-All eleven CRIT findings from the previous cycle were re-tested and hold. The previous cycle's
-WARN/INFO findings were never actioned and its findings file was deleted, so the ones still
-live are carried forward below (findings 21, 22, 23, 25, 32, 34).
+Build, `gofmt`, `go vet` and `go test -race ./...` are all clean at HEAD.
 
-Every finding below marked CONFIRMED was reproduced by executing the real binary against a real
-server with real curl. Findings 1, 2, 3 and 8 were additionally re-verified independently.
+33 findings: 6 CRIT, 17 WARN, 10 INFO.
 
----
-
-## Finding 1: curl reads `~/.curlrc` on every call — one writable file exfiltrates every resolved credential
+## Finding 1: CR/LF in a header, cookie or method value smuggles a second request onto the wire
 - **Reviewer:** security
 - **Severity:** CRIT
-- **File:** internal/curl/config.go:103
-- **Description:** argv is `{"curl", "-K", "-"}` with no `-q`/`--disable`, so curl parses its default config file (`$CURL_HOME/.curlrc`, else `$HOME/.curlrc`) *before* the `-K -` document that carries the resolved secret. Every directive there applies to the credential-bearing request: `trace-ascii = /path` writes the full `Authorization: Bearer …` to an attacker-chosen file, `proxy = http://…` ships it to an attacker-controlled host. This defeats the entire firewall, and it defeats it precisely in the deployment §5a calls "fully realised" — an agent with *no* credential env vars but write access to `$HOME` plants one file, waits for one `talaria call`, and reads the token out. §5a's "threats not covered" concedes only an agent that can *read* env vars or the profile file; writing one file is a strictly weaker capability, so this is inside the boundary the design claims. CONFIRMED: with `.curlrc` containing `trace-ascii`, stdout correctly showed `<redacted:env:TALARIA_AUTH_BEARER>` while the trace file (mode 0644) contained the plaintext `CANARY-SECRET-abc123`. Re-running the same config document through `curl -q -K -` produced no trace file.
-- **Suggested fix:** Make argv `{"curl", "-q", "-K", "-"}` — curl requires `-q` to be the first parameter. Set `cmd.Env` explicitly (finding 27) so `CURL_HOME` cannot redirect the lookup either. Add a canary case that plants a `.curlrc` with `trace-ascii` in the harness `HOME` and scans the resulting file; `canary_test.go`'s harness already sets `HOME` to a temp dir.
+- **File:** internal/request/build.go:259
+- **Description:** Nothing validates that a header value, cookie value or method is free of CR/LF. `escapeDirective` (internal/curl/config.go:393) escapes `\n`/`\r` so they cannot break out of a curl *config directive*, but curl un-escapes them back to literal CR/LF inside the value and writes them straight onto the wire. Header *names* are validated only on the `--header` path (`httpFieldName`, build.go:361); names from spec-declared header/cookie parameters (`located`, build.go:259), from profile headers (build.go:289) and from a replayed history entry are unvalidated. Reproduced against a listener — a single call emitted:
 
-## Finding 2: A malformed `--header`/`--body` flag echoes the credential verbatim into the structured error
-- **Reviewer:** security
-- **Severity:** CRIT
-- **File:** internal/request/build.go:311
-- **Description:** `b.fail("%s %q is not name=value", flag, raw)` puts the whole rejected argument, value included, into the exit-2 JSON on stderr. The shell has already expanded it, so `--header "Authorization: Bearer $TOKEN"` prints the real token. This is the highest-probability leak in the tool because the colon form is exactly what AGENT.md tells the agent to write (finding 9). The `--body` variant at build.go:53 is worse in one respect: on a repeated flag it joins *every* body value into the message, and request bodies routinely carry `client_secret`/`password`. CONFIRMED: `--header 'Authorization: Bearer sk-live-REALSECRET123'` → `{"code":2,"message":"cannot build a request for getPet: --header \"Authorization: Bearer sk-live-REALSECRET123\" is not name=value"}`; `--body '{"password":"hunter2"}' --body '@/etc/hostname'` echoes both bodies.
-- **Suggested fix:** Never echo the value half of a rejected `name=value` flag. Report only the part before the first `=`/`:`, or a positional index, with the value elided: `--header 1 is not name=value (got "Authorization: …")`. For `--body`, report the count and the *kind* of each value (literal / `@file` / `-`), never the bytes. Add a canary case: a malformed flag carrying the canary, scanned across every output format.
+  ```
+  GET /p HTTP/1.1
+  Host: 127.0.0.1:19977
+  X-Trace: ok
 
-## Finding 3: Credentials in a URL's userinfo reach stdout, the emitted curl, and the permanent history file in cleartext
-- **Reviewer:** security
-- **Severity:** CRIT
-- **File:** internal/request/build.go:144
-- **Description:** `baseURL` validates scheme and host but keeps `parsed.User`. `http://user:pass@host` is a valid absolute http(s) URL, so `--base-url`, a profile's `base-url`, **and a spec's `servers[0].url` — untrusted input** — can carry a credential in the authority. Nothing strips or redacts it: the password is printed in `request.url`, in the copy-pasteable `request.curl` (internal/curl/render.go:146), and appended to `history.jsonl` (internal/corpus/entry.go:154), which §5a calls "a permanent artifact — the highest-risk surface in the tool". There is no way to get it back out short of deleting the store. CONFIRMED: `--base-url 'http://admin:s3cr3t@127.0.0.1:8898'` printed `"curl":"curl -s 'http://admin:s3cr3t@…/pets/1'"`, the same in `request.url`, and `s3cr3t` matched in a freshly-created `history.jsonl`.
-- **Suggested fix:** In `baseURL`, if `parsed.User != nil`, reject with a message pointing at `TALARIA_AUTH_BASIC` (preferred — talaria already has a basic-auth path that keeps the value symbolic), or strip the userinfo and re-inject it as a `request.Secret` so every display form renders `<redacted>`. Apply the same check in `replayRequest` (cmd/talaria/history.go:511), which re-parses a stored URL.
+  DELETE /admin HTTP/1.1
+  Host: 127.0.0.1
+  X-Smug: yes
+  ```
 
-## Finding 4: `redact.headers` from the config file never reaches the displayed request or the emitted curl
-- **Reviewer:** spec-compliance
-- **Severity:** CRIT
-- **File:** internal/request/build.go:80
-- **Description:** DESIGN.md:339 requires `request.headers` in JSON output to be redacted against the built-in list "**+ user-extensible**", and says it "Applies to pretty output too"; README.md:209 states `headers` globs are "applied to request and response headers alike". In reality `request.Build` marks header/query/cookie values sensitive using a hard-coded `var builtin *secret.Redactor` (nil = built-ins only), and `cfg.Redact.Headers` is only ever passed to `corpus.Redactors` (cmd/talaria/call.go:239). The result is exactly inverted: with `redact: {headers: ["x-session-*"]}` the *history entry* stores `"X-Session-Id": "<redacted>"` while stdout's `request.headers` and `request.curl` both print `X-Session-Id: zzz` in the clear — the permanent artifact is protected and the surface the agent reads is not. Response headers are redacted correctly, so the gap is specifically the request side. No test at any level covers `redact.headers`; every existing test and the canary suite exercise only `redact.body-paths`. CONFIRMED.
-- **Suggested fix:** Thread the extra patterns into `request.Inputs` and have `hide()` take a `*secret.Redactor` built from `secret.NewRedactor(cfg.Redact.Headers...)`. Add a canary case that configures `redact.headers` and greps stdout, dry-run and pretty for the value.
+  A second, complete, attacker-chosen request goes out on the connection. The injected value can come from the *spec* (a required header param's `example`, consumed by `run`), so this is reachable with nothing but an untrusted API doc — which is the advertised workflow ("point it at any API's OpenAPI doc"). It defeats the `--allow-mutations` gate (DESIGN.md §3.5) entirely: a GET-only spec issues a DELETE. The same value also corrupts `--output tsv` row structure.
+- **Suggested fix:** Reject any value containing `\r` or `\n` at bind time in `internal/request/build.go` (for `located`, `pairs` and profile headers) as a usage error, and re-check in `document.auth`/`document.cookies` as the last gate before the wire. Apply `isFieldName` to spec- and profile-supplied header names too, and validate `req.Method` against an HTTP token charset before writing the `request` directive.
 
-## Finding 5: Built-in response-body redaction silently fails on array-shaped bodies; the secret is written permanently to history
+## Finding 2: The emitted and `--dry-run` curl turns a GET with a body into a POST
 - **Reviewer:** integration
 - **Severity:** CRIT
-- **File:** internal/secret/response.go:155
-- **Description:** `decodeObject` rejects any body not starting with `{`, and `redactPath` (response.go:190) only descends into `map[string]any`. So `ResponseRedactor.Body` returns the body **unchanged** for a top-level JSON array, and never descends into arrays nested under an object — two extremely common shapes. The built-in `access_token`/`refresh_token`/`id_token` paths and any user-configured `redact.body-paths` both silently do nothing. Because §5a mandates redaction at *write* time, the un-redacted value lands in `history.jsonl`. CONFIRMED: object body redacted correctly, while `[{"access_token":"TOPSECRET-ARR"}]` and `{"items":[{"access_token":"TOPSECRET-NEST"}]}` both leaked to the store. The unit test at internal/secret/response_test.go:127 (`TestBodySkipsNonJSONBodies`) **asserts the leak as correct behaviour**, listing `[{"access_token":"x"}]` alongside `"not json at all"`.
-- **Suggested fix:** Make `decodeObject` decode into `any` (accept `[` as well as `{`), and make `redactPath` fan out across `[]any` elements at each segment, so `items.access_token` applies to every element of `items`. Retarget `TestBodySkipsNonJSONBodies` and add an array case to the canary suite so this is gated.
+- **File:** internal/curl/render.go:45
+- **Description:** `Render` deliberately omits `-X` for GET, but `bodyArgs` (render.go:118) still appends `--data-raw`. curl's rule is that `-d`/`--data-raw` without `-X` implies POST. The config document always writes `request = "GET"` (internal/curl/config.go:149), so talaria really sends a GET-with-body while the command it prints is a POST with `Content-Type: application/x-www-form-urlencoded`. Reproduced: `call … getEcho --body '{"a":1}'` renders `curl -q -s --data-raw '{"a":1}' 'http://…/echo'`; the server saw `GET` from talaria and `POST` from the pasted line. An agent pasting `request.curl` into a bug report, or a human reproducing a 4xx, exercises a different method — and on a mutation-gated API a "read-only" GET reproduction silently becomes a write. This is the same class of bug commit 2d92e67 fixed for HEAD, left open for GET.
+- **Suggested fix:** Emit `-X` whenever the command carries a body: change the GET guard to `case req.Method != "" && !(strings.EqualFold(req.Method, http.MethodGet) && req.Body == nil):`.
 
-## Finding 6: Killing talaria orphans curl, leaks an unredacted response capture, and lets the request complete post-mortem
+## Finding 3: `auth check` blesses a call that `call` and `run` then refuse with exit 5
+- **Reviewer:** integration
+- **Severity:** CRIT
+- **File:** internal/config/auth.go:94
+- **Description:** `Resolve` returns on the first requirement whose schemes are of a *supported type*, without consulting `Present()`. `satisfied` (cmd/talaria/auth.go:169) implements the opposite, correct rule: any one alternative being fully present is enough. The two components answer the same question differently, and `auth check` is the documented pre-flight ("The source follows the same resolution `call` uses", README.md:243). Reproduced with `security: [{keyA: []}, {keyB: []}]` and only `TALARIA_AUTH_APIKEY_KEYB` exported: `auth check` exits 0, `call` exits 5 with "no credential in $TALARIA_AUTH_APIKEY_KEYA", `run` exits 5 with every operation skipped, and `--dry-run` renders `-H "X-A: $TALARIA_AUTH_APIKEY_KEYA"`. An agent following AGENT.md's loop asks a human to export a variable the spec did not require, and has no way to discover that.
+- **Suggested fix:** In `Resolve`'s loop, prefer the first requirement whose credentials are all `Present()`, falling back to the first supported one only if none is fully satisfiable (so the exit-5 message still names something actionable). Share one predicate with `cmd/talaria/auth.go`'s `satisfied` rather than duplicating the rule in two packages — the duplication is what let them drift.
+
+## Finding 4: Ctrl-C during `run` fabricates failures for every untested operation and still exits 0
 - **Reviewer:** concurrency
 - **Severity:** CRIT
-- **File:** internal/curl/exec.go:69
-- **Description:** All cleanup is `defer`-based and nothing anywhere installs a signal handler (`grep -rn "os/signal\|signal.Notify"` over the tree returns nothing; cmd/talaria/main.go:8 is `os.Exit(run(...))`). An unhandled signal terminates the process immediately, so no defer runs. Three consequences, all confirmed against the real binary: curl is reparented to `ppid=1` and keeps running; the request **completes 8s after talaria is dead**, so Ctrl-C on an `--allow-mutations` POST does not cancel the write and — because `recordCall` never ran — the call is absent from history entirely, breaking its stated contract; and the capture directory survives indefinitely holding the *raw, unredacted* response (`Set-Cookie: session=abc123`, `{"access_token":"SUPER-SECRET-RESPONSE-VALUE"}`), exactly the material §5a's leak table says must be redacted. The same applies to the `talaria-body-*` request-body temp file (internal/curl/config.go:291). This is the previous cycle's WARN 12; the evidence shows it is worse than "leaks a directory".
-- **Suggested fix:** Install `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)` in cmd/talaria/root.go and thread that ctx into `curl.ExecuteWith` in place of `context.Background()` at exec.go:77, so cancellation kills curl via `CommandContext` and the deferred cleanups run normally. Set `cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}` with a `cmd.Cancel` that signals `-pgid` so anything curl spawned dies too. For SIGKILL, sweep stale `talaria-call-*`/`talaria-body-*` under `TMPDIR` at start-up.
+- **File:** cmd/talaria/run.go:123
+- **Description:** The suite loop never consults `r.ctx`. Once the signal context is cancelled, `curl.ExecuteWith` returns immediately for every remaining operation and each is recorded as a genuine failure and appended to history. Reproduced — 30 GET operations against a 2s/request server, SIGINT at t=5s: server saw 3 hits, report said `{total: 30, passed: 2, failed: 28}` with `"reason": "the request was cancelled before it completed"` on all 28, history gained 30 entries, exit code **0**. Three harms: (a) a cancelled CI job reports 28 endpoints broken that were never asked, and with `--fail-on-error` exits 4 — a validation verdict for a suite that never ran, exactly the result run.go:186-188 says a smoke test "must never produce"; (b) without `--fail-on-error` a cancelled run is green; (c) the junk entries go in under `SourceRun` and are subject to `trim`'s per-source cap of 1000 (internal/corpus/store.go:31), so a cancelled run over a large spec evicts the previous run's real history — signal-triggered data destruction.
+- **Suggested fix:** Break the loop when `r.ctx.Err() != nil` and report only what ran. In `verdict` (run.go:403) return a distinct error on cancellation so the run neither exits 0 nor masquerades as a validation failure, and skip `recordCall` when the failure is cancellation so history is not polluted.
 
-## Finding 7: `history` indices are positional and shift on every write, so `replay <n>` re-issues the wrong request
-- **Reviewer:** integration
+## Finding 5: A credential-shaped literal query value leaks in cleartext through curl's stderr
+- **Reviewer:** security
 - **Severity:** CRIT
-- **File:** cmd/talaria/history.go:271
-- **Description:** The index is `len(entries) - position`, recomputed on every read, and `corpus.Entry` carries no stable identifier at all. `call`, `run` **and `replay` itself** all append, so every index in a previously-printed listing silently shifts. The type comment at history.go:28 reasons carefully about filtering not renumbering, but not about appending. CONFIRMED: with index 1 = POST `createPetForm` and index 2 = GET `getPet`, `history replay 2` correctly replayed the GET and appended an entry; the immediately following `history replay 1` — intended to hit the POST — replayed the **GET again**. Two replays in a row is ordinary agent behaviour, so this misfires in normal use. The e2e suite cannot catch it: it replays index 1 exactly once, immediately after listing.
-- **Suggested fix:** Give `corpus.Entry` a stable id (monotonic counter, or the RFC3339Nano timestamp) written at append time; have `history` print it alongside the positional index and have `show`/`replay` accept it.
+- **File:** internal/curl/exec.go:277
+- **Description:** `scrubber` builds its replacer only from pairs where `p.Value.IsSecret()` is true. A literal the user typed under a credential-shaped name — `--query api_key=…`, which `hide()` (internal/request/build.go:309) deliberately marks `Sensitive` and renders `<redacted>` on stdout, in history and in the emitted curl — is skipped, so nothing rewrites it out of curl's stderr. curl exit 3 echoes the full URL including the query string, and `requestFailed` embeds that text in the exit-1 JSON on stderr. Reproduced (a spec path containing `[` forces curl exit 3):
 
-## Finding 8: `talaria auth` and `talaria auth <typo>` exit 0 with help on stdout
+  ```
+  {"schema":"talaria/v1","error":{"code":1,"message":"… curl: (3) bad range in URL position 26:\nhttp://127.0.0.1:19930/a[b?api_key=SUPERSECRETLITERAL\n ^"}}
+  ```
+
+  The same call with an `apiKey`-in-query *security scheme* correctly prints `<redacted:env:…>`, confirming the gap is exactly the literal path. DESIGN.md §5a: "Errors are built from the redacted representation, never the raw one. Test explicitly — error paths are where redaction bugs live."
+- **Suggested fix:** Iterate on `p.Value.IsSensitive()` rather than `IsSecret()`; for a sensitive literal use `p.Value.Reveal()` as the needle and `secret.Placeholder` as the replacement, plus its `url.QueryEscape` form as the ref branch already does. Add a canary case for a literal `--query api_key=`.
+
+## Finding 6: `history replay` resolves an arbitrary named env var and sends it to an arbitrary host
+- **Reviewer:** security
+- **Severity:** CRIT
+- **File:** cmd/talaria/history.go:668
+- **Description:** `replayValue` turns any stored string of the form `<redacted:env:NAME>` back into a live `SecretRef` (`secret.ParseRef`, internal/secret/secret.go:55, which accepts any non-empty name), and `internal/curl` resolves it at exec time. Both `NAME` and the destination (`entry.URL`) come from the store, a plain JSONL file in the state directory. Reproduced: a hand-written `history.jsonl` line with `"headers":{"X-Steal":"<redacted:env:MY_UNRELATED_SECRET>"}` and `"url":"http://127.0.0.1:19950/exfil"`, then `talaria history replay x1`, put `X-Steal: AWS_ROOT_KEY_ABC123` on the wire to that host. This makes the binary a general-purpose "resolve $ANY_VAR and send it to $ANY_URL" primitive, well outside the `TALARIA_AUTH_*` namespace the firewall is scoped to, and launders it through the one process the deployment trusts with credentials — a direct break of §5a's invariant under the deployment §5a itself names as fully realising the boundary ("running the agent without those vars in its environment — and letting the binary read them from a file it alone opens").
+- **Suggested fix:** Do not accept an arbitrary ref name from the store. Restrict replay-resolvable refs to the `TALARIA_AUTH_*` convention plus names present in the selected profile's `auth:` map, and reject anything else with a usage error naming the variable it refused.
+
+## Finding 7: curl inherits the full environment, contradicting the invariant stated in the code
+- **Reviewer:** security
+- **Severity:** WARN
+- **File:** internal/curl/exec.go:41
+- **Description:** The comment claims credentials are "not in the environment curl inherits (§5a)". `cmd.Env` is never set, so Go passes `os.Environ()` and every `TALARIA_AUTH_*` value is readable in `/proc/<curl-pid>/environ` for the lifetime of the call. The argv half of the claim is genuinely implemented; the environment half is not, and a reader will believe a property the code does not provide.
+- **Suggested fix:** Set `cmd.Env` to a filtered environment (keep `PATH`, `HOME`, proxy and TLS variables; drop `TALARIA_AUTH_*` and anything a profile references), or narrow the comment to what is true.
+
+## Finding 8: `redact.body-paths` is applied to the request body in history but not on stdout
+- **Reviewer:** security
+- **Severity:** WARN
+- **File:** cmd/talaria/call.go:465
+- **Description:** `corpus.Redactors.requestBody` (internal/corpus/entry.go:242) runs the configured JSON paths over the request body, so `access_token` is stripped from the permanent artifact. `callPayload` writes `view.Request.Body = string(req.Body.Data)` raw, and `curl.Render`'s `--data-raw` does the same. Observed: stdout `"body":"{\"access_token\":\"SUPERCANARY123\"}"`, history `"data":"{\"access_token\":\"<redacted>\"}"`. This is the exact inversion `buildRequest`'s own comment warns against — hiding a value in the permanent artifact but not on the stdout an agent reads has the firewall backwards. The canary suite does not inject through `--body`, so it does not catch this.
+- **Suggested fix:** Apply the same `ResponseRedactor.Body` to `view.Request.Body` in `callPayload` and to the `--data-raw` word in internal/curl/render.go:128. Add a canary case that injects through `--body`.
+
+## Finding 9: The spec cache never expires, revalidates, or verifies
+- **Reviewer:** security
+- **Severity:** WARN
+- **File:** internal/spec/source.go:87
+- **Description:** `loadURL` returns cached bytes whenever the file exists — no TTL, no ETag/Last-Modified revalidation, and no flag to force a refresh. `isURL` (source.go:79) also accepts plaintext `http://`. One on-path modification of a single `http://` spec fetch is therefore permanent: a poisoned `servers[0].url` (which is where every later call's resolved credential goes) and any injected header value from Finding 1 persist across every subsequent run, including runs made over a trusted network.
+- **Suggested fix:** Stamp the cache entry with its fetch time and re-fetch past a TTL; send `If-None-Match`/`If-Modified-Since`; add `--refresh-spec`; warn once on stderr when a spec is fetched over plaintext `http://`.
+
+## Finding 10: `search` is exact-substring matching, which DESIGN calls fuzzy
 - **Reviewer:** spec-compliance
-- **Severity:** CRIT
-- **File:** cmd/talaria/auth.go:30
-- **Description:** `newAuthCmd` sets no `Args`/`RunE`, so `talaria auth` → exit 0 and `talaria auth bogus` → exit 0, both dumping cobra help to **stdout**. DESIGN.md §4 assigns 2 to usage errors with "stderr JSON lists valid options", AGENT.md:209 tells the agent code 2 covers "unknown command", and §3.1 makes deterministic exit codes the thing agents branch on. The previous fix (f747586) installed `unknownCommand` on the root only, so `talaria bogus` correctly exits 2 while the `auth` group does not — an agent that types `talaria auth chekc` gets exit 0 and unparseable text where `--output json` was promised. CONFIRMED independently.
-- **Suggested fix:** Give `newAuthCmd` `Args: unknownCommand` plus `RunE: cmd.Help`, mirroring root — better, a shared `groupCommand()` helper so any future subcommand group inherits it. Assert `talaria auth bogus` → 2 in `exitcode_test.go`.
+- **Severity:** WARN
+- **File:** internal/operation/search.go:121
+- **Description:** Matching is `strings.Contains(f.text, query)` on lower-cased text. DESIGN.md:169 annotates the command `# fuzzy find across the spec`, and the justifying paragraph (DESIGN.md:210-213) rests on the agent knowing "a *domain concept* … rather than an operationId". Verified: `search search.yaml invoice` → 5 hits; `search search.yaml invoce` → `{"results":[]}`, exit 0. A typo, a plural/singular mismatch or a synonym silently reports that the API has no such concept. README.md:120 documents the shipped substring behaviour, so DESIGN and README now contradict each other.
+- **Suggested fix:** Either add an edit-distance/subsequence fallback ranked below exact matches, or amend DESIGN.md:169 to `# substring find across the spec`. This branch has already amended DESIGN.md for other resolved decisions; leaving this one is the inconsistency.
 
-## Finding 9: AGENT.md and README document `--header 'Name: value'`; the binary only accepts `name=value`, and a near-miss silently corrupts the header
+## Finding 11: The exit-code table reads as "`run` always exits 4"; shipped `run` needs `--fail-on-error`
 - **Reviewer:** spec-compliance
-- **Severity:** CRIT
-- **File:** AGENT.md:54
-- **Description:** DESIGN.md §4 specifies `--header X-Foo=bar` and the code implements that, but AGENT.md's headline `call` example is `--header 'X-Trace: abc'`, which exits 2. AGENT.md:169 and README.md:274 repeat the colon form. §3.7 makes AGENT.md a first-class deliverable and this is the one line an LLM copies verbatim — and per finding 2, the resulting error echoes whatever secret the agent put there. Worse, the colon form is not always rejected: `--header 'X-Trace: abc=1'` is *accepted*, cut at the first `=`, and produces the malformed wire header `X-Trace: abc: 1` with a JSON `headers` key of `"X-Trace: abc"` — silent corruption rather than an error. `agentdoc_test.go` checks command names, exit codes and env vars but never flag argument syntax, so this drifts unpoliced. CONFIRMED.
-- **Suggested fix:** Correct the three doc lines to `name=value`. Consider also accepting the curl-style `Name: value` in `binder.pairs` for headers (splitting on `:` when no `=` precedes it), since it is what every agent will reach for. Either way, reject a name containing `:` or whitespace, and extend `agentdoc_test.go` to execute the doc's fenced `talaria …` invocations against a fixture spec with `--dry-run`.
-
----
-
-## Finding 10: No `globoff` — a glob in a spec-supplied URL path turns one authenticated call into N
-- **Reviewer:** security
 - **Severity:** WARN
-- **File:** internal/curl/config.go:132
-- **Description:** curl interprets `{a,b,c}` and `[1-100]` in a URL as glob ranges unless `-g`/`globoff` is given. `IsHTTPScheme` + `url.Parse` block globs in the *host* but not in the *path*, so a hostile or merely awkward `servers[0].url` of `http://host/{a,b,c}` makes curl issue three requests, each carrying the resolved credential, to three paths the user never asked for. talaria then gets three `%{json}` documents and dies with a misleading `cannot parse curl's response metadata` (exit 1), so the operator cannot tell what happened. It also breaks legitimate URLs containing `[`/`]`. CONFIRMED: exit 1 with `invalid character '{' after top-level value`; the equivalent document fed to `curl -K -` directly showed three completed 200s.
-- **Suggested fix:** Emit `globoff` as a flag directive in `document.build` and `-g` in `curl.Render` so the URL is always literal. Optionally add a `build.go` guard rejecting a base URL whose path contains `{`, `}`, `[` or `]` for a clean exit 2.
+- **File:** docs/design/DESIGN.md:248
+- **Description:** The table says exit 4 applies "only with `--fail-on-error` / `run`". `cmd/talaria/run.go:408` gates it on `failOnError && view.Summary.Failed > 0`. Verified: `run` over a spec with a schema-violating response exits 0 without the flag and 4 with it. The behaviour is defensible and matches DESIGN.md:196 and README.md:464, but an agent given only the exit-code table branches wrong.
+- **Suggested fix:** Amend DESIGN.md:248 to "only with `--fail-on-error` (on `call` or `run`)".
 
-## Finding 11: Request bodies are recorded with only the three RFC 6749 *response* token fields redacted
-- **Reviewer:** security
+## Finding 12: stderr mixes bare prose warnings with the JSON envelope
+- **Reviewer:** spec-compliance
 - **Severity:** WARN
-- **File:** internal/corpus/entry.go:232
-- **Description:** `builtinBodyPaths` (internal/secret/response.go:17) is `access_token`, `refresh_token`, `id_token` — the fields of a token *response*. A token *request* body carries `client_secret`, `password`, `assertion`, `client_assertion`, `code_verifier`, none of which are redacted, so they land in `history.jsonl` verbatim and forever. §5a's "threats explicitly not covered" concedes only *response* bodies; a request body is data talaria itself assembled and chose to record, so this is inside the claimed boundary. CONFIRMED: `--body '{"client_secret":"SUPER-SECRET-XYZ","password":"hunter2"}'` → both values present in `history.jsonl`.
-- **Suggested fix:** Give the request side its own built-in path list (`client_secret`, `client_assertion`, `password`, `passwd`, `secret`, `assertion`, `code_verifier`) applied by `Redactors.requestBody`, or at minimum a `redact.request-body-paths` config key. The cost is only to the recording — `request.Body.Data` still goes on the wire unchanged.
+- **File:** internal/secret/response.go:258
+- **Description:** `QueryKeyWarner.Warn` and `warnUnreplayable` (cmd/talaria/history.go:687) both `fmt.Fprintf` unwrapped text to stderr. On a call that both warns and fails, stderr is a prose line followed by the JSON error object. AGENT.md:200 tells the model "Errors go to **stderr** as one line of JSON in the same envelope", and cmd/talaria/root.go:138-140 states the rule explicitly — "prose in front of it is what an agent parsing stderr would choke on". An agent doing `json.loads(stderr)` fails.
+- **Suggested fix:** Emit warnings inside the versioned envelope (`{"schema":"talaria/v1","warning":{…}}`), or declare stderr newline-delimited JSON in AGENT.md and make the warnings JSON too.
 
-## Finding 12: The built-in sensitive-name list misses common credential spellings, including `Authentication`
-- **Reviewer:** security
+## Finding 13: README claims a scaffolded command tree that does not exist
+- **Reviewer:** spec-compliance
 - **Severity:** WARN
-- **File:** internal/secret/redact.go:19
-- **Description:** The list is exactly §5a's table, matched case-insensitively — that part is correct. But `Authentication` (an exact-match miss against `authorization`), `*password*`, `*credential*`, `*signature*`, `*session*` and bare `x-auth` all fall through, on requests *and* responses. Since `hide()` and the corpus both key off this list, such a header is printed on stdout, emitted in the copy-pasteable curl, and appended to the permanent store. CONFIRMED: `X-Password`, `Authentication` and `X-Signature` all appear unredacted in `request.headers`, `request.curl` and `history.jsonl`. Supersedes the previous cycle's INFO 19, which covered only the `authorization` exact-match.
-- **Suggested fix:** Extend `builtinPatterns` with `authentication`, `*auth`, `*password*`, `*passwd*`, `*credential*`, `*signature*`, `*session*`. The list is add-only by design so widening it cannot weaken anything; the only cost is over-redacting a benign `X-Session-Id`, which is the right way to be wrong here.
+- **File:** README.md:8
+- **Description:** "the rest of the command tree is scaffolded." `talaria twin` returns `{"error":{"code":2,"message":"unknown command \"twin\" for \"talaria\""}}`; there is no `internal/twin` package and no `twin` command registered in cmd/talaria/root.go:92-100. Phases 5–8 being unbuilt is in scope and expected; the README asserting otherwise is not — an agent reading it will try `talaria twin serve` and get a usage error.
+- **Suggested fix:** Replace with "Phases 5–8 (`twin serve`/`record`/`fault`) are designed but not implemented."
 
-## Finding 13: `scrubber` misses name-matched sensitive literals, so curl's stderr is only scrubbed for structural secrets
-- **Reviewer:** security
+## Finding 14: "Every executed call carries a `validation` block" is false for `history replay`
+- **Reviewer:** spec-compliance
 - **Severity:** WARN
-- **File:** internal/curl/exec.go:265
-- **Description:** The replacer that rewrites credential values out of curl's stderr is built only from pairs where `IsSecret()` is true — i.e. values backed by a `SecretRef`. A value the *name matcher* caught (`--query api_key=…`, `--header X-Api-Key=…`, a profile header) is `IsSensitive()` but not `IsSecret()`, has no ref, and is invisible to the scrubber. If curl echoes the request URL or a header into its error text, that literal reaches stderr unscrubbed — exactly the asymmetry §5a warns about ("error paths are where redaction bugs live"). Reasoned-only: the code path is confirmed, but no curl message was found that demonstrates the echo on common failure paths.
-- **Suggested fix:** In `scrubber`, also add `(p.Value.Reveal(), secret.Placeholder)` pairs for values where `IsSensitive() && !IsSecret()`, plus their `url.QueryEscape` form, mirroring the existing ref branch.
+- **File:** cmd/talaria/history.go:225
+- **Description:** Replay passes `nil` for the validation result (the comment at :223 correctly explains replay has no spec to check against), so the envelope omits the block. README.md:333 and AGENT.md:81 both say *every* executed call carries it. An agent that unconditionally reads `validation.body_valid` after a replay hits a missing key.
+- **Suggested fix:** One clause in both docs: "except `history replay`, which re-sends a recorded request without a spec".
 
-## Finding 14: `scrubber` corrupts curl's error text when the credential is a short or common string
-- **Reviewer:** integration
+## Finding 15: The missing-path-parameter error contradicts itself, and the text reaches JUnit XML
+- **Reviewer:** spec-compliance
 - **Severity:** WARN
-- **File:** internal/curl/exec.go:257
-- **Description:** The same `strings.Replacer` has no minimum length or word-boundary guard, so any occurrence of the credential *as a substring of an ordinary word* is rewritten, destroying the last diagnostic an operator has when a call fails. CONFIRMED with `TALARIA_AUTH_BEARER=t`: `"curl: (7) Failed <redacted:env:TALARIA_AUTH_BEARER>o connec<redacted:env:TALARIA_AUTH_BEARER> <redacted:env:TALARIA_AUTH_BEARER>o 127.0.0.1 por<redacted:env:TALARIA_AUTH_BEARER> 1 af<redacted:env:TALARIA_AUTH_BEARER>er 0 ms"`. The corrupted text also flows into `runResult.Reason` → the JSON report → the JUnit `<failure message=…>`. Note this is the opposite defect to finding 13 on the same function; fix both together.
-- **Suggested fix:** Skip values shorter than a floor (8 chars is reasonable for anything worth calling a credential). If a short credential must be scrubbed, drop curl's detail entirely rather than emit mangled text — return the generic `curl exited %d` form.
+- **File:** internal/request/build.go:244
+- **Description:** When a *declared, required* path param is unbound, both failures are emitted: `--param petId is required (path parameter); path "/pets/{petId}" has a placeholder the operation declares no parameter for`. The second clause is false — the operation does declare it. Verified verbatim in `call` stderr, in `run --report json` (`"reason"`), and in `<skipped message="…">` in the JUnit output. DESIGN.md §3.1 requires errors that say what failed and why.
+- **Suggested fix:** In `binder.path`, emit the leftover-placeholder error only for placeholders with no matching declared param; suppress it when a required-param error was already recorded for that name.
 
-## Finding 15: The curl-timeout fix does not cover the preflight subprocess; `curl --version` can hang talaria forever
+## Finding 16: `run --tag <unknown>` exits 2 without `valid_alternatives`
+- **Reviewer:** spec-compliance
+- **Severity:** WARN
+- **File:** cmd/talaria/run.go:217
+- **Description:** `clierr.Usage("no operation matches %s", …)` carries no `.WithAlternatives(...)`, unlike every other unknown-name error — `run --operation bogus` lists all operation ids, and `describe`/`uses`/`--output`/`--kind` all list alternatives. DESIGN.md:246 requires exit 2 to come with "stderr JSON lists valid options", and the spec's tag set is enumerable at that point.
+- **Suggested fix:** Collect the distinct tags (and ids) from the loaded document and attach them with `WithAlternatives`.
+
+## Finding 17: 42 MB of agent transcripts and stale process artifacts are committed
+- **Reviewer:** spec-compliance
+- **Severity:** WARN
+- **File:** .ralph/ralph-20260802-154350.log:1
+- **Description:** That log (22.8 MB) and `.ralph/ralph-20260802-195025.log` (19.6 MB) account for roughly 403,000 of the diff's 433,282 inserted lines. `IMPLEMENTATION_PLAN.md:1` is titled "talaria — Review Fix Plan", is scoped to a completed round of findings, and points at `REVIEW_FINDINGS.md`, itself a process artifact. For a project whose premise is that transcripts are a leak channel (DESIGN.md §1: "It is in the context window, in the transcript, in the logs"), shipping full agent transcripts in the repo is also the wrong signal.
+- **Suggested fix:** Add `.ralph/*.log` to `.gitignore` and drop the two logs from the branch; remove or relocate `REVIEW_FINDINGS.md` and `IMPLEMENTATION_PLAN.md` before the PR merges.
+
+## Finding 18: The process-group kill has no already-reaped guard
+- **Reviewer:** concurrency
+- **Severity:** WARN
+- **File:** internal/curl/procgroup_unix.go:33
+- **Description:** `syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)` signals a bare pid with no check that the child is alive. `os/exec.Wait` calls `Process.Wait()` — reaping the child and freeing its pid — and only then receives from `ctxResult`, so `watchCtx` can invoke `Cancel` after the reap. Interleaving: curl exits and is reaped → SIGINT arrives (or the `MaxTime+2s` deadline fires) → `Cancel` runs → `Kill(-pid, SIGKILL)`. If the pid has been recycled as a process-group leader in that window, talaria SIGKILLs an unrelated group owned by the same uid. The stdlib's default `Cancel` is immune because `os.Process` tracks `statusDone` and returns `ErrProcessDone`; overriding it with a raw negated-pid kill discards that protection. The window is microseconds and pid wrap is slow, hence WARN, not CRIT.
+- **Suggested fix:** Probe with `cmd.Process.Signal(syscall.Signal(0))` first and return its error (os/exec reads `ErrProcessDone` as "already finished") before issuing the group kill; fall back to `cmd.Process.Kill()` if the group kill fails.
+
+## Finding 19: The curl version preflight is unbounded and ignores both `--timeout` and Ctrl-C
 - **Reviewer:** concurrency
 - **Severity:** WARN
 - **File:** internal/curl/version.go:42
-- **Description:** Commit 828ade8 bounded `ExecuteWith` but not the version preflight, which runs *before* it on every call path. `preflight` uses a plain `exec.Command(path, "--version").Output()` with no context, no deadline and no `WaitDelay`. If the curl binary is wedged (hung NFS mount, a shim on `PATH`, a slow plugin load) talaria hangs indefinitely producing no output and `--timeout` has no effect — contradicting the invariant at config.go:24 that "a wedged one becomes an exit code rather than a process an agent cannot interpret". `talaria run` is the worst case: the whole suite hangs before operation 1. CONFIRMED with a shim `curl` that sleeps on `--version`: `--timeout 3` ran until an external `timeout 20` killed it.
-- **Suggested fix:** Use `exec.CommandContext` with a short deadline plus `cmd.WaitDelay`, and classify the deadline as `clierr.RequestFailed`. Secondary, same site: `preflightOnce`/`preflightErr` are package globals keyed on nothing, so the result is memoised across *different* resolved paths, undercutting the comment at exec.go:80 claiming "a PATH change mid-run cannot swap the binary between the preflight and the call" — key the cache on `path` or drop the comment.
+- **Description:** `exec.Command(path, "--version").Output()` has no context, no `WaitDelay` and no timeout. It runs at internal/curl/exec.go:61, *before* `execCtx` is built at exec.go:81, so neither the `--timeout` bound nor the SIGINT context reaches it. A `curl` that is a shell wrapper, or a binary on a stalled NFS/autofs mount, wedges talaria indefinitely — and because of Finding 20 no catchable signal ends it. The only way out is SIGKILL, which is exactly the signal that strands a capture directory in `TMPDIR` for 24h (internal/curl/sweep.go:26).
+- **Suggested fix:** Thread a context through `preflight` and wrap it in `context.WithTimeout(ctx, 5*time.Second)` with `cmd.WaitDelay = time.Second`; call `preflight(ctx, path)` from exec.go:61.
 
-## Finding 16: `replace` is not crash-safe: no fsync before the rename, so a crash mid-trim can destroy the whole history file
+## Finding 20: SIGINT/SIGTERM are swallowed for the process lifetime with no escape hatch
 - **Reviewer:** concurrency
 - **Severity:** WARN
-- **File:** internal/corpus/store.go:265
-- **Description:** The comment at store.go:242 claims the swap is atomic and "a crash mid-trim leaves the old file intact". `rename(2)` is atomic with respect to *concurrent readers* — true, and what the lock+rename design needs — but it is not crash-safe: the rename metadata can reach disk before the temp file's data. After a power loss, `history.jsonl` can be the new inode with zero or partial contents, losing up to `maxPerSource` (1000) entries per source. `.Sync()` appears nowhere in the repo. Since `trim` runs on essentially every append once a source is at cap, the exposure window is every write, on the file the design calls the highest-risk artifact in the tool. Reasoned-only: a real reproduction needs a `dm-flakey`/power-cut harness; the absent `Sync()` and the overclaiming comment are both confirmed by reading.
-- **Suggested fix:** In `replace`, `tmp.Sync()` before `tmp.Close()`, and after `os.Rename` open the parent directory and `Sync()` it so the directory entry is durable. Then the comment is true as written.
+- **File:** cmd/talaria/root.go:207
+- **Description:** `signal.NotifyContext` permanently diverts both signals into a context; nothing re-raises, and `stop()` runs only when `run` returns. Every path that blocks without watching that context becomes unkillable by any catchable signal, and a reflexive second Ctrl-C does nothing. Four such paths exist on this branch: the `run` suite loop (Finding 4), the unbounded preflight (Finding 19), `syscall.Flock(fd, LOCK_EX)` at internal/corpus/lock_unix.go:36 (no `LOCK_NB`, no deadline, no context), and `client.Get(url)` at internal/spec/source.go:117 (bounded by a 30s `fetchTimeout`, but uninterruptible). The user's remaining option is `kill -9`, the one signal that defeats every deferred cleanup this branch added.
+- **Suggested fix:** Replace `NotifyContext` with an explicit `signal.Notify` handler that cancels the context on the first signal and calls `signal.Stop` so a second signal restores default disposition and kills the process outright.
 
-## Finding 17: CI never runs the race detector, so the concurrency tests guarding the corpus fix cannot catch a regression
+## Finding 21: The non-unix corpus lock is a silent no-op, so `trim` can still destroy entries there
 - **Reviewer:** concurrency
 - **Severity:** WARN
-- **File:** .github/workflows/ci.yml:38
-- **Description:** The branch added `TestConcurrentAppendsKeepEveryEntryTheyAcknowledged` (internal/corpus/store_test.go:288) specifically to lock in the `trim` fix, and several packages use `t.Parallel()`. Without `-race` none of that detects an unsynchronised write; a future change that drops the flock or shares a buffer across the parallel canary/e2e tests goes green. This directly protects the fix the previous cycle just landed. Note the race build is not free: `-race` took ~124s on `internal/corpus` alone, driven by the `maxPerSource-1` seeding loop.
-- **Suggested fix:** Change the Test step to `go test -race ./...`, or add a second step running `-race` on the concurrency-bearing packages (`./internal/corpus/... ./internal/curl/... ./internal/e2e/...`) if full-suite timing is a concern. `internal/ci/workflow_test.go` asserts this file matches `.ralph/stack.json`, so update both together.
-
-## Finding 18: `--report junit` drops the per-field validation errors `internal/validate` computed
-- **Reviewer:** integration
-- **Severity:** WARN
-- **File:** cmd/talaria/run.go:553
-- **Description:** `validate.Result.Errors` carries `{message, reason, field}` per violation and reaches the JSON report and the exit code correctly, but `junitSuite` copies only `res.Reason` (a *count*, from run.go:429) into `output.Case.Failure`. Since `--report` selects exactly one renderer, a CI job that asked for JUnit has no other artifact — the actionable data is computed, then discarded at the last boundary. internal/output/junit.go:36 states the opposite intent: "the reason is the whole value of the report". CONFIRMED: `<failure message="the response violates the spec: 2 validation errors"></failure>` while the JSON report for the same run carries `missing property 'name'` and `got number, want string` at `$.id`.
-- **Suggested fix:** Add a `Detail string` to `output.Case`, emit it as the `<failure>` element's character data (`xml:",chardata"` — `xml.MarshalIndent` already escapes it), and fill it in `junitSuite` by joining `res.Validation.Errors` as `field: reason` lines.
-
-## Finding 19: Response redaction and response validation collide, producing spurious validation failures and exit 4
-- **Reviewer:** integration
-- **Severity:** WARN
-- **File:** cmd/talaria/call.go:390
-- **Description:** `validationInput` is built from the redacted view, so a redacted field is validated as the literal string `<redacted>`. call.go:348 acknowledges the tradeoff and argues "a spurious error is visible and correctable", but nothing on any surface marks the error as talaria-induced, and it is not opt-in: the built-in list already redacts `access_token`/`refresh_token`/`id_token`, so any spec that types one of those as non-string, or constrains it with `pattern`/`maxLength`, fails out of the box. CONFIRMED with a spec typing `expires_in: integer` and config redacting it: `{"reason":"got string, want integer","field":"$.expires_in"}`, `call --fail-on-error` exit 4 and `run --fail-on-error` exit 4, against a perfectly spec-compliant server response.
-- **Suggested fix:** Validate against the un-redacted bytes and pass the resulting `Error` list through the scrubbing that already exists for curl's stderr — or, cheaper and sufficient, have `redactResponse` return the set of paths it rewrote and drop/annotate any `validate.Error` whose `Field` is one of them.
-
-## Finding 20: `internal/corpus` depends on `internal/curl`, which will block the Phase 6 twin from using the store
-- **Reviewer:** integration
-- **Severity:** WARN
-- **File:** internal/corpus/entry.go:24
-- **Description:** §5 says corpus "backs both `history` and the twin, so it is defined in Phase 2". `internal/validate` handles the identical requirement correctly — validate.go:5 explicitly refuses `http.Response` or anything from `internal/curl` and takes plain data. `corpus` does the opposite: its only entry-construction API is `NewEntry(source, req, resp *curl.Response, red)`, keyed to the outbound executor, so the twin's record path (which will hold an `http.Response`) must synthesise a fake `curl.Response`. `boundary_test.go` cannot catch this because corpus sits in the `forbidden` list rather than `shared`, despite the design assigning it the same dual-consumer role. `corpus` also transitively imports `internal/config` via `request`, contradicting its own package doc at entry.go:12 ("deliberately does not import internal/config") — confirmed with `go list -deps`.
-- **Suggested fix:** Give `corpus` a plain-data input mirroring `validate.Input` (status, headers, body, timing) and have `cmd/talaria` do the `curl.Response` → that-type conversion, exactly as it already does for `validate.Input` at call.go:390. Then move `internal/corpus` into `boundary_test.go`'s `shared` list.
-
-## Finding 21: `history replay` issues query-string credentials without the §5a warning
-- **Reviewer:** spec-compliance
-- **Severity:** WARN
-- **File:** cmd/talaria/history.go:209
-- **Description:** DESIGN.md:346 requires "Query-string API keys (`?api_key=`) … still leak into *server* logs — warn once on stderr", and AGENT.md:181 tells the agent "talaria warns once on stderr. Report the warning." `warnQueryCredentials` is called from cmd/talaria/call.go:156 and cmd/talaria/run.go:360 but not from replay, the third request-issuing path. CONFIRMED: replaying a recorded call whose credential rides in the query string resolves and sends the key with empty stderr and exit 0. Carried forward from the previous cycle (WARN 15), unaddressed.
-- **Suggested fix:** Call `warnQueryCredentials(cmd.ErrOrStderr(), secret.NewQueryKeyWarner(), req)` immediately after `replayRequest` at history.go:205; add a test asserting stderr carries the warning on replay.
-
-## Finding 22: Garbled missing-credential message in `run`: "no credential for security 1 scheme bearerAuth"
-- **Reviewer:** spec-compliance
-- **Severity:** WARN
-- **File:** cmd/talaria/run.go:336
-- **Description:** `pluralise(n, "scheme")` returns `"1 scheme"`, interpolated *after* the word "security", producing `no credential for security 1 scheme bearerAuth (set $TALARIA_AUTH_BEARER)` and `no credential for security 2 schemes bearerAuth (…), petKey (…)`. §3.1 requires errors that say what failed and why, and exit code 5's whole purpose is a sentence a human can act on. cmd/talaria/auth.go:152 gets the same message right — the previous cycle's fix (WARN 14) covered `auth` but not `run`'s two call sites (run.go:336 and run.go:396). CONFIRMED independently.
-- **Suggested fix:** `clierr.CredentialMissing("no credential for %s %s", pluralise(len(r.missing), "security scheme"), strings.Join(r.missing, ", "))` at both sites.
-
-## Finding 23: The remote-spec cache never expires and has no refresh escape hatch
-- **Reviewer:** spec-compliance, integration
-- **Severity:** WARN
-- **File:** internal/spec/source.go:86
-- **Description:** `loadURL` returns the cached bytes unconditionally whenever the file is readable — no TTL, no `If-None-Match`/`If-Modified-Since`, no `--refresh`/`--no-cache` flag anywhere in the CLI, and no location an agent can point a human at. This undercuts §3.3's pitch ("The spec *is* the collection … nothing to curate, nothing to drift"): a spec fetched once drifts silently forever, and the failure mode is `talaria call` producing 404s against an endpoint the current spec renamed. CONFIRMED: after replacing the upstream file (curl confirms it now serves `opTwo`), talaria still returned `opOne`; `talaria --help | grep -iE 'cache|refresh'` returns nothing. The code comment at source.go:98 states the situation plainly without recording a design decision. Carried forward from the previous cycle (WARN 16).
-- **Suggested fix:** Store the `ETag`/`Last-Modified` alongside the body and issue a conditional GET, falling back to the cache on any network error; add a `--refresh` persistent flag on the root command and document both in README and AGENT.md.
-
-## Finding 24: The emitted curl and `request.body` are lossy for non-UTF-8 request bodies
-- **Reviewer:** spec-compliance
-- **Severity:** WARN
-- **File:** internal/curl/render.go:114
-- **Description:** §3.4 promises "Every executed call returns its curl equivalent: a portable reproduction". `bodyArgs` always renders `--data-raw string(req.Body.Data)`, so for a body with invalid UTF-8 the wire path correctly stages a 0600 temp file and sends the bytes verbatim (internal/curl/config.go:256) while the *rendered* curl and `request.body` embed the bytes as a Go string — JSON encoding then replaces each invalid byte with U+FFFD. CONFIRMED: `--data-raw '�PNG\r\n\n…'`. Pasting the emitted command sends different bytes than talaria did. Commit 146dd1c fixed exactly this class for the corpus; the render path has the same defect. Secondary: a 2 MB body is inlined into `request.curl` in full, dropping 2 MB into the agent's context — the opposite of §3.2.
-- **Suggested fix:** In `bodyArgs`, when `!utf8.Valid(data)` or the body exceeds a display threshold, emit `--data-binary @<path>` with a placeholder path and a sibling `body_encoding: base64` field, mirroring what `corpus` already does; note the substitution in AGENT.md's Calling section.
-
-## Finding 25: The canary suite still omits the response-validation error path on a premise that is now stale
-- **Reviewer:** security
-- **Severity:** WARN
-- **File:** internal/canary/canary_test.go:423
-- **Description:** `TestErrorPathsDoNotLeakTheCredential` carries the comment "A response-validation failure is not here because response validation is not built yet (plan tasks 26 and 27). Whoever adds `--fail-on-error` adds the case." Response validation and `--fail-on-error` both shipped on this branch (Phase 3), so the premise no longer holds and the case was never added. §5a makes this suite a release gate over "every output surface", and finding 19 shows validation errors quote response field values — the exact material this test exists to check. Carried forward from the previous cycle (WARN 13). CONFIRMED by reading the live comment against the shipped features.
-- **Suggested fix:** Add the response-validation stage to the `stages` table: a spec whose response schema the server violates, a credential present throughout, `--fail-on-error` for exit 4, scanning stdout, stderr, the report and the history store. Delete the stale comment.
-
----
-
-## Finding 26: `lock_other.go` silently disables all locking on non-unix, reintroducing the trim data-loss bug
-- **Reviewer:** concurrency
-- **Severity:** INFO
 - **File:** internal/corpus/lock_other.go:11
-- **Description:** On `!unix` builds `lock` returns a no-op, so `Append`'s read-modify-write runs unserialised and two concurrent processes reproduce the destroyed-entries bug commit e0cceae fixed — with no warning, and with `Append` still returning `nil` for entries that were dropped. INFO rather than WARN only because CI builds `ubuntu-latest` only and there is no `GOOS=windows` target anywhere in the repo, so nothing ships that binary today. The comment is honest about it.
-- **Suggested fix:** Add a `//go:build windows` implementation using `LockFileEx` via `golang.org/x/sys/windows`, or make the non-unix `lock` return an error so `Append` fails loudly rather than losing data silently. At minimum record the constraint where releases are configured.
+- **Description:** `func lock(string) (func(), error) { return func() {}, nil }` under `//go:build !unix`, which excludes Windows, js and wasip1. On those platforms two concurrent processes both run the unserialised read-modify-write in `Append` (internal/corpus/store.go:115-126) and the loser's entry is erased by the winner's `replace()` rename at store.go:323 — the exact bug commit e0cceae was written to fix. `Append` returns `nil` in both, so the loss is never reported, contradicting the contract at store.go:94-95. CI is `ubuntu-latest` only and there is no release workflow yet, so this is latent — but DESIGN.md:459 promises "single static binaries per platform".
+- **Suggested fix:** Implement it with `golang.org/x/sys/windows.LockFileEx`, or keep the dependency-free posture and make the no-op loud: return an error from `lock` on `!unix`, or have `Append` skip `trim` there so appends stay append-only and nothing can be destroyed.
 
-## Finding 27: `curl` inherits talaria's whole environment, contradicting the comment that says it does not
+## Finding 22: OpenAPI server variables are dropped, so templated `servers[0].url` fails every call
+- **Reviewer:** integration
+- **Severity:** WARN
+- **File:** internal/request/build.go:178
+- **Description:** `firstServer` returns `Servers[0].URL` verbatim and ignores `Servers[0].Variables`, whose `default` values are what make a templated server usable. `baseURL()` then rejects the templated URL at build.go:160. Reproduced with the common shape `servers: [{url: "https://{env}.example.com/{basePath}", variables: {env: {default: api}, basePath: {default: v1}}}]`: every `call` and every operation of `run` fails with `base URL "https://{env}.example.com/{basePath}" … is not an absolute http(s) URL`, and the message never mentions `--base-url`, the escape hatch. `{host}` templating is standard OpenAPI, not a malformed spec.
+- **Suggested fix:** Substitute `{name}` → `Variables[name].Default` in `firstServer` before returning, leaving any unsubstituted placeholder to fail as it does today; append "; pass --base-url to override" to the build.go:160 message when the candidate came from the spec.
+
+## Finding 23: The "`--dry-run` equals real" e2e assertion is a tautology
+- **Reviewer:** integration
+- **Severity:** WARN
+- **File:** internal/e2e/e2e_test.go:454
+- **Description:** The package doc claims the suite proves "the curl `--dry-run` shows is the curl `call` runs", but the assertion compares `dry.Request.Curl` to `called.Request.Curl` — both produced by the same `curl.Render` call on the same `*request.Request`. It can never fail. Nothing in the module executes a rendered command and compares it to what talaria actually sent (internal/curl/config_test.go:479 runs curl from the config document only). This is why Finding 2 survived three review cycles.
+- **Suggested fix:** Add an e2e case that takes `request.curl` from `--dry-run`, runs it through `sh -c` against the same `httptest` server, and asserts the recorded method, path, headers and body match those of the real `call`. Parameterise over GET-with-body, HEAD, a cookie param and a form body.
+
+## Finding 24: Re-marshalling a redacted response body HTML-escapes the whole document
 - **Reviewer:** security
 - **Severity:** INFO
-- **File:** internal/curl/exec.go:40
-- **Description:** The doc comment asserts credential values are "not in the environment curl inherits (§5a)", but `cmd.Env` is never assigned, so curl inherits `os.Environ()` in full — every `TALARIA_AUTH_*` var, plus `http_proxy`, `CURL_CA_BUNDLE`, `CURL_HOME`, `SSLKEYLOGFILE`. Not itself an escalation (a same-uid process can read `/proc/self/environ` anyway), but the comment states a property the code does not implement, and closing it is the natural companion to finding 1: a curl launched with a curated `cmd.Env` cannot have its config path, CA bundle or proxy redirected by the ambient environment.
-- **Suggested fix:** Either set `cmd.Env` to a minimal allowlist and keep the comment, or correct the comment to say the guarantee is about argv only.
+- **File:** internal/secret/response.go:119
+- **Description:** When any path matches, `json.Marshal` re-encodes with Go's default HTML escaping, so the placeholder becomes `"<redacted>"` and every unrelated `<`, `>`, `&` in the server's response is rewritten too (`"note":"a<b&c"` → `"a<b&c"`). Semantically equivalent, but it contradicts the file's stated goal of reporting what the server actually sent, and only on the redacted path — so two responses differing by one field render inconsistently.
+- **Suggested fix:** Use a `json.Encoder` with `SetEscapeHTML(false)` instead of `json.Marshal`.
 
-## Finding 28: `run --report tsv` appends a prose summary line to otherwise machine-readable output
+## Finding 25: `request.headers` carries a scheme prefix the DESIGN sketch does not show
 - **Reviewer:** spec-compliance
 - **Severity:** INFO
-- **File:** cmd/talaria/run.go:539
-- **Description:** README.md:456 states "`tsv` prints bare tab-separated rows with no header line, for `cut` and `awk`", but `run --report tsv` emits a trailing single-column `5 operations: 1 passed, 2 failed, 2 skipped`, which `awk -F'\t'` reads as a bogus record. Same class, smaller: `describe --output tsv` emits the pretty prose block as single-cell rows. CONFIRMED.
-- **Suggested fix:** Drop the summary row from the TSV renderer and keep it in `pretty` only, or state the exception in README.
+- **File:** internal/request/request.go:101
+- **Description:** Returns `v.Prefix() + v.ref.String()`, producing `"Authorization": "Bearer <redacted:env:TALARIA_AUTH_BEARER>"`. DESIGN.md:233 shows it without the prefix. The shipped form is strictly more informative and leaks nothing; §5a:339 only requires `<redacted:env:NAME>`.
+- **Suggested fix:** Update the sketch at DESIGN.md:233 so the doc and the envelope agree byte-for-byte.
 
-## Finding 29: README's status line claims a scaffolded command tree that does not exist
+## Finding 26: Request and response headers have different shapes in the same envelope
 - **Reviewer:** spec-compliance
 - **Severity:** INFO
-- **File:** README.md:6
-- **Description:** "…`talaria history` and `talaria run` work so far; **the rest of the command tree is scaffolded**." Nothing else is scaffolded — `twin` and its subcommands are not registered at all (`talaria twin` → exit 2, unknown command). AGENT.md:102 handles this correctly ("designed but not yet shipped"). CONFIRMED.
-- **Suggested fix:** Replace with "the twin (Phases 5–8) is designed but not yet implemented".
+- **File:** internal/curl/exec.go:27
+- **Description:** Request headers serialise as `map[string]string`; response headers as `map[string][]string` (`http.Header`). An agent parsing "the headers of this envelope" needs two code paths.
+- **Suggested fix:** Document the asymmetry in AGENT.md, or normalise response headers to single strings joined on `, `.
 
-## Finding 30: DESIGN.md calls `search` "fuzzy find"; it is case-insensitive substring matching
+## Finding 27: `--output tsv` silently renders pretty text on row-less commands
 - **Reviewer:** spec-compliance
 - **Severity:** INFO
-- **File:** docs/design/DESIGN.md:169
-- **Description:** `internal/operation/search.go:121` uses `strings.Contains`. `talaria search … invocie` (one transposition) returns nothing; `invoic` returns the full set. README.md:122 is accurate ("It matches a substring, case-insensitively") — only the design doc's inline comment overstates, and §4's own rationale for `search` is an agent that knows a domain concept but not the operationId, where a typo is plausible. CONFIRMED.
-- **Suggested fix:** Amend §4's comment to "substring find across the spec", or record fuzzy matching as a deliberate deferral in §8.
+- **File:** README.md:477
+- **Description:** README states `tsv` "prints bare tab-separated rows with no header line" for every command. Verified: `describe … --output tsv` and `call … --output tsv` emit the identical multi-line pretty rendering, with no tabs. DESIGN only requires tsv on `list` (DESIGN.md:167), so this is doc scope, not a missing feature.
+- **Suggested fix:** Qualify README.md:471-477 — "`tsv` is a row format; commands with no row shape (`describe`, `call`, `version`) render their pretty form under it."
 
-## Finding 31: An unrecognised `openapi:` major version loads as an empty spec and exits 0
+## Finding 28: DESIGN names viper for profile/env layering; it is not a dependency
 - **Reviewer:** spec-compliance
 - **Severity:** INFO
-- **File:** internal/spec/load.go:1
-- **Description:** §4 scopes support to "Swagger 2.0 and OpenAPI 3.0/3.1/3.2", but there is no version gate before extraction: a document declaring `openapi: 4.0.0` produces `{"schema":"talaria/v1","operations":[]}` and exit 0, so an agent reads "this API has no operations" rather than exit 3, "I cannot parse this spec". 3.0/3.1/3.2 and 2.0 all work correctly. CONFIRMED.
-- **Suggested fix:** Reject an `openapi:` major other than 3 (and `swagger: "2.0"`) in `spec.Load` with `clierr.SpecLoad`, naming the supported versions.
+- **File:** docs/design/DESIGN.md:279
+- **Description:** "spf13/cobra (+ viper for profile/env layering)". `go.mod` has no viper; layering is hand-rolled in internal/config/config.go over `gopkg.in/yaml.v3`. The result is simpler and satisfies §5 Auth, but the doc still prescribes viper and `.ralph/stack.json:3` still records it.
+- **Suggested fix:** Amend DESIGN.md:279 and `.ralph/stack.json` to record the decision, as this branch did for the libopenapi-validator strictness question.
 
-## Finding 32: `exclusiveMaximum` is carried by the strict-3.0 fixture but never asserted
+## Finding 29: `history replay` silently ignores the global `--base-url`
 - **Reviewer:** spec-compliance
 - **Severity:** INFO
-- **File:** internal/validate/testdata/strict-3.0.yaml:40
-- **Description:** §8 records the libopenapi-validator 3.0 strictness question as resolved and "pinned by an adversarial 3.0 fixture carrying all four constructs, so a library upgrade that re-imposed 3.1 semantics would fail the suite". The fixture does carry all four, but internal/validate/validate_test.go asserts only `exclusiveMinimum` (line 287); nothing exercises the boolean `exclusiveMaximum` rewrite, so that quarter of the guarantee is unpinned. Carried forward from the previous cycle (INFO 20). CONFIRMED by reading fixture against test.
-- **Suggested fix:** Add a case driving a value that violates only `exclusiveMaximum`, asserting `BodyValid == false`.
+- **File:** cmd/talaria/history.go:567
+- **Description:** Replay rebuilds `BaseURL` from the recorded URL unconditionally; `--base-url` is registered persistently at cmd/talaria/root.go:73, so it parses and is discarded. Replaying a recorded staging call against localhost is the natural thing to try. The help text says "to the URL it went to", so the behaviour is discoverable, but a flag that accepts a value and does nothing is a trap.
+- **Suggested fix:** Either honour `--base-url` on replay by re-pointing the recorded path and query at the new host, or reject it with a usage error naming why.
 
-## Finding 33: JUnit reports 0.000s for the operation that consumed the entire run
+## Finding 30: The request body's media type is in the corpus but absent from `call`'s output
 - **Reviewer:** integration
 - **Severity:** INFO
-- **File:** cmd/talaria/run.go:574
-- **Description:** `seconds()` returns 0 when `TimingMS == nil`, and a timed-out operation has no timing, so it is reported as taking no time. CONFIRMED: a `--timeout 2` run with 2.11s wall clock emitted `<testcase name="getSlow" time="0.000">` and `<testsuite … time="0.002">`. The comment reasons about operations that "never reached a server" — correct for a skip, wrong for a timeout, which is precisely the case a CI timing report exists to surface.
-- **Suggested fix:** Record elapsed wall time in `runner.execute` around `curl.ExecuteWith` and use it when curl returned no timing.
+- **File:** cmd/talaria/call.go:45
+- **Description:** `requestView.Body` is a bare string; the media type appears only inside the rendered `curl` string. `corpus.Body` records `content_type`, so `history show --output json` exposes it and `call --output json` does not. An agent that wants to know what media type its generated body will be sent under has to regex the `curl` field.
+- **Suggested fix:** Add `BodyContentType string \`json:"body_content_type,omitempty"\`` to `requestView`, populated from `req.Body.ContentType` in `callPayload` (call.go:464).
 
-## Finding 34: Repeated request headers are comma-folded through the corpus, so replay sends one header where the original sent two
+## Finding 31: Garbled missing-credential message in `run`
 - **Reviewer:** integration
 - **Severity:** INFO
-- **File:** internal/corpus/entry.go:71
-- **Description:** `EntryRequest.Headers` is `map[string]string`, joined with `", "` at entry.go:191 and restored as a single pair at cmd/talaria/history.go:583. CONFIRMED: an original sending `X-Multi: one` + `X-Multi: two` replays as a single `X-Multi: one, two`. RFC 9110 field-value folding makes this equivalent for most headers and the code comments say it is deliberate, but it is a real deviation from "replay reissues the same request", with no warning. `EntryResponse.Headers` is already `map[string][]string`.
-- **Suggested fix:** If fidelity matters, change `EntryRequest.Headers` to `map[string][]string` and have `replayPairs` emit one `request.Pair` per value. Otherwise note the folding in AGENT.md.
+- **File:** cmd/talaria/run.go:405
+- **Description:** `pluralise(len(r.missing), "scheme")` is interpolated into a sentence that already reads "for security", producing `no credential for security 1 scheme tok (set $TALARIA_AUTH_BEARER)`. cmd/talaria/auth.go:155 phrases the same condition as `no credential for security scheme tok (…)`, and the run.go comment claims it uses "the same phrasing `auth check` uses". Also present at run.go:342, and already listed on `.ralph/pr_body.md:93`.
+- **Suggested fix:** Drop the count — `"no credential for security scheme%s %s"` with `""`/`"s"` — or call the helper auth.go uses.
 
-## Finding 35: DESIGN.md's exit-4 row is ambiguous about whether bare `run` should exit 4
-- **Reviewer:** spec-compliance
+## Finding 32: `Read` takes no lock, so a concurrent `history` can miss the newest entry
+- **Reviewer:** concurrency
 - **Severity:** INFO
-- **File:** docs/design/DESIGN.md:248
-- **Description:** The table reads "4 | Validation failure (response violates spec) — only with `--fail-on-error` / `run`", which can be read as "the flag, or `run`" (bare `run` exits 4) or "in the `--fail-on-error` and `run` contexts" (the flag is always required). The code implements the latter: `runner.verdict` (cmd/talaria/run.go:399) gates exit 4 on `failOnError`, and a run with 5 failed operations exits 0. CONFIRMED. The previous cycle recorded this as a WARN contradiction; the behaviour is defensible and the doc is the ambiguous part, so it is recorded here as a wording fix rather than a code bug.
-- **Suggested fix:** Reword to "only with `--fail-on-error` (on `call` or `run`)" if the current behaviour is intended, and state in README/AGENT.md that bare `run` reports failures without failing the process.
+- **File:** internal/corpus/store.go:181
+- **Description:** `Read` does a bare `os.ReadFile` while another process may be inside `write()`'s `f.Write` (store.go:233). A partial trailing line is skipped at store.go:202 and the newest entry is silently invisible. `replace`'s rename is atomic, so trim cannot tear a read — this is the append path only, and the skip is deliberate. It matters because `history show N` / `replay N` are index-based, so a reader racing an appender can index a different entry than the list it just printed. The id form added by 5aa07bf is the mitigation; the index form retains the hazard.
+- **Suggested fix:** Take the same `lock(path)` in `Read` — it is cheap and already exists — or document that index selection is stable only under a quiescent store.
+
+## Finding 33: `replace` renames without fsync, and its temp files are outside the sweep
+- **Reviewer:** concurrency
+- **Severity:** INFO
+- **File:** internal/corpus/store.go:323
+- **Description:** `replace` writes, closes and renames with no `tmp.Sync()` and no directory fsync. The comment at store.go:296-297 claims "a crash mid-trim leaves the old file intact" — true for a process crash, but on power loss the rename can reach disk before the data blocks, leaving a zero-length `history.jsonl`. Separately, a SIGKILL between `CreateTemp` (store.go:301) and `Rename` strands `.history-*` files in the state directory, which `curl.SweepStale` never collects — it scans only `os.TempDir()` (internal/curl/sweep.go:41).
+- **Suggested fix:** `tmp.Sync()` before `tmp.Close()`, and either extend `SweepStale` to the state directory or have `Append` remove stale `.history-*` siblings while it already holds the lock.
