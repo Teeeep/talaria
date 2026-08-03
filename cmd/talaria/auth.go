@@ -166,33 +166,20 @@ func unsatisfied(ops []operation.Operation, creds []config.Credential) error {
 // alternative naming a scheme talaria cannot supply — OAuth2 — is skipped
 // rather than counted against the caller: v1's position is that you bring your
 // own token for those, and there is no variable to report missing (§5 Auth).
+//
+// The rule itself is config.Covers, the same one config.Resolve picks an
+// alternative with. This verdict is the pre-flight for that call, so deriving
+// it here a second time is how the two came to disagree.
 func satisfied(op operation.Operation, byName map[string]config.Credential) bool {
 	usable := false
 
 	for _, req := range op.Security {
-		// An empty requirement is the spec saying authentication is optional here.
-		if len(req.Schemes) == 0 {
+		switch config.Covers(req, byName) {
+		case config.Optional, config.Satisfied:
 			return true
-		}
-
-		known, present := true, true
-		for _, want := range req.Schemes {
-			cred, ok := byName[want.Name]
-			switch {
-			case !ok:
-				known = false
-			case !cred.Present():
-				present = false
-			}
-		}
-
-		if !known {
-			continue
-		}
-		usable = true
-
-		if present {
-			return true
+		case config.Incomplete:
+			usable = true
+		case config.Unsupported:
 		}
 	}
 

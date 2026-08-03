@@ -73,6 +73,17 @@ paths:
       responses:
         "200":
           description: OK
+  /either-key:
+    get:
+      operationId: getEitherKey
+      # Two alternatives talaria can supply both of. Which one it picks may only
+      # depend on which credential is actually set.
+      security:
+        - keyA: []
+        - keyB: []
+      responses:
+        "200":
+          description: OK
   /open:
     get:
       operationId: getOpen
@@ -101,6 +112,14 @@ components:
       type: apiKey
       in: cookie
       name: session
+    keyA:
+      type: apiKey
+      in: header
+      name: X-A
+    keyB:
+      type: apiKey
+      in: header
+      name: X-B
     oauth2:
       type: oauth2
       flows:

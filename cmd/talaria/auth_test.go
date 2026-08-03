@@ -231,6 +231,43 @@ func TestCallExitsFiveBeforeSendingWhenACredentialIsMissing(t *testing.T) {
 	}
 }
 
+// altKeyA and altKeyB are the variables behind alternatives.yaml's two
+// interchangeable API keys.
+const (
+	altKeyA = "TALARIA_AUTH_APIKEY_KEYA"
+	altKeyB = "TALARIA_AUTH_APIKEY_KEYB"
+)
+
+func TestAuthCheckAndCallPickTheSameAlternative(t *testing.T) {
+	// The pre-flight and the call have to agree: `auth check` is documented as
+	// following the resolution `call` uses, and an agent that trusts a 0 here
+	// and then gets a 5 from `call` has no way to discover why.
+	isolateAuthEnv(t)
+	t.Setenv(altKeyA, "")
+	t.Setenv(altKeyB, authCanary)
+
+	code, _, stderr := runAuth(t, "testdata/alternatives.yaml", "--output", "json")
+	if code != 0 {
+		t.Fatalf("auth check = %d, want 0 with keyB exported; stderr: %s", code, stderr)
+	}
+
+	var out, errOut strings.Builder
+	code = run([]string{
+		"call", "testdata/alternatives.yaml", "getEither", "--dry-run", "--output", "json",
+	}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("call --dry-run = %d, want 0 with keyB exported; stderr: %s", code, errOut.String())
+	}
+
+	curl := decodeCall(t, out.String()).Request.Curl
+	if !strings.Contains(curl, "X-B") {
+		t.Errorf("curl = %s, want the keyB header X-B: keyB is the alternative with a credential", curl)
+	}
+	if strings.Contains(curl, "X-A") {
+		t.Errorf("curl = %s, want no X-A header: $%s is not set and the spec does not require it", curl, altKeyA)
+	}
+}
+
 // authEntry is one decoded scheme report, for the tests that look at fields
 // rather than at the exact document.
 type authEntry struct {

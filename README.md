@@ -165,7 +165,10 @@ environment variable by convention, and carries the *name* from there on:
 API keys are supported in all three locations — `header`, `query` and `cookie`. OAuth2 and
 OpenID Connect flows are out of scope for v1: bring your own token and let a `bearer` scheme
 carry it. When a spec offers several alternative security requirements, talaria uses the first
-one it can satisfy, so a spec offering "OAuth2 or a bearer token" resolves to the bearer token.
+one it can supply *and* has every credential for, so a spec offering "OAuth2 or a bearer token"
+resolves to the bearer token, and one offering either of two API keys resolves to whichever key
+you exported. When no alternative is fully covered, the first supported one is named in the
+exit-5 error, so there is always a variable to go set.
 
 For more than one environment, `~/.config/talaria/config.yaml` holds named profiles selected
 with `--profile`. `--profile` and `--base-url` are accepted by every command that makes

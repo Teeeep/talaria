@@ -132,6 +132,114 @@ func TestResolveSkipsRequirementsItCannotSatisfy(t *testing.T) {
 	}
 }
 
+// envKeyA and envKeyB are the conventional variables behind getEitherKey's two
+// alternatives, which talaria can supply either of.
+const (
+	envKeyA = EnvAPIKeyPrefix + "KEYA"
+	envKeyB = EnvAPIKeyPrefix + "KEYB"
+)
+
+// isolateKeys unsets both alternatives' variables, so each test states exactly
+// which credentials exist and a developer's own environment cannot decide the
+// answer for it.
+func isolateKeys(t *testing.T) {
+	t.Helper()
+	t.Setenv(envKeyA, "")
+	t.Setenv(envKeyB, "")
+}
+
+func TestResolvePrefersTheAlternativeWhoseCredentialIsSet(t *testing.T) {
+	// The spec offers keyA or keyB and only keyB is exported. Choosing keyA
+	// because it is written first refuses a call the spec allows, and refuses it
+	// by asking a human to export a variable the spec did not require.
+	isolateKeys(t)
+	t.Setenv(envKeyB, canary)
+
+	creds := resolveFixture(t, "getEitherKey", nil)
+
+	if len(creds) != 1 || creds[0].Scheme != "keyB" {
+		t.Fatalf("Resolve(getEitherKey) = %+v, want the keyB alternative: it is the one with a credential", creds)
+	}
+	if !creds[0].Present() {
+		t.Error("Resolve chose an alternative whose credential is not set")
+	}
+}
+
+func TestResolveFallsBackToTheFirstSupportedAlternativeWhenNoneIsSet(t *testing.T) {
+	// Nothing is exported, so there is nothing to prefer. The answer still has
+	// to name a variable, or exit 5 leaves an agent with nothing to act on.
+	isolateKeys(t)
+
+	creds := resolveFixture(t, "getEitherKey", nil)
+
+	if len(creds) != 1 || creds[0].Scheme != "keyA" {
+		t.Fatalf("Resolve(getEitherKey) = %+v, want the first alternative, keyA", creds)
+	}
+	if got, want := creds[0].Ref.Symbolic(), "$"+envKeyA; got != want {
+		t.Errorf("ref = %q, want %q — the missing-credential error is built from this", got, want)
+	}
+}
+
+func TestResolveAgreesWithTheCoverageAuthCheckReports(t *testing.T) {
+	// `auth check` reports on Covers and `call` acts on Resolve. Every
+	// arrangement of the two alternatives has to give both the same verdict, or
+	// the pre-flight blesses a call that then fails, or refuses one that works.
+	tests := []struct {
+		name string
+		set  []string
+	}{
+		{name: "neither"},
+		{name: "first", set: []string{envKeyA}},
+		{name: "second", set: []string{envKeyB}},
+		{name: "both", set: []string{envKeyA, envKeyB}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateKeys(t)
+			for _, name := range tt.set {
+				t.Setenv(name, canary)
+			}
+
+			op, doc := fixtureOp(t, "getEitherKey")
+
+			declared, err := Schemes(doc, nil)
+			if err != nil {
+				t.Fatalf("Schemes: %v", err)
+			}
+			byName := make(map[string]Credential, len(declared))
+			for _, cred := range declared {
+				byName[cred.Scheme] = cred
+			}
+
+			// `auth check`'s verdict: some alternative is covered outright.
+			checked := false
+			for _, req := range op.Security {
+				if c := Covers(req, byName); c == Satisfied || c == Optional {
+					checked = true
+				}
+			}
+
+			// `call`'s verdict: every credential Resolve chose is set.
+			creds := resolveFixture(t, "getEitherKey", nil)
+			resolved := true
+			for _, cred := range creds {
+				if !cred.Present() {
+					resolved = false
+				}
+			}
+
+			if checked != resolved {
+				t.Fatalf("auth check says satisfied=%v, but Resolve chose %+v (satisfied=%v)",
+					checked, creds, resolved)
+			}
+			if want := len(tt.set) > 0; checked != want {
+				t.Fatalf("satisfied = %v with %v exported, want %v", checked, tt.set, want)
+			}
+		})
+	}
+}
+
 func TestResolveReportsWhenNoRequirementIsSupported(t *testing.T) {
 	op, doc := fixtureOp(t, "getOAuthOnly")
 
