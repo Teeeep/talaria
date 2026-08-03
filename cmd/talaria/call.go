@@ -291,6 +291,9 @@ func buildRequest(
 		// that reads it. curl's stdin carries the config document and nothing
 		// else (DESIGN.md §5a).
 		Stdin: cmd.InOrStdin(),
+		// The signal context, so a `--body -` waiting on a stdin nobody is
+		// writing to ends on Ctrl-C rather than owning the process.
+		Ctx: cmd.Context(),
 	})
 }
 

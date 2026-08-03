@@ -103,7 +103,18 @@ func bodyKind(raw string) string {
 	}
 }
 
-// stdinBody reads the process's standard input to EOF.
+// stdinBody reads the process's standard input to EOF, or gives up when Ctx is
+// cancelled.
+//
+// The read runs in its own goroutine because there is no way to interrupt one
+// already in progress: stdin is a terminal, a pipe or another process, and
+// io.ReadAll on it returns when that party decides to, which may be never. Ctx
+// is the signal context, so this select is the difference between Ctrl-C ending
+// a `--body -` that is waiting on nothing and Ctrl-C doing nothing at all.
+//
+// The goroutine outlives this function when the context wins. That is
+// deliberate and bounded: its channel is buffered so the send cannot block, and
+// the only caller is a process on its way out.
 func (b *binder) stdinBody() ([]byte, bool) {
 	if b.in.Stdin == nil {
 		b.fail("--body %s reads the request body from stdin, but this process has no stdin to read",
@@ -111,13 +122,30 @@ func (b *binder) stdinBody() ([]byte, bool) {
 		return nil, false
 	}
 
-	data, err := io.ReadAll(b.in.Stdin)
-	if err != nil {
-		b.fail("cannot read the request body from stdin: %v", err)
+	type read struct {
+		data []byte
+		err  error
+	}
+	done := make(chan read, 1)
+	go func() {
+		data, err := io.ReadAll(b.in.Stdin)
+		done <- read{data, err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			b.fail("cannot read the request body from stdin: %v", r.err)
+			return nil, false
+		}
+		return r.data, true
+	case <-b.ctx().Done():
+		// Not a b.fail: a cancellation is not a bad invocation, and exit 2 tells
+		// an agent to fix its command line. It is the same interruption curl's
+		// executor reports as exit 1, reached one step earlier.
+		b.stop("the request was cancelled while reading the body from stdin")
 		return nil, false
 	}
-
-	return data, true
 }
 
 // fileBody reads a body from disk verbatim. Nothing is trimmed: a body is bytes,

@@ -80,7 +80,11 @@ talaria call getPet --param petId=42 --query verbose=true --header X-Trace=abc
   never hangs waiting for one.
 - Interrupting talaria (Ctrl-C, SIGTERM) cancels the request in flight and exits 1 with a
   message saying it was cancelled, not that it timed out. An interrupted mutation is one talaria
-  stopped sending; the attempt is still in history, with no response block.
+  stopped sending; the attempt is still in history, with no response block. A `--body -` still
+  waiting on stdin is cancelled the same way, with the same exit 1 — a body nobody is writing
+  is not a bad command line.
+- A second interrupt kills talaria outright, as an uncaught signal. The first one asks; if
+  something is stuck where the cancellation does not reach it, the second one does not have to.
 
 The response block carries status, headers, timing and body; a JSON body is embedded as JSON, so
 one parse gets you the fields. **An HTTP 4xx or 5xx exits 0** — it is a successful observation.

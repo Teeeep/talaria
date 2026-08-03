@@ -6,11 +6,13 @@ package request_test
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/curl"
@@ -133,6 +135,127 @@ func TestBodyFlagDashWithNoStdinIsUsageError(t *testing.T) {
 
 	if msg := bodyUsageErr(t, in); !strings.Contains(msg, "stdin") {
 		t.Errorf("error = %q, want it to explain that there is no stdin to read", msg)
+	}
+}
+
+// TestBodyFlagDashFromAPipeReadsToEOF is the no-regression half of the
+// cancellable read: a real pipe, closed by its writer, still arrives whole.
+// strings.Reader returns EOF on the first call and would not notice a read that
+// stopped after one chunk.
+func TestBodyFlagDashFromAPipeReadsToEOF(t *testing.T) {
+	const want = "{\"from\":\"a pipe\"}\n"
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close() //nolint:errcheck // Test cleanup.
+
+	go func() {
+		for _, chunk := range []string{want[:5], want[5:]} {
+			w.WriteString(chunk) //nolint:errcheck // The read side asserts what arrived.
+		}
+		w.Close() //nolint:errcheck // Closing is what produces the EOF under test.
+	}()
+
+	in := bodyInputs(t)
+	in.Body = []string{"-"}
+	in.Stdin = r
+
+	if got := string(buildBody(t, in).Data); got != want {
+		t.Errorf("body = %q, want the pipe read to EOF (%q)", got, want)
+	}
+}
+
+// hangingReader is a stdin that never delivers a byte and never reaches EOF: a
+// terminal nobody is typing at, or a pipe whose writer has wandered off. Read
+// blocks until the test lets go.
+type hangingReader struct{ release chan struct{} }
+
+func (r *hangingReader) Read([]byte) (int, error) {
+	<-r.release
+	return 0, io.EOF
+}
+
+// drippingReader never reaches EOF either, but it is always making progress, so
+// a read that waits for EOF waits forever while looking healthy.
+type drippingReader struct{}
+
+func (drippingReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	time.Sleep(time.Millisecond)
+	p[0] = 'x'
+	return 1, nil
+}
+
+// buildCancelled runs Build against a stdin that will not finish and asserts it
+// returns once ctx is cancelled rather than blocking on the read. The deadline
+// is the whole point: before the fix io.ReadAll owned the goroutine outright and
+// neither Ctrl-C nor `kill -TERM` could get it back.
+func buildCancelled(t *testing.T, stdin io.Reader) string {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	in := bodyInputs(t)
+	in.Body = []string{"-"}
+	in.Stdin = stdin
+	in.Ctx = ctx
+
+	type outcome struct {
+		req *request.Request
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		req, err := request.Build(in)
+		done <- outcome{req, err}
+	}()
+
+	cancel()
+
+	select {
+	case got := <-done:
+		if got.err == nil {
+			t.Fatalf("Build succeeded on a cancelled context, want a refusal; got %+v", got.req)
+		}
+		// Exit 1, the code an interrupted request already has (AGENT.md), not
+		// the usage error every other binding problem produces: the caller's
+		// command line was fine, and exit 2 would tell an agent to change it.
+		if code := clierr.From(got.err).Code; code != clierr.CodeRequestFailed {
+			t.Errorf("Build error = %v (code %d), want a request failure (%d)",
+				got.err, code, clierr.CodeRequestFailed)
+		}
+		return got.err.Error()
+	case <-time.After(5 * time.Second):
+		t.Fatal("Build did not return within 5s of the context being cancelled; the stdin read is not cancellable")
+		return ""
+	}
+}
+
+// TestStdinBodyStopsWhenTheContextIsCancelled is finding 14's reachable half:
+// `--body -` on a stdin that never closes. The signal context cancels, and this
+// is what has to notice.
+func TestStdinBodyStopsWhenTheContextIsCancelled(t *testing.T) {
+	stdin := &hangingReader{release: make(chan struct{})}
+	defer close(stdin.release)
+
+	msg := buildCancelled(t, stdin)
+	for _, want := range []string{"stdin", "cancel"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error = %q, want it to mention %q", msg, want)
+		}
+	}
+}
+
+// TestStdinBodyStopsWhileStillReceivingBytes is the same cancellation against
+// the adversary that never blocks: a pipe delivering a byte at a time forever.
+// A read that only checks the context between whole reads still hangs here.
+func TestStdinBodyStopsWhileStillReceivingBytes(t *testing.T) {
+	if msg := buildCancelled(t, drippingReader{}); !strings.Contains(msg, "stdin") {
+		t.Errorf("error = %q, want it to name the stdin read it gave up on", msg)
 	}
 }
 

@@ -211,10 +211,31 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// caught, so the sweep is the only cleanup those files will ever get.
 	curl.SweepStale()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signalContext()
 	defer stop()
 
 	return runContext(ctx, args, stdout, stderr)
+}
+
+// signalContext returns the context every command runs under: cancelled by the
+// first SIGINT or SIGTERM, after which those signals go back to killing the
+// process outright.
+//
+// The goroutine is the second half and is not optional. signal.NotifyContext
+// leaves its registration installed for the rest of the process's life, so once
+// the context is cancelled every later signal is delivered to a channel nobody
+// reads: default termination stays disabled and a caller who has already asked
+// twice to stop has no way left but `kill -9`. Uninstalling on the first one
+// makes the second a plain SIGINT again — the escape hatch for any wait this
+// context does not reach.
+func signalContext() (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+
+	return ctx, stop
 }
 
 // runContext is run with the cancellation source given rather than taken from

@@ -15,6 +15,19 @@ import (
 // history file. Tests that want a config file, or that assert on what was
 // recorded, point the variables at their own directory with t.Setenv.
 func TestMain(m *testing.M) {
+	// The signal tests re-exec this binary. Both children are meant to be ended
+	// by a signal, so neither reaches the cleanup below; they branch before
+	// anything is created, so there is nothing to leave behind. "run" is the
+	// real command tree with the arguments the parent passed, which is the only
+	// way to assert on the process's own signal handling.
+	switch os.Getenv(signalChildEnv) {
+	case "wedge":
+		runSignalChild()
+		return
+	case "run":
+		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	}
+
 	dirs := map[string]string{
 		"XDG_CONFIG_HOME": "talaria-config-*",
 		"XDG_STATE_HOME":  "talaria-state-*",

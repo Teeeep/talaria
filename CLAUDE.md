@@ -194,6 +194,24 @@ outcomes (§5a). An off-set `--base-url` is a human pointing at a twin, so the c
 with `credentials_withheld` in the envelope. An off-set *stored* host is a line in a file asking
 to be sent somewhere, so replay is exit 2. Do not unify them.
 
+**Every wait has two ways out, and the second one is not optional.** `signalContext()`
+(`cmd/talaria/root.go`) is `signal.NotifyContext` plus a goroutine that calls `stop()` on the
+first cancellation, because `NotifyContext` leaves its registration installed for the rest of
+the process's life: without the `stop()` every later SIGINT is delivered to a channel nobody
+reads, so `kill -9` becomes the only way out of anything the context does not reach. Never
+replace it with a bare `NotifyContext`. The first way out is the context itself, and it has to
+arrive wherever this process waits on something it does not control — `request.Inputs.Ctx`
+carries it to `stdinBody` (`internal/request/body.go`), which reads in a goroutine and selects
+against `Done()` because an `io.ReadAll` already in progress cannot be interrupted; `internal/curl`
+gets it through cobra for `exec.CommandContext`. A cancellation is reported with
+`binder.stop` → `clierr.RequestFailed` (exit 1), never `binder.fail` (exit 2): the caller's
+command line was fine, and it is the same interruption `curl.ExecuteWith` already exits 1 on.
+`b.fatal` beats the collected problems for that reason — half-bound inputs produce
+missing-parameter complaints that are artefacts of the interruption. The tests are
+`cmd/talaria/root_test.go`, which re-execs the test binary (`TALARIA_TEST_SIGNAL_CHILD`, branched
+in `TestMain` before any fixture exists) because the assertion is that a signal kills the
+process, and this process is the suite.
+
 **The spec is untrusted input, and so is the history file.** Both are fetched or edited outside
 this process. Bound every read, size-check before allocating, and treat any spec-derived string
 that reaches the wire as hostile until checked — a media type became a header-injection vector

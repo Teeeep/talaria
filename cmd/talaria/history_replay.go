@@ -183,6 +183,7 @@ func buildReplay(
 		Query:    replayable.Query,
 		Headers:  replayable.Headers,
 		Redactor: red.Request,
+		Ctx:      cmd.Context(),
 	}
 	if replayable.HasBody {
 		// Handed over as this replay's stdin rather than as a --body literal: a

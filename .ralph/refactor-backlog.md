@@ -69,3 +69,14 @@ that pass — and task 6's before it — deliberately did not do, and why.
   a permission denial). A shared helper needs a sentinel error and an `errors.Is` branch at each
   call site, which is the same line count plus a package and an import edge. Recorded in
   CLAUDE.md so the next pass does not re-derive it.
+
+- `internal/request/body.go:118` and `:170` — neither `stdinBody` nor `fileBody` bounds what it
+  reads: `--body -` from a 10 GB pipe and `--body @/path/to/anything` both allocate whatever
+  arrives, and the bytes then live in memory through binding, the config document and the
+  capture. Task 15 made the stdin read *cancellable* but deliberately did not add a size bound:
+  the house rule for a bound is that the number is a design decision (the spec and the store
+  both have one written down in DESIGN.md, a body does not), and a limit that silently truncates
+  a request body would send a request the user did not write. It wants a task with a number, an
+  error message, and the hostile test that fails without it — not a constant picked in a
+  refactor pass. `fileBody` is also unbounded in *time*: `os.ReadFile` on a FIFO blocks forever
+  and no context reaches it, which is precisely the wait the second Ctrl-C now exists for.

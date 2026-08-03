@@ -370,7 +370,12 @@ curl's status 28 in the message rather than a process that hangs.
 
 Interrupting talaria — Ctrl-C, or a `kill` — stops the request rather than leaving it running.
 curl is killed along with talaria, the call exits 1 saying it was cancelled, the attempt is still
-recorded in history, and nothing of the response is left behind in your temp directory.
+recorded in history, and nothing of the response is left behind in your temp directory. A
+`--body -` that is still waiting on a stdin nobody is writing to is cancelled the same way.
+
+Press Ctrl-C twice and talaria dies on the spot, with none of that cleanup: the first signal is
+handled, and handling it is the last thing the handler does. A tool you cannot interrupt is
+worse than one that leaves a temp file behind.
 
 Interrupting a `run` stops the suite there. The report covers the operations that actually ran
 and nothing else — the request that was in flight is dropped rather than reported as a failure,

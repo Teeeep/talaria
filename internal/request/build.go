@@ -1,6 +1,7 @@
 package request
 
 import (
+	"context"
 	"io"
 	"net/url"
 	"sort"
@@ -62,6 +63,13 @@ type Inputs struct {
 	// body in full before curl exists, and curl's own stdin carries the config
 	// document (DESIGN.md §5a).
 	Stdin io.Reader
+	// Ctx bounds the one part of binding that waits on something outside this
+	// process: the read of Stdin. It lives beside the reader rather than
+	// arriving as a first argument because it is that read's lifetime and
+	// nothing else's — Build itself computes, and a caller with no stdin has
+	// nothing to cancel. Nil means context.Background(); the read is then
+	// uninterruptible, which is why cmd/talaria passes cmd.Context().
+	Ctx context.Context
 }
 
 // Build binds inputs to an operation and returns the request to make.
@@ -94,6 +102,9 @@ func Build(in Inputs) (*Request, error) {
 
 	b.credentials(req)
 
+	if b.fatal != nil {
+		return nil, b.fatal
+	}
 	if err := b.err(); err != nil {
 		return nil, err
 	}
@@ -106,13 +117,39 @@ func Build(in Inputs) (*Request, error) {
 type binder struct {
 	in       Inputs
 	problems []string
+	// fatal is a failure that ends the binding rather than being collected with
+	// the others; see stop.
+	fatal error
 	// unknown records that some --param named a parameter the operation does
 	// not declare, so the error can carry the declared names as alternatives.
 	unknown bool
 }
 
+// ctx is Inputs.Ctx with the nil case filled in. A background context's Done
+// channel is nil and blocks forever, so an Inputs built without one waits on the
+// read exactly as it did before the context existed.
+func (b *binder) ctx() context.Context {
+	if b.in.Ctx == nil {
+		return context.Background()
+	}
+
+	return b.in.Ctx
+}
+
 func (b *binder) fail(format string, a ...any) {
 	b.problems = append(b.problems, clierr.Usage(format, a...).Message)
+}
+
+// stop records a failure that is not the caller's invocation and so cannot join
+// the usage problems: binding was interrupted, and there is nothing to correct.
+// It carries its own exit code and beats whatever else was collected — a
+// half-bound request produces missing-parameter complaints that are artefacts of
+// the interruption, and reporting those as usage errors would tell an agent to
+// fix a command line that was fine.
+func (b *binder) stop(format string, a ...any) {
+	if b.fatal == nil {
+		b.fatal = clierr.RequestFailed(format, a...)
+	}
 }
 
 // err folds the collected problems into one usage error, naming the operation
