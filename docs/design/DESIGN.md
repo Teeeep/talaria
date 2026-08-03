@@ -1,10 +1,18 @@
 # talaria — Design Document
 
-*Status: draft v0.4 · amended 2026-08-03 · implementation in progress on `ralph/design`*
+*Status: draft v0.5 · amended 2026-08-03 · Phases 1–3 built and merged; phase 2a remediation next*
 
 > **Name resolved: `talaria`** — the winged sandals of Hermes. The tool is not the messenger;
 > the agent is. This is what it wears to move fast. Fixes `cmd/talaria`, the binary on `$PATH`,
 > `TALARIA_AUTH_*` env vars, and the `"schema": "talaria/v1"` output field.
+
+**Changes in v0.5:** `run` is cut (§4, §5, §7) — spec-driven smoke testing is well served
+elsewhere and was the largest, least differentiated part of the tool. Three rules the phase-2
+design settled and the code is about to implement: an emitted curl references a file- or
+stdin-supplied body rather than inlining it (§3.4); the remote spec cache gets a 24-hour TTL
+with conditional revalidation and `--refresh` (§4); and `history replay` resolves nothing from a
+stored entry, which retires the env-var-namespace rule in §5a's replay table. Rationale in
+[docs/plans/2026-08-02-phase-2-boundary-design.md](../plans/2026-08-02-phase-2-boundary-design.md).
 
 **Changes in v0.4:** three invariants the code needed and the doc never stated — credentials
 bind to the spec's `servers[]` (§5a), a history entry is untrusted input when read (§5a), and a
@@ -151,7 +159,12 @@ Primary motivation remains: a tool for my own workflow. Open source is upside.
    Every executed call returns its curl equivalent: a portable reproduction for bug reports,
    docs, and scripts. **Emitted curl always references secrets symbolically** — e.g.
    `-H "Authorization: Bearer $TALARIA_AUTH_BEARER"` — runnable in a shell where the env var is
-   set, useless to exfiltrate (§5a). **Check curl's version, not just presence:**
+   set, useless to exfiltrate (§5a). **A request body is referenced, never inlined, unless the
+   caller typed it into argv:** `--body @file` emits `--data @file` and `--body -` emits
+   `--data @-`, because a body read from a file or stdin may carry a credential the agent never
+   saw. Only an argv-supplied body is inlined, since it is already in the agent's hands. This
+   keeps the emitted command both runnable and safe to print. **Check curl's version, not just
+   presence:**
    `--write-out '%{json}'` requires curl ≥ 7.70 and is a hard floor.
 
 5. **Safe by default.** Read-only (GET/HEAD/OPTIONS) unless `--allow-mutations`. The sanctioned
@@ -193,14 +206,6 @@ talaria history [--operation id] [--since 1h] [--status 4xx] [--output json]
 talaria history show <n>           # full request/response, redacted
 talaria history replay <n>         # re-issue a past call
 
-# Smoke testing
-talaria run [spec] [--tag t] [--operation id ...]
-    --base-url ... --profile ...
-    --allow-mutations
-    --report json|junit|pretty
-    --timeout 30                  # seconds, per operation; one wedged endpoint never costs the report
-    --fail-on-error               # nonzero exit if any HTTP >= 400
-
 # Digital twin (later phases)
 talaria twin serve [spec] --port 9000 [--corpus ./twin-data] [--stateful]
 talaria twin record [spec] --upstream https://api.real.com --port 9000 --corpus ./twin-data
@@ -226,6 +231,12 @@ seed; the recording proxy (Phase 5) is the industrial version. `history replay` 
 useful half of request chaining without the scenario DSL (§8).
 
 Spec argument accepts a file path or URL (with local cache); falls back to an env var.
+
+**Cache policy.** A URL-sourced spec is cached with its `ETag`/`Last-Modified`. Inside 24 hours
+it is served from cache with no network call. Past that it is revalidated with a conditional
+GET — a 304 refreshes the timestamp without re-downloading. `--refresh` forces a fetch. An
+unbounded cache is not acceptable: every downstream stage works against the contract, and a
+stale one makes `validate` report violations the server never committed.
 Supports Swagger 2.0 and OpenAPI 3.0/3.1/3.2, JSON and YAML (§5).
 
 ### Output shape for `call` (sketch)
@@ -251,7 +262,7 @@ Supports Swagger 2.0 and OpenAPI 3.0/3.1/3.2, JSON and YAML (§5).
 | 1 | Request could not be completed (network, curl failure) |
 | 2 | Usage error (unknown operation, missing required param — stderr JSON lists valid options) |
 | 3 | Spec parse/load error |
-| 4 | Validation failure (response violates spec) — only with `--fail-on-error` / `run` |
+| 4 | Validation failure (response violates spec) — only with `--fail-on-error` |
 | 5 | Credential missing for a required security scheme (distinct from usage error so agents can act on it: *ask the human to set `$NAME`*) |
 
 ## 5. Architecture
@@ -264,7 +275,6 @@ internal/operation/        # THE core model: id, method, path, params, body sche
 internal/secret/           # SecretRef, resolution, redaction  ← the trust boundary
 internal/curl/             # argv + config-document builder, executor (os/exec)
 internal/validate/         # request & response vs schema  ← shared with twin
-internal/gen/              # example/schema-based data generation ← shared with twin
 internal/corpus/           # history + recordings: store, redact, index, generalize
 internal/twin/             # http server: replay, fallback gen, state, faults
 internal/output/           # json / pretty / tsv renderers, versioned schemas
@@ -395,7 +405,7 @@ input.**
 | operationId, params, body | Re-bound through the normal request-construction path, re-validated against the current spec |
 | Credentials | **Never taken from the entry.** Re-resolved from the current environment and profile, subject to the host-binding rule above |
 | Target host | From the current `--base-url`, profile, or spec — never from the stored URL. If the stored host is outside the currently allowed set, replay refuses with exit 2 rather than silently retargeting |
-| Env var names | Only names inside the `TALARIA_AUTH_*` namespace are resolvable. A stored entry naming any other variable is malformed, not a lookup |
+| Env var names | Not applicable — nothing in a stored entry is resolved. Credentials come from the current environment and profile via the normal resolution path, so a stored entry cannot name a variable at all |
 | Sizes and types | Bounded and type-checked before use. A corrupt or hostile entry fails that entry, never the process |
 
 The rule in one line: **a history entry is data, never instruction.**
@@ -426,8 +436,8 @@ present (auth realism) but accepts placeholders — so the agent's entire develo
 runs secret-free, and real credentials exist only in a final human- or CI-gated run.
 
 **Testing requirement.** A CI suite injects canary secrets through every auth mechanism and
-greps every output surface — json, pretty, tsv, dry-run, errors, junit reports, history store,
-corpus files, debug logs — for them. Redaction regressions fail the build. **This suite is
+greps every output surface — json, pretty, tsv, dry-run, errors, history store, corpus files,
+debug logs — for them. Redaction regressions fail the build. **This suite is
 Phase 2 work and gates every release thereafter.**
 
 ### Threats explicitly not covered
@@ -441,11 +451,6 @@ Honesty about the boundary's limits:
   vars in its environment — and letting the binary read them from a file it alone opens — is
   the deployment that fully realises the boundary.
 - **Server-side logs** may record query-string keys regardless of what this tool does.
-
-### Test data for `run` mode
-
-Priority order: spec `example`/`examples` → user fixture files (`--fixtures dir/`, matched by
-operationId) → schema-generated data (`gen`). Examples-first keeps requests realistic.
 
 ## 6. The digital twin
 
@@ -487,13 +492,14 @@ router and request validator provide this directly.
 talaria twin record spec.yaml --upstream https://api.real.com --corpus ./twin
 talaria call spec.yaml listUsers --base-url http://localhost:9000        # via proxy, recorded
 talaria twin serve spec.yaml --corpus ./twin --stateful
-talaria run spec.yaml --base-url http://localhost:9000 --allow-mutations # safe destructive testing
-talaria run spec.yaml --profile staging                                   # final verification
+talaria call spec.yaml deleteUser --param id=42 --base-url http://localhost:9000 \
+    --allow-mutations                                                     # safe destructive testing
+talaria call spec.yaml listUsers --profile staging                        # final verification
 ```
 
 The agent explores the real API read-only with recording on, builds and tests destructive flows
-against the twin while injecting faults, then runs an identical smoke test against staging. It
-never needs mutation rights on a shared environment for 95% of its work.
+against the twin while injecting faults, then re-issues the same calls against staging. It never
+needs mutation rights on a shared environment for 95% of its work.
 
 **Security requirement (non-negotiable, ships with the recording proxy):** recordings contain
 real data. Redact `Authorization`, `Cookie`, `Set-Cookie`, and `*key*`/`*token*` headers by
@@ -515,7 +521,7 @@ least marginal advantage.
 | 1 | `list`, `describe`, `search`, `uses`, `call --dry-run` | Spec loading (3.x via libopenapi, 2.0 via `openapi2conv`), operation model, curl builder. Fully offline-testable. Already useful as a spec→curl tool. **Verify 2.0 conversion against real specs here** |
 | 2 | Real execution + **the credential firewall** + `history` | JSON output, exit codes, `--base-url`, profiles, env-var auth, mutation gating, `AGENT.md` v1. **All of §5a ships here:** `SecretRef`, symbolic curl, redacted output, `-K -` config-on-stdin, stdin-ownership rule, `auth check`, exit code 5, canary CI suite. Plus the corpus store behind `history`. **Not retrofittable — it shapes the core `Request` type.** This phase is the product |
 | 3 | Response validation | Status documented? Body matches schema? Content-type? `validation` block; exit code 4. Built on libopenapi-validator |
-| 4 | `run` smoke mode | Tag/operation filters, examples→fixtures→gen data, JUnit/JSON reports. CI-ready. **End of the differentiated core — ship it, use it, and let real usage decide whether the twin earns its keep** |
+| 4 | ~~`run` smoke mode~~ — **cut 2026-08-03** | Built, then removed: spec-driven smoke testing is well served by Schemathesis, Hurl and newman, and it was the largest and least differentiated part of the tool. `call`, `history` and the spec commands are the differentiated core. See `docs/plans/2026-08-02-phase-2-boundary-design.md` §2.1 |
 | 5 | Recording proxy + redaction | The corpus spine, industrial version. Useful alone |
 | 6 | `twin serve`: replay + spec fallback + request validation | Prism parity, corpus-fed. Router from libopenapi-validator |
 | 7 | Stateful twin + data synthesis | CRUD inference, generalization — the actual differentiator (§6) |

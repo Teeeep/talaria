@@ -8,7 +8,7 @@
 # Options:
 #   --resume             Continue from .ralph/state
 #   --from PHASE         Force start phase: stack|plan|build|review|pr
-#   --review-every N     Run a review pass every N build iterations (0 = only at the end)
+#   --review-every N     Run a review pass every N build iterations (default 5; 0 = only at the end)
 #   --no-pr              Stop after review; do not open a PR
 #   --no-tracker         Do not require Loop Tracker
 #   --plan-max N         Max plan iterations (default 5)
@@ -32,7 +32,7 @@ NO_TRACKER=false
 PLAN_MAX=5
 BUILD_MAX=0            # 0 = derive from task count
 REVIEW_MAX=3
-REVIEW_EVERY=0        # 0 = review once after all tasks; N = review every N build iterations
+REVIEW_EVERY=5        # review every N build iterations; 0 = only once, after all tasks
 TIME_BUDGET=14400
 RETRY_MAX=5
 RETRY_DELAY=30

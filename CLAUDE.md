@@ -3,7 +3,7 @@
 An OpenAPI CLI an agent can drive without ever seeing your credentials.
 
 **This file is how the codebase is written. It is not what to build** — that is
-`docs/design/DESIGN.md` (currently v0.4), the source of truth for scope and behaviour, and
+`docs/design/DESIGN.md` (currently v0.5), the source of truth for scope and behaviour, and
 `docs/plans/2026-08-02-phase-2-boundary-design.md` for what comes next. Record patterns here as
 you establish them; the next session starts with no memory of this one.
 
