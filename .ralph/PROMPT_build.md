@@ -9,9 +9,13 @@ context fills, quality drops, and the commit boundary stops matching the task bo
 ## Orient
 
 1. Read `.ralph/stack.json` — the test, build, and lint commands for this project.
-2. Read `tasks.json`. Pick the highest-priority task with `done: false`. You decide priority:
-   respect `depends_on`, prefer whatever unblocks the most other work, and prefer CRIT-derived
-   fix tasks over everything else.
+2. Read `tasks.json` and pick your task:
+   - **If any task has `"kind": "fix"` and `done: false`, take the lowest-numbered one.
+     No exceptions, whatever else looks more urgent.** A review cycle appended those, and
+     the loop's fix round ends when they are all closed — picking a feature task instead
+     stalls that round against a condition it cannot meet.
+   - Otherwise pick the highest-priority task with `done: false`. You decide priority:
+     respect `depends_on` and prefer whatever unblocks the most other work.
 3. Read **only your task's section** of the plan file — `plan_file` in `tasks.json`,
    lines `line_start` to `line_end`. Reading the whole plan wastes the context you need for
    the actual work.

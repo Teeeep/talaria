@@ -32,7 +32,9 @@ NO_TRACKER=false
 PLAN_MAX=5
 BUILD_MAX=0            # 0 = derive from task count
 REVIEW_MAX=3
-REVIEW_EVERY=5        # review every N build iterations; 0 = only once, after all tasks
+REVIEW_EVERY=6        # review every N build iterations; 0 = only once, after all tasks.
+                      # 6 = the planner's block size (5 feature tasks + 1 refactor pass), so
+                      # each checkpoint lands just after a refactor pass rather than before it.
 TIME_BUDGET=14400
 RETRY_MAX=5
 RETRY_DELAY=30
@@ -199,6 +201,23 @@ has_open_tasks() {
   local incomplete
   incomplete=$(jq '[.tasks[] | select(.done != true)] | length' tasks.json 2>/dev/null || echo 0)
   [ "${incomplete:-0}" -gt 0 ]
+}
+
+# Tasks a review cycle appended, tagged `"kind": "fix"` by PROMPT_review_plan.md.
+# The interim fix round is bounded to these. Its predecessor used all_tasks_done, so the
+# first checkpoint review that found a CRIT built every remaining feature task inside the
+# review phase — and no later checkpoint ever fired, which defeats --review-every entirely.
+count_open_fix_tasks() {
+  [ -f tasks.json ] || { echo 0; return; }
+  local c
+  c=$(jq '[.tasks[] | select(.done != true and .kind == "fix")] | length' tasks.json 2>/dev/null || echo 0)
+  echo "${c:-0}"
+}
+
+# Done-condition for the fix round: every fix task closed. Feature tasks still open are
+# not this round's business — the checkpointed build loop picks them back up.
+fix_tasks_done() {
+  [ "$(count_open_fix_tasks)" -eq 0 ]
 }
 
 tracker_phase() {
@@ -553,8 +572,22 @@ phase_review() {
       push_changes; unset RALPH_REVIEW_CYCLE; return 5
     fi
 
-    run_iterations 0 "$RALPH_DIR/PROMPT_build.md" "review_fix" 3 all_tasks_done
-    local rc=$?
+    # Bound the fix round to the tasks this cycle created. A fix task may need a second
+    # iteration, so allow two apiece rather than exactly one.
+    local open_fixes rc
+    open_fixes=$(count_open_fix_tasks)
+    if [ "$open_fixes" -gt 0 ]; then
+      log "Fixing $open_fixes task(s) from cycle $cycle."
+      run_iterations "$((open_fixes * 2))" "$RALPH_DIR/PROMPT_build.md" "review_fix" 3 fix_tasks_done
+      rc=$?
+    else
+      # No task carries kind:"fix" — a tasks.json written before this field existed, or a
+      # planner that dropped it. Falling back to the whole backlog keeps the fixes from
+      # being skipped; it costs the checkpoint rhythm, which is the old behaviour anyway.
+      log "No kind:\"fix\" tasks present — falling back to the full backlog for this round."
+      run_iterations 0 "$RALPH_DIR/PROMPT_build.md" "review_fix" 3 all_tasks_done
+      rc=$?
+    fi
     [ "$rc" -eq 4 ] && return 4
     push_changes
     sleep 5

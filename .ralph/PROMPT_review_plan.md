@@ -35,6 +35,12 @@ You are in REVIEW PLAN mode. Convert review findings into fix tasks. Do NOT fix 
    number already present; never restart at 1 and never reuse an id. `total_tasks` becomes
    the count of *all* tasks, old and new, so progress stays truthful across the whole run
    instead of resetting each time a review lands.
+5a. **Every task you append carries `"kind": "fix"`.** This is not cosmetic and not optional.
+   `loop.sh` counts these entries to size the fix round and to know when it is finished, and
+   the build prompt takes them ahead of any feature task. Omit the field and the fix round
+   falls back to building the entire remaining backlog inside the review phase, which is what
+   stops later review checkpoints from ever running. Never add `kind` to a task that was
+   already in the file — a pre-existing entry without it is a feature task and must stay one.
 6. Commit.
 
 ## Task Format
@@ -64,13 +70,14 @@ You are in REVIEW PLAN mode. Convert review findings into fix tasks. Do NOT fix 
   "generated_at": "<ISO 8601 timestamp>",
   "total_tasks": 0,
   "tasks": [
-    { "id": 1, "section": "1", "title": "…", "line_start": 0, "line_end": 0, "done": false }
+    { "id": 1, "section": "1", "title": "…", "line_start": 0, "line_end": 0, "done": false },
+    { "id": 9, "section": "9", "title": "…", "line_start": 0, "line_end": 0, "done": false, "kind": "fix" }
   ]
 }
 ```
 
-The tasks **you add** start `done: false`. Every task already in the file keeps its existing
-state untouched — rewriting a `done: true` back to `false` re-runs finished work and makes the
+The tasks **you add** start `done: false` and carry `"kind": "fix"`. Every task already in the
+file keeps its existing state untouched, `kind` included — absent means feature task — rewriting a `done: true` back to `false` re-runs finished work and makes the
 loop look like it is going backwards. Carry `spec_file` across unchanged; losing it blinds the
 next review phase to the design doc.
 
@@ -89,6 +96,8 @@ git commit -m "review-plan: N tasks from M CRIT findings (cycle <N>)"
 - CRIT findings only. WARN and INFO produce no tasks.
 - Append, never replace. Earlier tasks and their `done` state survive every review cycle, so
   `total_tasks` only ever grows and the completed count never resets.
+- Every appended task carries `"kind": "fix"`. The loop reads it; without it the fix round
+  cannot tell your tasks from the feature backlog.
 - Reference the specific finding numbers in every task.
 - Do NOT modify or delete `REVIEW_FINDINGS.md` — the next review cycle regenerates it, and it
   stays readable in git history.
