@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pb33f/libopenapi/orderedmap"
+
 	"github.com/Teeeep/talaria/internal/clierr"
 )
 
@@ -77,6 +79,47 @@ func TestLoadBytesAcceptsRawSpecBytes(t *testing.T) {
 	}
 	if doc.Version != "3.1.0" {
 		t.Errorf("Version = %q, want 3.1.0", doc.Version)
+	}
+}
+
+// A server URL's variables are what internal/request substitutes to get the URL
+// a request actually goes to, and §5a defines the allowed host set as the
+// servers *after* substitution. Both read Servers[].Variables off the loaded
+// model, so the loader has to carry defaults and enums through intact.
+func TestLoadFileKeepsServerVariables(t *testing.T) {
+	doc, err := LoadFile(filepath.Join("testdata", "server-variables.yaml"))
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+
+	if got, want := len(doc.Model.Servers), 2; got != want {
+		t.Fatalf("server count = %d, want %d", got, want)
+	}
+	if got, want := doc.Model.Servers[0].URL, "https://{region}.api.example.com/{version}"; got != want {
+		t.Errorf("servers[0].url = %q, want %q — the loader does not substitute, internal/request does", got, want)
+	}
+
+	vars := doc.Model.Servers[0].Variables
+	if vars == nil {
+		t.Fatal("servers[0].variables is nil")
+	}
+
+	region := vars.GetOrZero("region")
+	if region == nil {
+		t.Fatal("servers[0].variables has no region")
+	}
+	if got, want := region.Default, "eu"; got != want {
+		t.Errorf("region.default = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(region.Enum, ","), "eu,us"; got != want {
+		t.Errorf("region.enum = %q, want %q", got, want)
+	}
+
+	if version := vars.GetOrZero("version"); version == nil || version.Default != "v1" {
+		t.Errorf("version variable = %+v, want a default of v1", version)
+	}
+	if orderedmap.Len(doc.Model.Servers[1].Variables) != 0 {
+		t.Errorf("servers[1] declares variables it does not have")
 	}
 }
 

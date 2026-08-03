@@ -4,7 +4,7 @@
   "generated_at": "2026-08-03T13:05:00Z",
   "total_tasks": 24,
   "tasks": [
-    { "id": 1, "section": "1", "title": "Substitute server variables in servers[].url", "line_start": 141, "line_end": 196, "done": false },
+    { "id": 1, "section": "1", "title": "Substitute server variables in servers[].url", "line_start": 141, "line_end": 196, "done": true },
     { "id": 2, "section": "2", "title": "Compute the allowed host set (no enforcement yet)", "line_start": 199, "line_end": 268, "done": false },
     { "id": 3, "section": "3", "title": "Credentials bind to hosts, and replay re-derives — findings 1, 2, 3, 22", "line_start": 271, "line_end": 479, "done": false },
     { "id": 4, "section": "4", "title": "An unsupported security scheme is reported, not hidden — findings 4 and 21", "line_start": 482, "line_end": 586, "done": false },

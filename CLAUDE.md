@@ -54,6 +54,14 @@ about to put a resolved credential in a field typed `string`, stop — that is t
 design exists to prevent. `SecretRef` cannot print itself; keep it that way, so leaking requires
 a deliberate, greppable call.
 
+**A server URL is a template.** `servers[].url` carries `{name}` spans filled from
+`servers[].variables`, and §5a defines the allowed host set as the servers *after*
+substitution. `internal/request` owns it — `ServerURLs(doc)` for the whole set,
+`binder.firstServer` for the base URL. Nothing else reads `doc.Model.Servers[i].URL`, because a
+raw one names the host `{region}.api.example.com`. A variable's value may not hold a character that could move
+the URL's authority (`/?#@:[]\{}`, space, control), and a server that fails to substitute is
+left out of the result: the host set may be narrower than the spec, never wider.
+
 **Credentials bind to hosts.** A resolved credential goes only to a host the spec declares or a
 human explicitly allowed. Redaction answers *does it print*; it does not answer *who receives
 it*. Both questions need an answer for every new path that carries a credential.

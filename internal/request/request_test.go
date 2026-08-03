@@ -617,6 +617,221 @@ func TestBuildRejectsANonHTTPServerDeclaredByTheSpec(t *testing.T) {
 	}
 }
 
+// serverSpec is a one-operation spec whose servers block a test supplies, so a
+// server-variable case reads as the YAML an agent would actually meet rather
+// than as a hand-built model.
+const serverSpec = `openapi: 3.0.3
+info:
+  title: Servers
+  version: 1.0.0
+servers:
+%s
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        '200':
+          description: ok
+`
+
+func serverInputs(t *testing.T, servers string) Inputs {
+	t.Helper()
+
+	doc, err := spec.LoadBytes([]byte(fmt.Sprintf(serverSpec, servers)))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+
+	ops := operation.Extract(doc)
+	if len(ops) != 1 {
+		t.Fatalf("fixture has %d operations, want 1", len(ops))
+	}
+
+	return Inputs{Op: ops[0], Doc: doc}
+}
+
+// A server URL is a template: OpenAPI 3.x lets `servers[].url` carry {name}
+// spans filled from `servers[].variables`. Without substitution a large class of
+// 3.x specs is uncallable without --base-url, and §5a's allowed host set would
+// be computed from a URL naming the host `{region}.api.example.com`.
+func TestBuildSubstitutesServerVariables(t *testing.T) {
+	in := serverInputs(t, `  - url: https://{region}.{env}.example.com/{version}
+    variables:
+      region:
+        default: eu
+        enum:
+          - eu
+          - us
+      env:
+        default: prod
+      version:
+        default: v1`)
+
+	if got, want := build(t, in).BaseURL, "https://eu.prod.example.com/v1"; got != want {
+		t.Errorf("BaseURL = %q, want %q", got, want)
+	}
+}
+
+// Every string here comes from the spec, which is untrusted input. A variable
+// fills one segment of a URL the spec already wrote; a value that can move the
+// authority turns "substitute a region" into "send the credentials somewhere
+// else", which is the same class the url.PathEscape rule in binder.path guards.
+func TestBuildRejectsUnusableServerVariables(t *testing.T) {
+	oneVar := func(url, body string) string {
+		return "  - url: " + url + "\n    variables:\n      region:\n" + body
+	}
+
+	tests := []struct {
+		name    string
+		servers string
+		want    []string
+	}{
+		{
+			"default outside its own enum",
+			oneVar("https://{region}.example.com", "        default: dev\n        enum:\n          - eu\n          - us"),
+			[]string{"region", "enum"},
+		},
+		{
+			"no default at all",
+			oneVar("https://{region}.example.com", "        enum:\n          - eu"),
+			[]string{"region", "default"},
+		},
+		{
+			"placeholder the spec declares no variable for",
+			"  - url: https://{region}.example.com",
+			[]string{"region"},
+		},
+		{
+			"placeholder with an empty name",
+			"  - url: https://{}.example.com",
+			[]string{"placeholder"},
+		},
+		{
+			"unmatched brace",
+			"  - url: https://api{.example.com",
+			[]string{"{"},
+		},
+		{
+			// Substitute once, never to a fixed point: a default naming its own
+			// placeholder has to terminate rather than expand forever.
+			"self-referential default",
+			oneVar("https://{region}.example.com", "        default: \"{region}\""),
+			[]string{"region"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := buildErr(t, serverInputs(t, tt.servers))
+			for _, want := range tt.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %v does not mention %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// The authority separators, one subtest each: a default carrying one of these
+// must never produce a URL whose host is the value's rather than the template's.
+func TestBuildRejectsAServerVariableThatCouldMoveTheHost(t *testing.T) {
+	for _, value := range []string{
+		"evil.com/", "evil.com#", "evil.com?", "evil.com@", "evil.com:8443",
+		"a\\b", "[::1]", "{region}", "a b", "a\rb", "a\nb",
+	} {
+		t.Run(value, func(t *testing.T) {
+			in := serverInputs(t, "  - url: https://{region}.api.example.com\n"+
+				"    variables:\n      region:\n        default: "+fmt.Sprintf("%q", value))
+
+			req, err := Build(in)
+			if err == nil {
+				t.Fatalf("Build accepted a host-moving default; BaseURL = %q", req.BaseURL)
+			}
+			if !strings.Contains(err.Error(), "region") {
+				t.Errorf("error %v does not name the variable", err)
+			}
+			if urls := ServerURLs(in.Doc); len(urls) != 0 {
+				t.Errorf("ServerURLs = %v, want a host-moving default kept out of the allowed host set", urls)
+			}
+		})
+	}
+}
+
+// A URL is a scheme, a host and a short prefix. Without a ceiling, a template
+// with many placeholders and a long default grows by their product — the spec
+// chooses both.
+func TestBuildBoundsTheSubstitutedServerURL(t *testing.T) {
+	tests := []struct {
+		name        string
+		url, value  string
+		placeholder int
+	}{
+		{"long template", "", "eu", 10000},
+		{"long result", "", strings.Repeat("a", 200), 100},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := "https://" + strings.Repeat("{region}", tt.placeholder) + ".example.com"
+			in := serverInputs(t, "  - url: "+url+"\n    variables:\n      region:\n        default: "+tt.value)
+
+			req, err := Build(in)
+			if err == nil {
+				t.Fatalf("Build accepted an unbounded server URL; BaseURL is %d bytes", len(req.BaseURL))
+			}
+			if urls := ServerURLs(in.Doc); len(urls) != 0 {
+				t.Errorf("ServerURLs returned %d entries, want the unbounded server left out", len(urls))
+			}
+		})
+	}
+}
+
+// A spec whose server variables do not substitute is not a problem for a run
+// that supplied its own base URL: the spec's server is the last candidate, so it
+// is only read when nothing better exists.
+func TestBuildIgnoresAnUnusableServerWhenTheBaseURLIsGiven(t *testing.T) {
+	in := serverInputs(t, "  - url: https://{region}.example.com")
+	in.BaseURL = "https://api.example.com"
+
+	if got, want := build(t, in).BaseURL, "https://api.example.com"; got != want {
+		t.Errorf("BaseURL = %q, want %q", got, want)
+	}
+}
+
+// ServerURLs is what Task 2's allowed host set is computed from, so it has to
+// report the servers as they will be called, not as they were written.
+func TestServerURLsSubstitutesEveryServerInSpecOrder(t *testing.T) {
+	in := serverInputs(t, `  - url: https://{region}.api.example.com/v1
+    variables:
+      region:
+        default: eu
+  - url: https://backup.example.com/v1`)
+
+	got := ServerURLs(in.Doc)
+	want := []string{"https://eu.api.example.com/v1", "https://backup.example.com/v1"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("ServerURLs = %v, want %v", got, want)
+	}
+}
+
+// A URL that does not substitute names no host. Leaving it out keeps the host
+// set narrower than the spec, which is the only direction that is safe to be
+// wrong in.
+func TestServerURLsLeavesOutAServerItCannotSubstitute(t *testing.T) {
+	in := serverInputs(t, `  - url: https://{region}.api.example.com/v1
+  - url: https://backup.example.com/v1`)
+
+	got := ServerURLs(in.Doc)
+	if len(got) != 1 || got[0] != "https://backup.example.com/v1" {
+		t.Errorf("ServerURLs = %v, want only the server that substitutes", got)
+	}
+
+	if got := ServerURLs(nil); got != nil {
+		t.Errorf("ServerURLs(nil) = %v, want nil", got)
+	}
+}
+
 func TestBuildRejectsANonHTTPProfileBaseURL(t *testing.T) {
 	in := inputs(t, "listPets")
 	in.Params = []string{"limit=10"}
