@@ -41,8 +41,6 @@ type Source string
 const (
 	// SourceCall is one interactive `talaria call`.
 	SourceCall Source = "call"
-	// SourceRun is one request made by `talaria run`.
-	SourceRun Source = "run"
 	// SourceReplay is a `talaria history replay` of an earlier entry.
 	SourceReplay Source = "replay"
 )

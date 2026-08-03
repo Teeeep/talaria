@@ -5,7 +5,7 @@ your credentials.*
 
 > **Status: early implementation.** `talaria version`, `talaria list`, `talaria describe`,
 > `talaria search`, `talaria uses`, `talaria call`, `talaria auth check`,
-> `talaria history` and `talaria run` work so far; the rest of the command tree is scaffolded.
+> `talaria list`, `describe`, `search`, `uses`, `call`, `auth check` and `history` work so far.
 > The [design document](docs/design/DESIGN.md) is the source of truth.
 
 Every API client — Postman, Insomnia, Bruno, curl itself — assumes the operator is a human who
@@ -428,59 +428,6 @@ TALARIA_HISTORY=off talaria call ./openapi.yaml getPet --param petId=42
 variable is what someone auditing a machine sets. Either way nothing is written — no entry, no
 file, no directory. A dry run is never recorded; a request that failed to complete is, with no
 response block, because it is still something that was tried.
-
-## Smoke testing
-
-`run` is `call` over many operations at once — the command that answers "is this whole API
-behaving?" and the one a CI job invokes:
-
-```sh
-talaria run ./openapi.yaml --base-url http://localhost:9000
-talaria run ./openapi.yaml --tag pets --operation getPet --fail-on-error
-talaria run ./openapi.yaml --fixtures ./fixtures --allow-mutations --report json
-```
-
-`--tag` and `--operation` both repeat and combine as a **union**; with neither, the whole spec
-runs. A filter matching nothing exits 2 rather than passing with nothing tested. Operations run
-one at a time, in spec order — determinism beats speed, and parallel calls against a real API
-are a surprise nobody asked for.
-
-Test data follows one priority chain: the spec's own `example`, then a fixture file, then
-generation from the schema. `--fixtures dir/` supplies the middle one, matched by operationId —
-`dir/createPet.json` holds `{"params": {…}, "headers": {…}, "body": {…}}`, every field optional.
-
-A generated body is always JSON, so `run` sends it as `application/json` — or as the operation's
-own JSON media type, `application/vnd.api+json` say — whatever else the spec lists first. An
-operation that declares no JSON media type at all, such as a converted Swagger 2.0 `formData`
-operation, still gets `application/json`, because that is what the bytes are; a server that only
-speaks XML answering 415 is a truer result than JSON labelled `application/xml`. A fixture
-`headers` entry setting `Content-Type` wins, as `--header` does in `call`.
-
-Each operation is reported as `passed`, `failed` or `skipped`, with a `reason` for the last two
-and a `summary` block counting all four numbers. A skip is not a failure: a `DELETE` left alone
-without `--allow-mutations`, or an operation whose required parameter nothing could supply, is
-correct behaviour rather than a broken API. `--report json|pretty|tsv|junit` is `run`'s own
-format flag and overrides `--output`.
-
-`--timeout` applies per operation, not per suite. An endpoint that never answers is one failed
-line in the report with curl's status 28 in its reason, so the run still finishes and CI still
-gets its output.
-
-`--report junit` writes a JUnit XML suite — one `<testcase>` per operation, named by
-operationId, with a `<failure>` or `<skipped>` child carrying the reason — which is what makes
-`run` land in CI without glue:
-
-```sh
-talaria run ./openapi.yaml --base-url "$STAGING" --report junit > report.xml
-```
-
-`junit` is a `--report` value only: a suite of operations is the one thing there is to render
-as a test report, so `--output junit` exits 2.
-
-Failing operations exit 0 unless you pass `--fail-on-error`, which makes them exit 4. A missing
-credential exits 5 either way — that operation was never tested, and the fix is exporting a
-variable, not reading a report. Every request goes into history with `"source": "run"`, under
-its own 1000-entry cap, so a run over a large spec cannot bury the calls you made by hand.
 
 ## Output
 

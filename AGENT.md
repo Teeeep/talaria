@@ -38,7 +38,6 @@ one, the argument is the operationId.
 | `talaria describe [spec] <operationId> [--depth n]` | one operation's params, request body and responses |
 | `talaria uses [spec] <schema>` | every operation that touches a component schema |
 | `talaria call [spec] <operationId>` | build and send one request; `--dry-run` builds only, `--fail-on-error` exits 4 on an HTTP or spec violation |
-| `talaria run [spec] [--tag t] [--operation id]` | smoke-test many operations at once and report one line each |
 | `talaria auth check [spec]` | which credentials the spec needs and whether they are set |
 | `talaria history [--operation id] [--since 1h] [--status 4xx] [--source call\|run\|replay]` | what has already been called |
 | `talaria history show <id\|n>` | one recorded request/response in full |
@@ -105,49 +104,6 @@ Needing `--allow-mutations` is a decision, not a formality. Do not add it to a c
 failed on it without saying what you are about to change and on which host. The sanctioned way
 to exercise a `DELETE` is against a disposable environment — point `--base-url` at one. (The
 built-in digital twin that will make this cheap is designed but not yet shipped.)
-
-## Smoke testing
-
-`run` is `call` over many operations: it answers "is this whole API behaving?" in one command.
-
-```sh
-talaria run ./openapi.yaml --tag pets --operation getPet --base-url http://localhost:9000
-```
-
-- `--tag` and `--operation` both repeat, and combining them is the **union**, not the
-  intersection. No filter at all runs the whole spec. A filter that matches nothing exits 2
-  rather than passing with nothing tested.
-- Operations run one at a time, in spec order.
-- Request data comes from the spec's own `example` first, then a file in `--fixtures dir/` named
-  `<operationId>.json`, then generation from the schema. A fixture is `{"params": {…},
-  "headers": {…}, "body": {…}}`; every field is optional.
-- `--report json|pretty|tsv|junit` is `run`'s own format flag and overrides `--output`. `junit`
-  writes a JUnit XML suite — one `<testcase>` per operation, `<failure>` or `<skipped>` carrying
-  the reason — for a CI job to collect. It is a `--report` value only; `--output junit` exits 2.
-- `--timeout` bounds each operation, not the suite. An endpoint that never answers becomes one
-  failed line and the report still arrives.
-
-Each operation reports `passed`, `failed` or `skipped`, plus a `reason` for the last two:
-
-```json
-{"operation_id":"getPet","method":"GET","path":"/pets/{petId}","outcome":"passed","status":200,
- "timing_ms":12,"validation":{"status_documented":true,"body_valid":true,"errors":[]}}
-```
-
-**A skip is not a failure.** A `DELETE` left alone without `--allow-mutations`, or an operation
-whose required parameter nothing could supply, is correct behaviour — read the `reason` before
-reacting. The `summary` block carries `total`, `passed`, `failed` and `skipped`.
-
-Exit codes follow `call`: failures exit 0 unless you pass `--fail-on-error`, which makes them
-exit 4. A missing credential exits **5** whichever flags you passed — that operation was never
-tested, so ask a human to export the variable named in its `reason`. Every request `run` makes is
-recorded in history with `"source": "run"`, and `history --source call` filters them back out.
-
-Interrupting a `run` (Ctrl-C, SIGTERM) stops the suite where it stands and exits **1** saying how
-many operations it got through. The report holds only those: the operation whose request was
-cancelled in flight is dropped rather than counted as `failed`, and the ones after it were never
-attempted, so they are neither report lines nor history entries. Treat a cancelled run as
-telling you nothing about the operations it did not reach.
 
 ## Credentials
 
