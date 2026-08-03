@@ -18,16 +18,6 @@ import (
 // saying one was removed — so replaying it would send the note itself.
 const redactionMark = "<redacted"
 
-// Parameter locations, as OpenAPI spells them in a parameter's `in:`. They are
-// spelled out rather than aliased from internal/config because this package
-// deliberately does not import it — the store has to stay usable by the twin,
-// which has no profiles.
-const (
-	inQuery  = "query"
-	inHeader = "header"
-	inCookie = "cookie"
-)
-
 // builtinCredentialNames is §5a's non-configurable list of names that carry a
 // credential — Authorization, Cookie, *api*key*, *token*, *secret*. A recorded
 // field under one of those names is dropped on replay whatever it holds:
@@ -120,7 +110,7 @@ func (r *Replayable) query(declared map[string]string, raw string) error {
 			return clierr.Usage("the recorded value of query parameter %q cannot be parsed: %v", name, err)
 		}
 
-		r.take(declared, "query parameter", inQuery, name, value, &r.Query)
+		r.take(declared, "query parameter", operation.InQuery, name, value, &r.Query)
 	}
 
 	return nil
@@ -132,7 +122,7 @@ func (r *Replayable) query(declared map[string]string, raw string) error {
 // deterministic.
 func (r *Replayable) headers(declared map[string]string, stored map[string]string) {
 	for _, name := range sortedNames(stored) {
-		r.take(declared, "header", inHeader, name, stored[name], &r.Headers)
+		r.take(declared, "header", operation.InHeader, name, stored[name], &r.Headers)
 	}
 }
 
@@ -142,7 +132,7 @@ func (r *Replayable) headers(declared map[string]string, stored map[string]strin
 // credential is re-resolved rather than replayed.
 func (r *Replayable) cookies(declared map[string]string, stored map[string]string) {
 	for _, name := range sortedNames(stored) {
-		r.take(declared, "cookie", inCookie, name, stored[name], nil)
+		r.take(declared, "cookie", operation.InCookie, name, stored[name], nil)
 	}
 }
 

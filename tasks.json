@@ -9,7 +9,7 @@
     { "id": 3, "section": "3", "title": "Credentials bind to hosts, and replay re-derives — findings 1, 2, 3, 22", "line_start": 271, "line_end": 479, "done": true },
     { "id": 4, "section": "4", "title": "An unsupported security scheme is reported, not hidden — findings 4 and 21", "line_start": 482, "line_end": 586, "done": true },
     { "id": 5, "section": "5", "title": "A spec-supplied media type cannot inject headers — finding 5", "line_start": 589, "line_end": 660, "done": true },
-    { "id": 6, "section": "6", "title": "Refactor pass — tasks 1-5", "line_start": 663, "line_end": 697, "done": false },
+    { "id": 6, "section": "6", "title": "Refactor pass — tasks 1-5", "line_start": 663, "line_end": 697, "done": true },
     { "id": 7, "section": "7", "title": "A request body carrying a secret does not print on stdout — finding 6", "line_start": 700, "line_end": 775, "done": false },
     { "id": 8, "section": "8", "title": "internal/corpus stops importing internal/curl — finding 30", "line_start": 778, "line_end": 829, "done": false },
     { "id": 9, "section": "9", "title": "History entries are size-bounded on read — finding 13", "line_start": 832, "line_end": 882, "done": false },

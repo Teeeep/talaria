@@ -1,15 +1,10 @@
 package request
 
 import (
-	"errors"
-	"fmt"
 	"io"
 	"net/url"
-	"slices"
 	"sort"
 	"strings"
-
-	v3high "github.com/pb33f/libopenapi/datamodel/high/v3"
 
 	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/config"
@@ -18,14 +13,13 @@ import (
 	"github.com/Teeeep/talaria/internal/spec"
 )
 
-// Parameter locations. Three of them are also credential locations and are
-// aliased from internal/config so the two packages cannot drift; `path` is the
-// one place a credential never goes, which is why config does not name it.
+// Parameter locations, aliased from the package that owns the `In` field they
+// describe so the spellings here cannot drift from the ones that produced them.
 const (
-	inPath   = "path"
-	inQuery  = config.InQuery
-	inHeader = config.InHeader
-	inCookie = config.InCookie
+	inPath   = operation.InPath
+	inQuery  = operation.InQuery
+	inHeader = operation.InHeader
+	inCookie = operation.InCookie
 )
 
 // Inputs is everything one call needs: the operation and the document it came
@@ -135,226 +129,6 @@ func (b *binder) err() error {
 	}
 
 	return err
-}
-
-// baseURL resolves where the request goes: --base-url, then the profile, then
-// the spec's first server (DESIGN.md §4).
-func (b *binder) baseURL() string {
-	candidates := []struct{ source, raw string }{
-		{"--base-url", b.in.BaseURL},
-	}
-	if b.in.Profile != nil {
-		candidates = append(candidates, struct{ source, raw string }{
-			"profile " + b.in.Profile.Name, b.in.Profile.BaseURL})
-	}
-
-	for _, c := range candidates {
-		if c.raw == "" {
-			continue
-		}
-
-		return b.absoluteBase(c.source, c.raw)
-	}
-
-	// Last, and substituted only here: a spec whose server variables do not
-	// resolve is not a problem for a run that supplied its own base URL.
-	raw, failed := b.firstServer()
-	switch {
-	case failed:
-		return ""
-	case raw != "":
-		return b.absoluteBase("the spec's servers[0].url", raw)
-	}
-
-	b.fail("no base URL: the spec declares no server, so pass --base-url or set one in a profile")
-
-	return ""
-}
-
-// absoluteBase holds one base URL candidate to what a base URL may be, and
-// returns it ready to have a path joined to it.
-func (b *binder) absoluteBase(source, raw string) string {
-	// Before the parse, so a URL that fails to parse cannot have its userinfo
-	// quoted back by the message below.
-	if host, ok := Userinfo(raw); ok {
-		b.fail("base URL from %s carries a credential in its userinfo (user:password@%s); "+
-			"remove it and set %s=user:password instead, which keeps the value out of the "+
-			"request, the emitted curl and the history", source, host, config.EnvBasic)
-		return ""
-	}
-
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" || !IsHTTPScheme(parsed.Scheme) {
-		b.fail("base URL %q from %s is not an absolute http(s) URL", raw, source)
-		return ""
-	}
-
-	return strings.TrimSuffix(raw, "/")
-}
-
-// ServerURLs returns every servers[].url with its variables substituted, in
-// spec order.
-//
-// A server whose variables do not substitute is left out rather than returned
-// as written: an unusable URL names no host it is safe to talk to, and the
-// allowed host set §5a builds from these may only ever be narrower than the
-// spec, never wider.
-func ServerURLs(doc *spec.Document) []string {
-	if doc == nil || doc.Model == nil {
-		return nil
-	}
-
-	out := make([]string, 0, len(doc.Model.Servers))
-	for _, s := range doc.Model.Servers {
-		if s == nil {
-			continue
-		}
-
-		u, err := serverURL(s)
-		if err != nil || u == "" {
-			continue
-		}
-
-		out = append(out, u)
-	}
-
-	return out
-}
-
-// firstServer returns the document's first server URL with its variables
-// substituted, and whether substitution failed — a spec that declares a server
-// talaria cannot use has been reported already, and must not then be reported a
-// second time as declaring no server at all.
-func (b *binder) firstServer() (raw string, failed bool) {
-	doc := b.in.Doc
-	if doc == nil || doc.Model == nil || len(doc.Model.Servers) == 0 || doc.Model.Servers[0] == nil {
-		return "", false
-	}
-
-	u, err := serverURL(doc.Model.Servers[0])
-	if err != nil {
-		b.fail("the spec's servers[0].url %q %s", doc.Model.Servers[0].URL, err)
-		return "", true
-	}
-
-	return u, false
-}
-
-// maxServerURL bounds a server URL before and after substitution. A base URL is
-// a scheme, a host and a short prefix; nothing legitimate approaches this. The
-// ceiling matters because both halves of the growth are spec-controlled: a
-// template may repeat a placeholder and the variable it names may default to a
-// long value, so the result is their product.
-const maxServerURL = 8192
-
-// serverURL is one servers[] entry's URL with its `{name}` spans replaced by the
-// defaults of the variables it declares (OpenAPI 3.x servers[].variables). §5a
-// defines the allowed host set as the servers *after* substitution, so this is
-// what "the spec's server" means everywhere downstream.
-//
-// The pass is a single left-to-right sweep and a substituted value is never
-// re-examined, so a variable whose default names a placeholder terminates
-// instead of expanding.
-//
-// The returned error completes a sentence whose subject is the URL, so a caller
-// can prefix it with wherever the URL came from.
-func serverURL(s *v3high.Server) (string, error) {
-	raw := s.URL
-	if len(raw) > maxServerURL {
-		return "", fmt.Errorf("is %d bytes long, past the %d-byte limit for a server URL", len(raw), maxServerURL)
-	}
-	if !strings.ContainsAny(raw, "{}") {
-		return raw, nil
-	}
-
-	var out strings.Builder
-	for rest := raw; ; {
-		before, after, open := strings.Cut(rest, "{")
-		if !open {
-			out.WriteString(rest)
-			break
-		}
-
-		name, tail, closed := strings.Cut(after, "}")
-		if !closed {
-			// Written back as it stands so the unmatched-brace check below is
-			// the one place an unusable template is reported.
-			out.WriteString(before + "{" + after)
-			break
-		}
-
-		value, err := serverVariable(s, name)
-		if err != nil {
-			return "", err
-		}
-
-		out.WriteString(before)
-		out.WriteString(value)
-		if out.Len() > maxServerURL {
-			return "", fmt.Errorf("grows past %d bytes once its variables are substituted", maxServerURL)
-		}
-
-		rest = tail
-	}
-
-	// serverVariable rejects a value containing a brace, so a brace surviving
-	// the sweep is one the template never closed or never opened.
-	got := out.String()
-	if strings.ContainsAny(got, "{}") {
-		return "", errors.New("has a { or } that opens or closes no variable")
-	}
-
-	return got, nil
-}
-
-// authorityChars are the characters a server variable's value may not contain.
-// A variable fills a segment of a URL the spec already wrote; a value carrying
-// one of these rewrites the URL's shape instead — a `region` defaulting to
-// `evil.com#` turns `https://{region}.api.example.com` into a request to
-// evil.com, and credentials follow the host. This is the same class of bug that
-// url.PathEscape closes in binder.path, and the same answer: a value stays
-// inside the field it was given.
-const authorityChars = "/?#@:[]\\{}"
-
-// serverVariable is the value to substitute for one `{name}` span.
-func serverVariable(s *v3high.Server, name string) (string, error) {
-	var v *v3high.ServerVariable
-	if s.Variables != nil {
-		v = s.Variables.GetOrZero(name)
-	}
-	if v == nil {
-		return "", fmt.Errorf("has placeholder {%s}, which names no variable it declares", name)
-	}
-
-	// OpenAPI requires `default`; an absent one must fail rather than
-	// substitute the empty string into a host.
-	if v.Default == "" {
-		return "", fmt.Errorf("declares variable %q with no default, which OpenAPI requires", name)
-	}
-
-	if len(v.Enum) > 0 && !slices.Contains(v.Enum, v.Default) {
-		return "", fmt.Errorf("declares variable %q with default %q, which is not one of its enum values (%s)",
-			name, v.Default, strings.Join(v.Enum, ", "))
-	}
-
-	if strings.ContainsAny(v.Default, authorityChars) || hasControl(v.Default) {
-		return "", fmt.Errorf("declares variable %q with default %q, which holds a character that could move the URL's host",
-			name, v.Default)
-	}
-
-	return v.Default, nil
-}
-
-// hasControl reports whether s holds a space or a control character — neither
-// belongs in a URL, and a CR or LF in one would reach the wire.
-func hasControl(s string) bool {
-	for _, r := range s {
-		if r <= ' ' || r == 0x7f {
-			return true
-		}
-	}
-
-	return false
 }
 
 // params parses --param flags against the parameters the operation declares,
@@ -579,96 +353,6 @@ func (b *binder) pairs(raws []string, flag string, rule *nameRule) []Pair {
 	}
 
 	return out
-}
-
-// nameRule constrains what the name half of a name=value flag may be. Only
-// --header has one: a header name goes on the wire as an HTTP field name, while
-// a query parameter name is an ordinary string an API is free to spell
-// `filter[status]`.
-type nameRule struct {
-	// ok reports whether the name is usable.
-	ok func(string) bool
-	// want completes "--header 2 …" when it is not.
-	want string
-}
-
-// httpFieldName holds --header names to what a header name can actually be.
-var httpFieldName = &nameRule{ok: isFieldName, want: "is not a valid HTTP header name"}
-
-// fieldNameChars is the token character set an HTTP field name is drawn from
-// (RFC 9110 §5.1, via §5.6.2).
-const fieldNameChars = "!#$%&'*+-.^_`|~" +
-	"0123456789" +
-	"ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
-	"abcdefghijklmnopqrstuvwxyz"
-
-// crlfProblem completes the messages that reject a request-splitting value. It
-// describes the fault without echoing what caused it, for the reason `pairs`
-// gives: the value may be a credential.
-const crlfProblem = "carries a carriage return or newline, which would end its line early and " +
-	"append a header the caller did not write (its value is not echoed)"
-
-// SplitsRequest reports whether a name=value pair would break out of the field
-// it sits in. A CR or an LF ends a header line on the wire, so a value holding
-// either turns one field into two — or, with a bare CRLF pair, ends the header
-// block and starts a second request on the same connection.
-//
-// Both halves are checked because both go on the wire: a cookie's name is
-// joined to its value in one Cookie header, and a query name is only safe
-// because QueryString escapes it.
-//
-// Escaping is deliberately not the answer. curl's config document has escapes
-// for both characters (see internal/curl's escapeDirective), but they protect
-// curl's *parser* — curl un-escapes them back to the literal bytes and writes
-// those to the socket. A value carrying a CRLF is a value the caller cannot
-// have meant, so it is a usage error, not something to sanitise into a request
-// they did not ask for.
-//
-// It is exported for the same reason IsMethod is: internal/curl re-checks every
-// pair as the last gate before the document, and a credential is only a string
-// there — it is resolved after this package has finished with the Request.
-func SplitsRequest(name, value string) bool {
-	return strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n")
-}
-
-// IsMethod reports whether s can go in a request line as its method. An HTTP
-// method is a token (RFC 9110 §9), the same production a field name is drawn
-// from, so it is the same check under the name that says what it guards.
-//
-// It is exported for internal/curl, which re-checks the method as the last gate
-// before the `request` directive: not every Request is built by this package —
-// `history replay` rebuilds one from a stored entry — and the charset should
-// not be spelled out twice.
-func IsMethod(s string) bool { return isFieldName(s) }
-
-// isFieldName reports whether name can be sent as a header name.
-//
-// The character that fails this in practice is the colon, from curl's `Name:
-// value` form: `--header 'X-Trace: abc=1'` parses as the name "X-Trace: abc",
-// which curl's config document renders as the malformed wire header
-// `X-Trace: abc: 1`. Refusing it is the difference between a request the user
-// did not write and a clean exit 2.
-func isFieldName(name string) bool {
-	for _, r := range name {
-		if !strings.ContainsRune(fieldNameChars, r) {
-			return false
-		}
-	}
-
-	return name != ""
-}
-
-// elided describes a rejected argument without echoing what may be a
-// credential: the text before its first `=` or `:`, which is a name, and
-// nothing at all when it holds neither separator — an argument with no
-// separator in it is indistinguishable from a bare token. Not even a truncated
-// prefix of the value: part of a credential is still part of a credential.
-func elided(raw string) string {
-	if cut := strings.IndexAny(raw, "=:"); cut > 0 {
-		return fmt.Sprintf(" (it starts %q; the rest is not echoed)", raw[:cut])
-	}
-
-	return " (its text is not echoed)"
 }
 
 // WithheldOffSpec is the reason credentials_withheld[] carries when the

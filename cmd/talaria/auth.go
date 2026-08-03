@@ -1,14 +1,12 @@
 package main
 
 import (
-	"strings"
-
 	"github.com/spf13/cobra"
 
 	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/config"
-	"github.com/Teeeep/talaria/internal/operation"
 	"github.com/Teeeep/talaria/internal/output"
+	"github.com/Teeeep/talaria/internal/request"
 	"github.com/Teeeep/talaria/internal/spec"
 )
 
@@ -101,7 +99,7 @@ func newAuthCheckCmd() *cobra.Command {
 			// The report is printed before the verdict, and whatever the verdict
 			// is: the exit code says "act on this", and the body says what to act
 			// on. Failing first would leave an agent a code 5 and nothing to read.
-			return unsatisfied(index.Operations(), creds)
+			return config.Unsatisfied(index.Operations(), creds)
 		},
 	}
 }
@@ -110,17 +108,17 @@ func newAuthCheckCmd() *cobra.Command {
 // its credentials withheld: whether the host it would go to is outside the
 // allowed set (§5a).
 //
-// The destination is --base-url, then the profile's, and then the spec's own
-// server — which is in the set by construction, so having neither flag nor
-// profile base URL is never a withholding.
+// Where the call would go is request.Destination — the same precedence
+// request.Build uses — because a pre-flight that guesses a different host than
+// the call is worse than no pre-flight at all. A destination it cannot name is
+// not a withholding: there is no host to be outside the set.
 func destinationWithholds(cmd *cobra.Command, doc *spec.Document, prof *config.Profile) (bool, error) {
-	dest, err := cmd.Flags().GetString("base-url")
+	baseURL, err := cmd.Flags().GetString("base-url")
 	if err != nil {
 		return false, clierr.Usage("%w", err)
 	}
-	if dest == "" && prof != nil {
-		dest = prof.BaseURL
-	}
+
+	dest := request.Destination(request.Inputs{Doc: doc, Profile: prof, BaseURL: baseURL})
 	if dest == "" {
 		return false, nil
 	}
@@ -176,92 +174,4 @@ func presenceLabel(cred config.Credential, present, withheld bool) string {
 	default:
 		return "present"
 	}
-}
-
-// unsatisfied returns the error naming what stands between the caller and some
-// operation, or nil when every operation in the spec can be authenticated.
-//
-// There are two ways to be blocked and they carry different codes, because they
-// have different fixes: a declared scheme whose variable is unset is exit 5 and
-// a human's job, while a scheme the document never declared is exit 2 and no
-// variable will help. `call` draws the same line in config.Resolve; drawing it
-// differently here is how the pre-flight and the call come to disagree.
-func unsatisfied(ops []operation.Operation, creds []config.Credential) error {
-	byName := make(map[string]config.Credential, len(creds))
-	for _, cred := range creds {
-		byName[cred.Scheme] = cred
-	}
-
-	// creds is already sorted by scheme name, so walking it to collect the
-	// blocking ones keeps the message's order stable too.
-	blocking := map[string]bool{}
-	var undeclared []string
-	seen := map[string]bool{}
-	for _, op := range ops {
-		if satisfied(op, byName) {
-			continue
-		}
-
-		for _, req := range op.Security {
-			for _, want := range req.Schemes {
-				switch cred, ok := byName[want.Name]; {
-				case ok && !cred.Present():
-					blocking[want.Name] = true
-				case !ok && !seen[want.Name]:
-					seen[want.Name] = true
-					undeclared = append(undeclared, want.Name)
-				}
-			}
-		}
-	}
-
-	var parts []string
-	for _, cred := range creds {
-		if blocking[cred.Scheme] {
-			parts = append(parts, cred.Scheme+" (set "+cred.Ref.Symbolic()+")")
-		}
-	}
-
-	switch {
-	case len(parts) == 1:
-		return clierr.CredentialMissing("no credential for security scheme %s", parts[0])
-	case len(parts) > 1:
-		return clierr.CredentialMissing("no credential for security schemes %s", strings.Join(parts, ", "))
-	case len(undeclared) > 0:
-		return clierr.Usage("spec requires security scheme %s, which components.securitySchemes does not declare",
-			strings.Join(undeclared, ", "))
-	}
-
-	return nil
-}
-
-// satisfied reports whether op has an alternative talaria can authenticate with
-// the credentials that are actually set.
-//
-// A spec may offer alternatives and any one of them is enough, so a bearer
-// token alone satisfies an operation that accepts either it or an API key. An
-// alternative naming a scheme talaria cannot speak — OAuth2 — counts when a
-// brought token covers it and not otherwise (§5 Auth), which is config.Covers'
-// answer rather than a judgement made here.
-//
-// The rule itself is config.Covers, the same one config.Resolve picks an
-// alternative with. This verdict is the pre-flight for that call, so deriving
-// it here a second time is how the two came to disagree.
-func satisfied(op operation.Operation, byName map[string]config.Credential) bool {
-	// An operation with no security requires nothing, so there is nothing to be
-	// missing. Said outright, because the loop below cannot say it.
-	if len(op.Security) == 0 {
-		return true
-	}
-
-	for _, req := range op.Security {
-		switch config.Covers(req, byName) {
-		case config.Optional, config.Satisfied:
-			return true
-		case config.Incomplete, config.Unsupported:
-			// Neither is an alternative the caller could make this call with.
-		}
-	}
-
-	return false
 }

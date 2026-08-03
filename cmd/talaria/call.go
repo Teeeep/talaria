@@ -205,7 +205,7 @@ func newCallCmd() *cobra.Command {
 
 	// Local to call: these are how one request is parameterised, and no other
 	// command binds parameters. --profile and --base-url are persistent on the
-	// root, because run and auth check take them too.
+	// root, because auth check and history replay take them too.
 	cmd.Flags().StringArrayVar(&params, "param", nil,
 		"bind a declared parameter, name=value (repeatable)")
 	cmd.Flags().StringArrayVar(&queries, "query", nil,
@@ -226,8 +226,7 @@ func newCallCmd() *cobra.Command {
 	return cmd
 }
 
-// timeoutOptions turns the --timeout flag into the executor's options, shared by
-// call and run because both bound one request the same way.
+// timeoutOptions turns the --timeout flag into the executor's options.
 //
 // A non-positive value falls back to the default rather than meaning "no
 // limit": a call that can hang forever is what the flag exists to prevent, and
@@ -381,40 +380,13 @@ func validateResponse(
 	req *request.Request,
 	view *responseView,
 ) *validate.Result {
-	result, err := validate.Response(doc, validationInput(req, view))
-
-	return reportValidation(stderr, result, err)
-}
-
-// validateWith is validateResponse against a validator that is already built.
-// `run` makes one per suite rather than one per response, because building it
-// compiles every schema in the document.
-func validateWith(
-	stderr io.Writer,
-	validator *validate.Validator,
-	req *request.Request,
-	view *responseView,
-) *validate.Result {
-	result, err := validator.Response(validationInput(req, view))
-
-	return reportValidation(stderr, result, err)
-}
-
-// validationInput is the one conversion from a request and a redacted response
-// into what the validator reads, so `call` and `run` cannot check different
-// things.
-func validationInput(req *request.Request, view *responseView) validate.Input {
-	return validate.Input{
+	result, err := validate.Response(doc, validate.Input{
 		Method:  req.Method,
 		URL:     curl.URL(req),
 		Status:  view.Status,
 		Headers: http.Header(view.Headers),
 		Body:    view.Body,
-	}
-}
-
-// reportValidation turns a validator failure into a warning and no result.
-func reportValidation(stderr io.Writer, result *validate.Result, err error) *validate.Result {
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "warning: the response was not validated: %v\n", err)
 		return nil

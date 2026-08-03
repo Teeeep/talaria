@@ -46,10 +46,22 @@ type Operation struct {
 	Security []SecurityRequirement
 }
 
+// The values Param.In takes, as OpenAPI spells them. Three of them are also
+// credential locations and three of them are places a value goes on the wire,
+// so internal/config, internal/request and internal/corpus all need to name
+// them; this package owns the field they describe and is the one package all
+// three may import, so it is where they are spelled.
+const (
+	InPath   = "path"
+	InQuery  = "query"
+	InHeader = "header"
+	InCookie = "cookie"
+)
+
 // Param is a single input to an operation.
 type Param struct {
 	Name string
-	// In is the location: path, query, header or cookie.
+	// In is the location: InPath, InQuery, InHeader or InCookie.
 	In          string
 	Required    bool
 	Description string

@@ -630,6 +630,57 @@ func TestBuildRejectsANonHTTPServerDeclaredByTheSpec(t *testing.T) {
 	}
 }
 
+// A relative servers[].url — legal OpenAPI, meaning "relative to wherever the
+// spec was served" — is one talaria cannot turn into a request, because it does
+// not know where the document came from. It is reported as the unusable server
+// it is rather than read as no server at all: "the spec declares no server"
+// sends a caller looking for a servers block that is right there in front of
+// them.
+func TestBuildReportsARelativeServerURLRatherThanIgnoringIt(t *testing.T) {
+	in := inputs(t, "listPets")
+	in.Params = []string{"limit=10"}
+	in.Doc.Model.Servers[0].URL = "/v1"
+
+	err := buildErr(t, in)
+	if !strings.Contains(err.Error(), "servers[0].url") || !strings.Contains(err.Error(), "/v1") {
+		t.Errorf("error %v does not name the relative server URL it could not use", err)
+	}
+}
+
+// Destination is what `auth check` asks where a call would go, and Build is
+// what decides it for the call itself. They are one precedence or they are a
+// disagreement waiting to happen: an `auth check` that pre-flights a different
+// host than the call reaches is worse than no pre-flight at all.
+func TestDestinationAgreesWithTheBaseURLBuildChooses(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		profile *config.Profile
+	}{
+		{name: "spec only"},
+		{name: "flag wins", baseURL: "https://flag.example.com"},
+		{name: "profile beats spec", profile: &config.Profile{Name: "p", BaseURL: "https://profile.example.com"}},
+		{name: "trailing slash", baseURL: "https://flag.example.com/"},
+		{
+			name:    "flag beats profile",
+			baseURL: "https://flag.example.com",
+			profile: &config.Profile{Name: "p", BaseURL: "https://profile.example.com"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			in := inputs(t, "listPets")
+			in.Params = []string{"limit=10"}
+			in.BaseURL, in.Profile = tc.baseURL, tc.profile
+
+			if got, want := Destination(in), build(t, in).BaseURL; got != want {
+				t.Errorf("Destination = %q, but Build sent it to %q", got, want)
+			}
+		})
+	}
+}
+
 // serverSpec is a one-operation spec whose servers block a test supplies, so a
 // server-variable case reads as the YAML an agent would actually meet rather
 // than as a hand-built model.

@@ -65,9 +65,9 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().String("spec", "",
 		"OpenAPI/Swagger spec to use: file path or URL (default: $"+spec.EnvSpec+")")
 
-	// Persistent for the same reason: call, run and auth check all take them
-	// (DESIGN.md §4), and registering either per-command would shadow the other
-	// registration silently. Commands that read no config simply ignore them.
+	// Persistent for the same reason: call, auth check and history replay all
+	// take them (DESIGN.md §4), and registering either per-command would shadow
+	// the other registration silently. Commands that read no config ignore them.
 	root.PersistentFlags().String("profile", "",
 		"named profile from the config file: base-url + headers + auth")
 	root.PersistentFlags().String("base-url", "",

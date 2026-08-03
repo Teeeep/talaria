@@ -39,11 +39,14 @@ const (
 	KindAPIKey Kind = "apiKey"
 )
 
-// Credential locations, matching the OpenAPI `in` values.
+// Credential locations. They are the same strings a parameter's `in:` takes and
+// are aliased from the package that owns that field, so the two cannot drift;
+// `path` is the one location a credential never goes, which is why it is not
+// aliased here.
 const (
-	InHeader = "header"
-	InQuery  = "query"
-	InCookie = "cookie"
+	InHeader = operation.InHeader
+	InQuery  = operation.InQuery
+	InCookie = operation.InCookie
 )
 
 // Credential is one security scheme resolved to a place on the request and the
@@ -131,6 +134,92 @@ func Covers(req operation.SecurityRequirement, byName map[string]Credential) Cov
 	}
 
 	return coverage
+}
+
+// Unsatisfied returns the error naming what stands between the caller and some
+// operation in ops, or nil when every one of them can be authenticated with
+// creds — Schemes' result for the document.
+//
+// There are two ways to be blocked and they carry different codes, because they
+// have different fixes: a declared scheme whose variable is unset is exit 5 and
+// a human's job, while a scheme the document never declared is exit 2 and no
+// variable will help. This is `auth check`'s whole verdict, and it lives beside
+// Covers — the rule Resolve picks an alternative with — because the pre-flight
+// and the call answering differently is the bug DESIGN.md:329 forbids.
+func Unsatisfied(ops []operation.Operation, creds []Credential) error {
+	byName := make(map[string]Credential, len(creds))
+	for _, cred := range creds {
+		byName[cred.Scheme] = cred
+	}
+
+	// creds is already sorted by scheme name, so walking it to collect the
+	// blocking ones keeps the message's order stable too.
+	blocking := map[string]bool{}
+	var undeclared []string
+	seen := map[string]bool{}
+	for _, op := range ops {
+		if satisfied(op, byName) {
+			continue
+		}
+
+		for _, req := range op.Security {
+			for _, want := range req.Schemes {
+				switch cred, ok := byName[want.Name]; {
+				case ok && !cred.Present():
+					blocking[want.Name] = true
+				case !ok && !seen[want.Name]:
+					seen[want.Name] = true
+					undeclared = append(undeclared, want.Name)
+				}
+			}
+		}
+	}
+
+	var parts []string
+	for _, cred := range creds {
+		if blocking[cred.Scheme] {
+			parts = append(parts, cred.Scheme+" (set "+cred.Ref.Symbolic()+")")
+		}
+	}
+
+	switch {
+	case len(parts) == 1:
+		return clierr.CredentialMissing("no credential for security scheme %s", parts[0])
+	case len(parts) > 1:
+		return clierr.CredentialMissing("no credential for security schemes %s", strings.Join(parts, ", "))
+	case len(undeclared) > 0:
+		return clierr.Usage("spec requires security scheme %s, which components.securitySchemes does not declare",
+			strings.Join(undeclared, ", "))
+	}
+
+	return nil
+}
+
+// satisfied reports whether op has an alternative that can be authenticated
+// with the credentials that are actually set.
+//
+// A spec may offer alternatives and any one of them is enough, so a bearer
+// token alone satisfies an operation that accepts either it or an API key. An
+// alternative naming a scheme talaria cannot speak — OAuth2 — counts when a
+// brought token covers it and not otherwise (§5 Auth), which is Covers' answer
+// rather than a judgement made here.
+func satisfied(op operation.Operation, byName map[string]Credential) bool {
+	// An operation with no security requires nothing, so there is nothing to be
+	// missing. Said outright, because the loop below cannot say it.
+	if len(op.Security) == 0 {
+		return true
+	}
+
+	for _, req := range op.Security {
+		switch Covers(req, byName) {
+		case Optional, Satisfied:
+			return true
+		case Incomplete, Unsupported:
+			// Neither is an alternative the caller could make this call with.
+		}
+	}
+
+	return false
 }
 
 // Resolve maps the security schemes op requires onto credentials.

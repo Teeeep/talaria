@@ -43,19 +43,14 @@ func names(fs []Format) []string {
 
 // ParseFormat converts a --output value into a Format. The error names every
 // valid value so an agent can correct itself without reading the help text.
-func ParseFormat(s string) (Format, error) { return parseFormat("output", s, formats) }
-
-// parseFormat resolves s against valid. Kind names the flag being parsed, so a
-// rejected --report says "report format" and points at the values --report
-// takes rather than at --output's shorter list.
-func parseFormat(kind, s string, valid []Format) (Format, error) {
-	for _, f := range valid {
+func ParseFormat(s string) (Format, error) {
+	for _, f := range formats {
 		if Format(s) == f {
 			return f, nil
 		}
 	}
 
-	return "", fmt.Errorf("unknown %s format %q: valid values are %s", kind, s, strings.Join(names(valid), ", "))
+	return "", fmt.Errorf("unknown output format %q: valid values are %s", s, strings.Join(Formats(), ", "))
 }
 
 // Resolve picks the output format. An explicit --output value always wins; with

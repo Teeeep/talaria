@@ -471,9 +471,8 @@ func TestErrorPathsDoNotLeakTheCredential(t *testing.T) {
 // directly, and the message that refuses it is the surface most likely to quote
 // it back. §5a puts error paths inside the firewall.
 //
-// There is no --report surface: `run` takes no --header, --query or --body, so
-// a malformed one cannot reach it. --output covers what the failing command
-// does render, and h.written() covers the history store.
+// --output covers what the failing command does render, and h.written() covers
+// the history store.
 func TestAMalformedFlagDoesNotEchoItsValue(t *testing.T) {
 	cases := []struct {
 		name string
