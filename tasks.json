@@ -1,80 +1,56 @@
 {
   "plan_file": "IMPLEMENTATION_PLAN.md",
   "spec_file": "docs/design/DESIGN.md",
-  "generated_at": "2026-08-02T21:40:00+00:00",
-  "total_tasks": 9,
+  "generated_at": "2026-08-03T06:20:00+00:00",
+  "total_tasks": 6,
   "tasks": [
     {
       "id": 1,
       "section": "1",
-      "title": "Stop curl reading `~/.curlrc` before the credential-bearing config",
-      "line_start": 54,
-      "line_end": 87,
-      "done": true
+      "title": "Reject CR/LF in header, cookie and method values before they reach the wire",
+      "line_start": 22,
+      "line_end": 58,
+      "done": false
     },
     {
       "id": 2,
       "section": "2",
-      "title": "Never echo a rejected flag's value, and reject malformed header names",
-      "line_start": 90,
-      "line_end": 126,
-      "done": true
+      "title": "Emit `-X GET` in the rendered curl when the request carries a body",
+      "line_start": 61,
+      "line_end": 91,
+      "done": false
     },
     {
       "id": 3,
       "section": "3",
-      "title": "Reject credentials in a base URL's userinfo",
-      "line_start": 129,
-      "line_end": 160,
-      "done": true
+      "title": "Make `auth check` and `call`/`run` agree on which requirement is chosen",
+      "line_start": 94,
+      "line_end": 124,
+      "done": false
     },
     {
       "id": 4,
       "section": "4",
-      "title": "Apply `redact.headers` to the displayed request and the emitted curl",
-      "line_start": 163,
-      "line_end": 198,
-      "done": true
+      "title": "Stop `run` from fabricating failures and history when cancelled",
+      "line_start": 127,
+      "line_end": 156,
+      "done": false
     },
     {
       "id": 5,
       "section": "5",
-      "title": "Redact response bodies that are arrays or contain arrays",
-      "line_start": 201,
-      "line_end": 234,
-      "done": true
+      "title": "Scrub sensitive literals, not just resolved credentials, from curl's stderr",
+      "line_start": 159,
+      "line_end": 186,
+      "done": false
     },
     {
       "id": 6,
       "section": "6",
-      "title": "Handle signals so a killed talaria does not orphan curl or leak the raw capture",
-      "line_start": 237,
-      "line_end": 274,
-      "done": true
-    },
-    {
-      "id": 7,
-      "section": "7",
-      "title": "Give history entries a stable id so `replay` cannot re-issue the wrong request",
-      "line_start": 277,
-      "line_end": 314,
-      "done": true
-    },
-    {
-      "id": 8,
-      "section": "8",
-      "title": "Make `talaria auth` and `talaria auth <typo>` exit 2",
-      "line_start": 317,
-      "line_end": 345,
-      "done": true
-    },
-    {
-      "id": 9,
-      "section": "9",
-      "title": "Correct the documented `--header` syntax and gate the docs on it",
-      "line_start": 355,
-      "line_end": 388,
-      "done": true
+      "title": "Restrict `history replay` to credentials inside the auth namespace",
+      "line_start": 189,
+      "line_end": 218,
+      "done": false
     }
   ]
 }
