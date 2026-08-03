@@ -12,6 +12,13 @@ with no memory of this conversation can execute any single task correctly.
 0b. Read the design document. Its path is in `spec_file` in `tasks.json`, or in the
     `RALPH_DESIGN_DOC` environment variable on the first pass. This is the source of truth
     for scope. Understand both what changes and what explicitly does not.
+0b-i. **Read every file the design document names as a source of detail** — a findings
+    report, an audit, an API reference, a data dictionary. A design document states scope;
+    it often delegates the specifics ("X is the source of fix detail", "see Y for the exact
+    signatures"). Tasks written from the scope alone are too coarse to execute: a builder
+    with clean context needs the file, line and concrete change, and cannot go looking for
+    a document nobody told it about. If the design names such a file, it is required
+    reading, not optional background.
 0c. Read `IMPLEMENTATION_PLAN.md` if it exists — that is the plan so far, and you are
     refining it rather than starting over.
 0d. Read the conventions files listed in `.ralph/stack.json` (`conventions_files`).
