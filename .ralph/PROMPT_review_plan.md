@@ -12,7 +12,16 @@ You are in REVIEW PLAN mode. Convert review findings into fix tasks. Do NOT fix 
 
 1. Take **only CRIT findings**. Skip WARN and INFO entirely — they are recorded for a human
    and do not block the PR. Creating tasks for them burns fix cycles on non-blocking work.
-2. Group related CRIT findings into tasks:
+1a. **Skip any CRIT whose `Blocked-by` is `design`, and any whose `Repeat-of` is not `none`.**
+   These are escalated to a human, not fixed here.
+   - `Blocked-by: design` means the fix must invent a policy the design doc does not state.
+     Writing that code guesses at the answer and hides the question.
+   - `Repeat-of: <something>` means a previous cycle already tried and the defect survived.
+     Re-applying a failed approach wastes the cycle.
+   If **every** CRIT is skipped for these reasons, create no tasks, write no plan, and commit
+   nothing — `loop.sh` detects this and stops the run for human input. Say so plainly in your
+   final message rather than inventing work to look productive.
+2. Group the remaining CRIT findings into tasks:
    - Same root cause → one task, even across different files
    - Same file and same kind of fix → one task
    - A finding needing changes across many files → its own task

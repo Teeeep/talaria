@@ -89,20 +89,54 @@ keep cycling, and a malformed severity line means a real bug gets silently skipp
 ## Finding N: <Title>
 - **Reviewer:** <reviewer name>
 - **Severity:** CRIT
+- **Blocked-by:** none
+- **Repeat-of:** none
 - **File:** path/to/file.ext:42
 - **Description:** What is wrong and why it matters.
 - **Suggested fix:** Concrete steps or code.
 ```
 
-Severity:
-- **CRIT** — bugs, security vulnerabilities, data loss, broken functionality, unmet design-doc
-  requirements. These block the PR and will be fixed automatically.
-- **WARN** — missing validation, performance problems, architectural concerns, spec drift.
-  Recorded for a human; does not block.
-- **INFO** — style, minor cleanup, doc gaps.
+### Severity
 
-Be honest about severity. Inflating a WARN to CRIT burns a fix cycle on something that did not
-need one. Downgrading a real bug to WARN ships it.
+CRIT means **this must not ship**, not "this is wrong". Reserve it for:
+
+- a credential or secret reaching a surface it must not
+- data loss or silent corruption
+- a crash or hang on untrusted input
+- silently wrong results the caller cannot detect
+- a violation of a contract the design doc or shipped docs explicitly state
+
+Everything else is **WARN** — missing validation, performance, architecture, spec drift, wrong
+error text. **INFO** is style and doc gaps.
+
+Inflating a WARN to CRIT burns a whole fix cycle on something that did not need one.
+Downgrading a real bug to WARN ships it. Both are failures; the first is the common one.
+
+### Blocked-by — can this loop actually fix it?
+
+This field decides whether the fix loop is even capable of resolving the finding.
+
+- **`none`** — fixable inside this branch with the design as written. The loop will fix it.
+- **`design`** — cannot be fixed without a decision the design doc does not make. The fix
+  requires choosing a policy, not writing code.
+
+Use `design` when you catch yourself inventing a rule that ought to be specified. If the design
+doc never says *which hosts may receive a credential*, then "credential sent to arbitrary host"
+is `design`: any fix invents policy, and the next reviewer will find a different instance of the
+same unwritten rule. Patching instances of a missing invariant is how a review loop runs forever.
+
+State the missing decision explicitly in the Description: *"DESIGN.md specifies X but never
+states Y; a fix must choose between Y1 and Y2."*
+
+### Repeat-of — did a previous fix fail?
+
+If `REVIEW_FINDINGS_PREV.md` exists, read it first. When a finding is the same defect as one a
+previous cycle claimed to fix, set `**Repeat-of:** cycle N finding M` and say what the earlier
+fix missed. A partial fix counts — narrowing *which* credential leaks while leaving *where* it
+goes is a repeat.
+
+A repeat means the previous fix approach was wrong. Re-applying it will fail again, so these
+escalate to a human instead of consuming another cycle.
 
 ## Output
 
@@ -125,3 +159,7 @@ git rm -f REVIEW_FINDINGS.md 2>/dev/null; git commit --allow-empty -m "review: c
 - Number findings sequentially from 1.
 - Do not report issues already documented as known and accepted in the conventions files.
 - Do not report on code outside the diff. Pre-existing problems are not this branch's findings.
+- Read `REVIEW_FINDINGS_PREV.md` before writing findings, if it exists, and set `Repeat-of`
+  honestly. A defect that survived a fix is the single most important thing you can report.
+- Every finding carries `Blocked-by` and `Repeat-of`. `none` is a valid, common value for both;
+  omitting the field is not.

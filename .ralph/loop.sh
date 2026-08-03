@@ -189,6 +189,15 @@ all_tasks_done() {
   [ "$incomplete" -eq 0 ]
 }
 
+# True when tasks.json holds at least one task still to do. Distinguishes "the planner
+# wrote work" from "the planner deliberately wrote none".
+has_open_tasks() {
+  [ -f tasks.json ] || return 1
+  local incomplete
+  incomplete=$(jq '[.tasks[] | select(.done != true)] | length' tasks.json 2>/dev/null || echo 0)
+  [ "${incomplete:-0}" -gt 0 ]
+}
+
 tracker_phase() {
   [ "$NO_TRACKER" = true ] && return 0
   local phase="$1"
@@ -262,6 +271,56 @@ count_crits() {
   [ -f REVIEW_FINDINGS.md ] || { echo 0; return; }
   local c; c=$(grep -c '^\- \*\*Severity:\*\* CRIT' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
 }
+# Findings the fix loop must not attempt: they need a human decision, or a previous
+# fix for the same defect already failed. Counted so the loop can stop instead of spin.
+count_design_blocked() {
+  [ -f REVIEW_FINDINGS.md ] || { echo 0; return; }
+  local c; c=$(grep -c '^\- \*\*Blocked-by:\*\* design' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
+}
+count_repeats() {
+  [ -f REVIEW_FINDINGS.md ] || { echo 0; return; }
+  local c; c=$(grep -c '^\- \*\*Repeat-of:\*\* cycle' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
+}
+
+# Everything the loop could not resolve on its own, in one file for the human.
+write_escalation() {
+  local reason="$1" cycle="$2"
+  {
+    echo "# Review escalation"
+    echo
+    echo "The review loop stopped in cycle $cycle and is handing back to a human."
+    echo
+    echo "**Reason:** $reason"
+    echo
+    echo "## CRIT history"
+    echo
+    echo "| Cycle | CRIT |"
+    echo "|---|---|"
+    local i=1
+    while read -r n; do echo "| $i | $n |"; i=$((i + 1)); done < "$RALPH_DIR/review_history" 2>/dev/null
+    echo
+    echo "## What needs a decision"
+    echo
+    if [ "$(count_design_blocked)" -gt 0 ]; then
+      echo "These findings are marked \`Blocked-by: design\` — fixing them means choosing a"
+      echo "policy the design doc does not state. Decide the policy, amend the design doc,"
+      echo "then re-run with \`--from review\`."
+      echo
+      awk '/^## Finding/{t=$0} /^\- \*\*Blocked-by:\*\* design/{print "- " substr(t,4)}' REVIEW_FINDINGS.md
+      echo
+    fi
+    if [ "$(count_repeats)" -gt 0 ]; then
+      echo "These findings are repeats — a previous cycle's fix did not hold. Re-applying the"
+      echo "same approach will fail again; they need a different one."
+      echo
+      awk '/^## Finding/{t=$0} /^\- \*\*Repeat-of:\*\* cycle/{print "- " substr(t,4)}' REVIEW_FINDINGS.md
+      echo
+    fi
+    echo "Full detail in \`REVIEW_FINDINGS.md\`."
+  } > REVIEW_ESCALATION.md
+  git add REVIEW_ESCALATION.md 2>/dev/null || true
+  git commit -q -m "review: escalate to human ($reason)" 2>/dev/null || true
+}
 
 # ── Phases ───────────────────────────────────────────────────────────────────
 
@@ -330,6 +389,11 @@ phase_review() {
   set_phase review
   tracker_phase review
 
+  # Per-run CRIT tally. Must start empty: the no-progress check indexes it by cycle
+  # number, so counts left over from an earlier run would compare against the wrong cycle.
+  : > "$RALPH_DIR/review_history"
+  rm -f REVIEW_FINDINGS_PREV.md
+
   local cycle=0
   while true; do
     if time_exhausted; then log "Wall-clock budget exhausted"; return 4; fi
@@ -343,6 +407,14 @@ phase_review() {
     log ""
     log "═══════ review cycle $cycle/$REVIEW_MAX ═══════"
 
+    # Hand the previous cycle's findings to the reviewer so it can flag repeats — a defect
+    # that survived a fix is the strongest signal the approach is wrong.
+    # Only from cycle 2 on: a REVIEW_FINDINGS.md left over from an earlier *run* was never
+    # fixed by this run, so treating it as "previously fixed" would mark unfixed findings as
+    # repeats and escalate on the first cycle.
+    if [ "$cycle" -gt 1 ] && [ -f REVIEW_FINDINGS.md ]; then
+      cp REVIEW_FINDINGS.md REVIEW_FINDINGS_PREV.md
+    fi
     rm -f REVIEW_FINDINGS.md
     local review_ok=true
     run_claude "$RALPH_DIR/PROMPT_review.md" "review" || { review_ok=false; log "Review iteration had errors"; }
@@ -363,10 +435,38 @@ phase_review() {
       return 1
     fi
 
-    local findings crits
+    local findings crits blocked repeats
     findings=$(count_findings)
     crits=$(count_crits)
-    log "Findings: $findings total, $crits CRIT"
+    blocked=$(count_design_blocked)
+    repeats=$(count_repeats)
+    echo "$crits" >> "$RALPH_DIR/review_history"
+    log "Findings: $findings total, $crits CRIT ($blocked design-blocked, $repeats repeat)"
+
+    # ── Guardrails: stop rather than spin ────────────────────────────────────
+    # Each of these means another cycle cannot help. Escalating beats burning the cap.
+
+    if [ "$blocked" -gt 0 ] && [ "$blocked" -eq "$crits" ]; then
+      log "All $crits CRIT finding(s) need a design decision this loop cannot make."
+      write_escalation "every CRIT is blocked on a design decision" "$cycle"
+      push_changes; unset RALPH_REVIEW_CYCLE; return 5
+    fi
+
+    if [ "$repeats" -gt 0 ]; then
+      log "$repeats finding(s) survived a previous fix — the approach is not working."
+      write_escalation "$repeats finding(s) repeat after a failed fix" "$cycle"
+      push_changes; unset RALPH_REVIEW_CYCLE; return 5
+    fi
+
+    # No progress: this cycle found at least as many CRITs as the last one. Fixing is
+    # keeping pace with discovery at best, and the cap will not change that.
+    local prev
+    prev=$(sed -n "$((cycle - 1))p" "$RALPH_DIR/review_history" 2>/dev/null)
+    if [ "$cycle" -gt 1 ] && [ -n "$prev" ] && [ "$crits" -ge "$prev" ] && [ "$crits" -gt 0 ]; then
+      log "No progress: cycle $cycle found $crits CRIT vs $prev in cycle $((cycle - 1))."
+      write_escalation "CRIT count did not fall between cycles ($prev → $crits)" "$cycle"
+      push_changes; unset RALPH_REVIEW_CYCLE; return 5
+    fi
 
     if [ "$crits" -eq 0 ]; then
       if [ "$findings" -eq 0 ]; then
@@ -378,9 +478,19 @@ phase_review() {
       return 0
     fi
 
-    log "Planning fixes for $crits CRIT finding(s)..."
+    local fixable=$((crits - blocked))
+    log "Planning fixes for $fixable of $crits CRIT finding(s) ($blocked need a design decision)..."
     run_claude "$RALPH_DIR/PROMPT_review_plan.md" "review_plan" || log "Review-plan had errors (continuing)"
     push_changes
+
+    # The planner writes no tasks when every CRIT was skipped as design-blocked or a repeat.
+    # Without this check the fix phase would iterate against an already-satisfied done
+    # condition and the cycle would repeat identically until the cap.
+    if ! has_open_tasks; then
+      log "Review-plan produced no actionable tasks — nothing here is fixable without a human."
+      write_escalation "no CRIT finding was actionable without a design decision" "$cycle"
+      push_changes; unset RALPH_REVIEW_CYCLE; return 5
+    fi
 
     run_iterations 0 "$RALPH_DIR/PROMPT_build.md" "review_fix" 3 all_tasks_done
     local rc=$?
@@ -444,11 +554,18 @@ for phase in "${PHASES[@]}"; do
   rc=$?
   if [ "$rc" -ne 0 ]; then
     case $rc in
-      4) banner "STOPPED — wall-clock budget exhausted in phase '$phase'" ;;
-      *) banner "STOPPED — phase '$phase' did not complete (rc=$rc)" ;;
+      4) banner "STOPPED — wall-clock budget exhausted in phase '$phase'"
+         log "State saved. Resume with: $RALPH_DIR/loop.sh --resume"
+         final_rc=2 ;;
+      5) banner "ESCALATED — review needs a human decision"
+         log "Read REVIEW_ESCALATION.md, then decide."
+         log "The loop stopped on purpose: another cycle could not have resolved this."
+         log "After amending the design, resume with: $RALPH_DIR/loop.sh --from review"
+         final_rc=3 ;;
+      *) banner "STOPPED — phase '$phase' did not complete (rc=$rc)"
+         log "State saved. Resume with: $RALPH_DIR/loop.sh --resume"
+         final_rc=2 ;;
     esac
-    log "State saved. Resume with: $RALPH_DIR/loop.sh --resume"
-    final_rc=2
     break
   fi
 done
