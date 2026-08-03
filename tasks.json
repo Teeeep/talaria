@@ -90,7 +90,7 @@
       "title": "The config document's credential buffer is actually zeroed \u2014 finding 29",
       "line_start": 933,
       "line_end": 988,
-      "done": false
+      "done": true
     },
     {
       "id": 12,

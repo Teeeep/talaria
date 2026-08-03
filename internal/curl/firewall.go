@@ -44,9 +44,14 @@ func inlinable(data []byte) bool {
 	return !strings.ContainsRune(string(data), 0)
 }
 
-// discard drops a partially built document, so a failure returns nothing a
-// caller could accidentally send or print.
-func (d *document) discard() { d.b.Reset() }
+// discard zeroes the document's buffer and empties it, so a failure part-way
+// through leaves nothing a caller could send or print and nothing a resolved
+// credential could still be read out of. The whole capacity is cleared, not the
+// current length: the bytes past len are the ones the last append walked over.
+func (d *document) discard() {
+	clear(d.b[:cap(d.b)])
+	d.b = d.b[:0]
+}
 
 // cleanup removes the temp files this document points at.
 func (d *document) cleanup() {
@@ -56,14 +61,15 @@ func (d *document) cleanup() {
 	d.files = nil
 }
 
-// cleanupWith also zeroes the finished document, so the resolved credentials in
-// it stop being readable from the buffer once curl has exited.
+// cleanupWith zeroes the copy of the document a caller was handed, alongside the
+// document's own buffer, so the resolved credentials in either stop being
+// readable once curl has exited. Both halves are idempotent, and config may be
+// nil — the failure path has no copy to scrub.
 func (d *document) cleanupWith(config []byte) func() {
 	return func() {
 		d.cleanup()
-		for i := range config {
-			config[i] = 0
-		}
+		d.discard()
+		clear(config)
 	}
 }
 

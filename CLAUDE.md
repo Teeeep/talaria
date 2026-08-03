@@ -65,6 +65,20 @@ about to put a resolved credential in a field typed `string`, stop — that is t
 design exists to prevent. `SecretRef` cannot print itself; keep it that way, so leaking requires
 a deliberate, greppable call.
 
+**A buffer holding a resolved credential is one this package can address.** `document.b`
+(`internal/curl/config.go`) is a `[]byte` the document owns, appended to by `directive`/`flag`,
+and never a `strings.Builder`: `Builder.Reset` drops the array without touching the bytes and
+`Builder.String` aliases it into an immutable string that can never be zeroed, so the old code
+scrubbed a copy while the original stayed readable. `discard()` clears the whole *capacity* —
+the bytes past `len` are what the last append walked over — and it runs on both paths:
+`buildDocument` calls it immediately after copying out, and `cleanupWith` calls it again plus
+`clear(config)`, so cleanup is idempotent and non-nil even when the build fails. The seam the
+tests use is `buildDocument`, which hands back the `*document` so `owned(doc)` can assert on the
+builder's own array rather than the copy — assert only on the returned `config` and the defect
+passes. Never introduce another accumulator for credential-bearing text without the same
+property, and do not claim scrubbing of anything downstream of the return: curl's stdin is
+outside what this package can reach.
+
 **A server URL is a template.** `servers[].url` carries `{name}` spans filled from
 `servers[].variables`, and §5a defines the allowed host set as the servers *after*
 substitution. `internal/request/server.go` owns it — `ServerURLs(doc)` for the whole set,

@@ -82,9 +82,10 @@ type Capture struct {
 // readable by any process on the host — including ones an agent spawns (§5a).
 //
 // cleanup must be called once curl has exited. It removes any temp body file
-// and zeroes the document, so the resolved values do not linger in a buffer the
-// rest of the process can still reach. It is safe to call more than once, and
-// is non-nil even when BuildConfig fails.
+// and zeroes the two buffers this package controls: the returned config and the
+// builder's own. It is safe to call more than once, and is non-nil even when
+// BuildConfig fails. It says nothing about copies made downstream of the return
+// — the bytes handed to curl's stdin are outside what this package can scrub.
 //
 // A credential whose environment variable is unset fails with exit code 5 and
 // no document, rather than sending an empty header — an unauthenticated request
@@ -110,22 +111,41 @@ func BuildConfigWith(
 		return nil, argv, func() {}, clierr.RequestFailed("no request to execute")
 	}
 
-	var doc document
-	if err := doc.build(req, capture, opts.withDefaults()); err != nil {
+	_, config, cleanup, err = buildDocument(req, capture, opts.withDefaults())
+
+	return config, argv, cleanup, err
+}
+
+// buildDocument is BuildConfigWith with the document itself handed back, so a
+// caller can reach the buffer the document owns rather than only the copy. The
+// tests for the zeroing are that caller: the defect this seam exists to make
+// visible is a scrubbed copy sitting beside an unscrubbed original.
+func buildDocument(
+	req *request.Request,
+	capture Capture,
+	opts Options,
+) (doc *document, config []byte, cleanup func(), err error) {
+	doc = &document{}
+	if err := doc.build(req, capture, opts); err != nil {
 		doc.discard()
-		return nil, argv, doc.cleanup, err
+		return doc, nil, doc.cleanupWith(nil), err
 	}
 
-	config = []byte(doc.b.String())
-	doc.b.Reset()
+	config = append([]byte(nil), doc.b...)
+	doc.discard()
 
-	return config, argv, doc.cleanupWith(config), nil
+	return doc, config, doc.cleanupWith(config), nil
 }
 
 // document accumulates the directives and the temp files they point at, so a
 // failure part-way through still knows what to remove.
+//
+// b is a []byte the document owns rather than a strings.Builder: the resolved
+// credential is written into it, and only a buffer this package can address is
+// a buffer it can zero. Builder.Reset drops the array without touching it, and
+// Builder.String aliases it into an immutable string that can never be zeroed.
 type document struct {
-	b     strings.Builder
+	b     []byte
 	files []string
 }
 
@@ -333,11 +353,11 @@ func seconds(d time.Duration) string {
 
 // directive writes one `name = "value"` line, escaped for curl's parser.
 func (d *document) directive(name, value string) {
-	d.b.WriteString(name + ` = "` + escapeDirective(value) + "\"\n")
+	d.b = append(d.b, name+` = "`+escapeDirective(value)+"\"\n"...)
 }
 
 // flag writes one bare directive, the config form of a boolean option.
-func (d *document) flag(name string) { d.b.WriteString(name + "\n") }
+func (d *document) flag(name string) { d.b = append(d.b, name+"\n"...) }
 
 // configEscape covers the escape sequences curl's config parser understands, in
 // the order a single pass must apply them. strings.Replacer scans once and

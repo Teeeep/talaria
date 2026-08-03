@@ -373,18 +373,84 @@ func TestBuildConfigMissingCredentialIsExitCodeFive(t *testing.T) {
 	}
 }
 
+// owned is the whole array the document wrote into, not the slice it currently
+// presents. Zeroing that a caller cannot see is the point: the defect this
+// guards against scrubbed the copy handed back and left the original readable.
+func owned(d *document) []byte { return d.b[:cap(d.b)] }
+
 func TestBuildConfigCleanupZeroesTheDocument(t *testing.T) {
 	t.Setenv("TALARIA_AUTH_BEARER", canary)
 
-	config, _, cleanup, err := BuildConfig(bearerReq(), Capture{})
+	doc, config, cleanup, err := buildDocument(bearerReq(), Capture{}, DefaultOptions())
 	if err != nil {
-		t.Fatalf("BuildConfig() error = %v", err)
+		t.Fatalf("buildDocument() error = %v", err)
+	}
+	if !bytes.Contains(config, []byte(canary)) {
+		t.Fatal("the document never carried the credential, so this test proves nothing")
+	}
+	// Zeroed at the copy-out rather than at cleanup: the shorter the window in
+	// which two readable copies exist, the better.
+	if bytes.Contains(owned(doc), []byte(canary)) {
+		t.Error("the builder's own buffer still holds the credential after the copy out")
 	}
 
 	cleanup()
 
 	if bytes.Contains(config, []byte(canary)) {
 		t.Error("cleanup left the resolved credential in the config buffer")
+	}
+	if bytes.Contains(owned(doc), []byte(canary)) {
+		t.Error("cleanup left the resolved credential in the document's own buffer")
+	}
+}
+
+// TestBuildConfigZeroesTheDocumentWhenTheBuildFails covers the path nobody
+// tested: build writes the resolved Authorization header first and fails on the
+// cookie after it, so a document that scrubs nothing on failure leaves the
+// credential in a buffer no caller can reach to clean.
+func TestBuildConfigZeroesTheDocumentWhenTheBuildFails(t *testing.T) {
+	t.Setenv("TALARIA_AUTH_BEARER", canary)
+
+	req := bearerReq()
+	req.Cookies = []request.Pair{{Name: "session", Value: request.Literal("a\r\nX-Injected: 1")}}
+
+	doc, config, cleanup, err := buildDocument(req, Capture{}, DefaultOptions())
+	if err == nil {
+		t.Fatal("buildDocument() error = nil, want the CRLF refusal")
+	}
+	if config != nil {
+		t.Errorf("a failed build returned a document:\n%s", config)
+	}
+	if cleanup == nil {
+		t.Fatal("cleanup is nil on the failure path")
+	}
+	if bytes.Contains(owned(doc), []byte(canary)) {
+		t.Error("a failed build left the resolved credential in the document's buffer")
+	}
+
+	// §5a's cleanup contract: non-nil on every path, and idempotent, because a
+	// caller that already ran it on the error path still defers it.
+	cleanup()
+	cleanup()
+}
+
+func TestBuildConfigCleanupIsSafeToCallTwice(t *testing.T) {
+	t.Setenv("TALARIA_AUTH_BEARER", canary)
+
+	req := bearerReq()
+	req.Method = "POST"
+	req.Body = &request.Body{ContentType: "application/json", Data: []byte(`{"a":1}`)}
+
+	doc, config, cleanup, err := buildDocument(req, Capture{}, DefaultOptions())
+	if err != nil {
+		t.Fatalf("buildDocument() error = %v", err)
+	}
+
+	cleanup()
+	cleanup()
+
+	if bytes.Contains(config, []byte(canary)) || bytes.Contains(owned(doc), []byte(canary)) {
+		t.Error("the credential survived two cleanups")
 	}
 }
 
