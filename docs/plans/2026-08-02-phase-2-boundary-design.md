@@ -3,7 +3,7 @@
 *Status: design · drafted 2026-08-02 · **revised 2026-08-03** against the completed build ·
 successor to [DESIGN.md](../design/DESIGN.md) v0.4*
 
-> **Three of the §9 amendments were applied on 2026-08-03 as DESIGN.md v0.5** — the emitted-curl
+> **Three of the §6 amendments were applied on 2026-08-03 as DESIGN.md v0.5** — the emitted-curl
 > body rule, the cache policy, and the replay table — because phase 2a *implements* them, and a
 > spec-compliance reviewer reading unamended text would flag the fixes as drift. The `run`
 > removal landed with them. The remaining six are 2b work and stay fenced until 2a completes.
@@ -90,7 +90,7 @@ Two simplifications fall out:
   earlier draft of this section claimed the per-source cap loses its justification with `run`
   gone, but `history replay` is also a burst producer, so the rule that one source cannot evict
   another still earns its keep. Corrected after looking at the code rather than the doc.
-- **`--fixtures` disappears**, taking 2b-1's fileguard from four call sites to three.
+- **`--fixtures` disappears**, taking phase 2b's fileguard from four call sites to three.
 
 **Honest limit of this cut.** It removes ~15% of production lines. It does not address the two
 larger volume problems in §2.2 — the size of the command layer and a test suite that is 2.4× the
@@ -198,213 +198,34 @@ emitted curl non-runnable, breaking §3.4's "portable reproduction" promise.
 Runnable *and* leak-free. It is the same symbolic substitution already used for
 `$TALARIA_AUTH_BEARER`, applied to bodies: reference the thing, never the value.
 
-## 5. Phase 2a — remediation
+## 5. The phases, cut loose
 
-### The eight CRITs
+Each phase below is a **self-contained design document sized for one `ralph-implement` run.**
+Feed them one at a time.
 
-| # | Finding | Fix |
-|---|---|---|
-| 1 | Credential transmitted to whatever `--base-url` names | Implement v0.4 host binding: allowed set = spec `servers[]` after variable substitution ∪ `--allow-host` ∪ profile `allow_hosts`; off-set credentials diverted to `[]Withheld`, rendered as `credentials_withheld` + one stderr line. Needs finding 11 (server-variable substitution) for the set to be correct |
-| 2, 3, 22 | `history replay` takes host, request and body from the stored entry | The §3 rule: re-derive through `loadSpec` → `index.Lookup` → `request.Build` → `config.Resolve`; emit a `validation` block; entry whose operationId is gone fails exit 2. Dissolves finding 18 |
-| 4 | `auth check`, `call` and `run` disagree on an unsupported scheme | `Supported bool` on `config.Credential`; unsupported schemes reported `supported:false`; satisfied by `TALARIA_AUTH_BEARER` when set; `clierr.CredentialMissing` not `Usage`; route through `r.noteMissing` in `run` rather than `res.skip` |
-| 5 | Spec-supplied media type injects headers onto the wire | `checkSplit` on `Content-Type` in `document.body`; reject non-token media types at bind time (exit 2) |
-| 6 | Request body printed unredacted on stdout | §4.3 above |
-| 7 | Hostile `minLength` OOMs the process | Cap the pad and array generation at an explicit ceiling; structured skip reason when unsatisfiable |
-| 8 | `--output tsv` emits structurally invalid rows | Escape or strip `\t`/`\r`/`\n` in TSV cells; same for the pretty renderer's tabwriter cells |
+> **Do not feed *this* document to a loop.** It is the rationale and the record: the threat
+> model, the decisions and their rejected alternatives, and why the codebase has the shape it
+> has. The planning phase would read it as scope and build three phases at once.
 
-### Triage of the other 24
+| Phase | Document | Scope | Depends on |
+|---|---|---|---|
+| **2a** | [`2026-08-03-phase-2a-remediation.md`](2026-08-03-phase-2a-remediation.md) | 25 review findings: host binding, replay re-derivation, unsupported schemes, header injection, the unredacted body, the hang set, history integrity, the canary gate's own holes | the `cleanup` branch |
+| **2b** | [`2026-08-03-phase-2b-boundary.md`](2026-08-03-phase-2b-boundary.md) | `internal/boundary`, `internal/fileguard`, `talaria doctor`, exit code 6, the documented uid-separated deployment | 2a merged |
+| **2c** | [`2026-08-03-phase-2c-distribution.md`](2026-08-03-phase-2c-distribution.md) | Version stamping, `make install`, `v0.1.0`, the Claude Code skill, and the dogfooding findings document | 2b merged |
 
-All 32 findings were read in full and the severity labels re-derived rather than taken at face
-value. Two labels are wrong on inspection, both verified against the code before promotion.
+The ordering is load-bearing. 2b installs talaria into live agent sessions by way of 2c, so
+running either before 2a would deploy a tool with a verified credential-exfiltration hole. 2c's
+findings document is what answers the §7 twin gate.
 
-**Finding 11 being WARN while finding 1 is CRIT is a labelling error, not a judgement call.** A
-CRIT whose fix is blocked by a WARN means the WARN inherits the severity. The reviewer recorded
-the dependency in both findings without propagating it.
+Findings 7, 12 and 26 were made moot by deletions on the `cleanup` branch. Findings 27, 28 and
+32 are deferred, with reasons, in 2a's document; 32 is picked up by 2c's dogfooding.
 
-**Three INFOs share a shape and two of them get promoted:** each is a place where a comment
-asserts a property the code does not have — finding 29's zeroing claim, finding 30's boundary
-rule, finding 31's rationalised `omitempty`. That is the same failure mode as finding 30's guard
-passing green and finding 19's stale *"whoever adds `--fail-on-error` adds the case"*: the
-codebase documents intentions as if they were invariants. A grep pass for that pattern beyond
-what the review caught belongs in 2a.
 
-#### Tier 1 — blocks installing talaria into agent sessions
+## 6. Pending DESIGN.md amendments
 
-Credential containment, and the gate meant to catch containment bugs.
-
-| Findings | Why |
-|---|---|
-| 1, 2, 3, 22 | The §3 rule through four doors; 18 dissolves with them |
-| **11** | Hard prerequisite for 1 — §5a defines the allowed host set as servers *after variable substitution* |
-| 4 + **21** | `auth check` disagreeing with `call` is what §5 calls non-negotiable; 21 is the doc half and ships in the same commit, or the docs contradict the code |
-| 5, 6 | Header injection into the one component holding credentials; unredacted body on stdout |
-| 9, 13 | Untrusted input killing the process where the design requires entry-level failure |
-| 19, 20 | The canary gate's own holes. 20 covers the profile-`auth:` credential path, never exercised end to end |
-| **29** | Promoted from INFO. `config.go:120` copies the document, then `Reset()` nils the builder without zeroing — the resolved token stays readable on the heap while `cleanupWith` scrubs the copy. The comment at `config.go:85` asserts the opposite, in the one component §5a designates as the sole holder of resolved secrets |
-| **30** | Promoted from INFO. Verified: `internal/corpus/entry.go:24`. `e2e/boundary_test.go:33` does not guard it, so it silently drags the executor into the twin at Phase 6. Cheap now, expensive later |
-
-#### Tier 2 — blocks usable dogfooding
-
-| Findings | Why |
-|---|---|
-| 7, 8 | CRIT already — OOM on a hostile spec; structurally invalid TSV |
-| 10, **14**, 15, 17 | The hang triad plus the TTY prompt. 14 promotes hardest: Ctrl-C and `kill -TERM` both do nothing, only Ctrl-D or `kill -9`. An agent with no way to terminate a wedged call has no recovery path, and parallel tmux sessions make 17's lock contention realistic |
-| 23, 24 | Both make the tool lie about history. 23 reports "not recorded" for a recorded mutating call, so an operator re-runs it. 24 lets `history replay <id>` re-issue a *different* request than `history show <id>` displayed — findings 2/3's class, in code 2a is already rewriting |
-| 25 | Policy decided in §4.2; a stale cache makes `validate` report violations the server never committed |
-| **31** | Promoted from INFO, one line. `history.go:48` uses `int64,omitempty` where `run.go:57` correctly uses `*int64`; 0 ms is the common case against the `127.0.0.1` services 2b-6 targets, not an edge |
-| 16 | Quadratic rewrite under the lock — tens of seconds to minutes on a 500-operation `run`, which is what 2b-6 does. **First to cut if 2a is too large**; with 17 fixed it degrades to slow rather than deadlocked |
-
-#### Excluded from 2a — five findings
-
-| # | Why not |
-|---|---|
-| 12 | Parameter/media-type-level examples ignored by `run`'s data chain. A real quality gap — `foxtrot-906` where the spec said `42` — but not safety. **Do it first in 2b, before dogfooding**, or `run` gets evaluated on generated noise |
-| 26 | Non-unix lock is a no-op. Debian and macOS are both unix. The three-line "refuse to record rather than record unsafely" fix is right, just not now |
-| 27 | Needs `--proxy socks5h://` to trigger |
-| 28 | Needs `--timeout 9223372036` to trigger |
-| 32 | Coverage gap, not a defect — the 2.0 conversion was confirmed correct by hand. Fold into 2b dogfooding, where real 2.0 specs turn up anyway |
-
-### What the review confirms is sound
-
-Recorded so 2a does not re-litigate it. The review traced and confirmed: the `-q -K -`
-config-on-stdin mechanism with `-q` correctly first and no secret in argv; `escapeDirective`
-matching curl's `unslashquote` exactly, including the longest-match `Replacer` that avoids the
-double-escape bug; `--dry-run`'s emitted curl proven byte-identical to the executed request by
-replaying it; `secret` resolving only inside `internal/curl`; profile mode enforcement; history
-store 0700/0600; path params escaped and query credentials symbolic in every display form.
-
-**The architecture held. The failures are at its edges** — which is the argument for fixing the
-edges rather than revisiting the design.
-
-## 6. Phase 2b — the boundary and distribution
-
-Unchanged in substance from the first draft, with the threat model corrected: this closes claim
-**B**, and it is the *smaller* of the two doors. A′ (§5) is the larger one.
-
-| # | Deliverable | Size |
-|---|---|---|
-| 2b-1 | `internal/boundary` + `internal/fileguard`; guard calls at every path-taking flag | ~1–2 days |
-| 2b-2 | `talaria doctor [--require enforced]` | ~1 day |
-| 2b-3 | Documented uid-separated deployment (sudoers snippet), verified by `doctor` | ~half a day |
-| 2b-4 | Packaging — version stamping via `-ldflags -X`, `make install`, `v0.1.0` tag | hours |
-| 2b-5 | Claude Code skill at `~/.claude/skills/talaria/`, wrapping `AGENT.md` | ~1 day |
-| 2b-6 | Real-spec dogfooding → written findings doc | open-ended; the real work |
-
-### 6.1 The enforced deployment
-
-The agent runs as a second uid with one sudo rule granting it the right to invoke talaria as the
-secret owner:
-
-```
-casper-agent ALL=(casper) NOPASSWD: /usr/local/bin/talaria
-```
-
-It can *invoke* talaria as `casper`; it cannot read `casper`'s config, environment, or run any
-other command as `casper`. Enforcement is the kernel's.
-
-**Rejected: Claude Code `Deny` rules** on `~/.config/talaria/**`. A policy control in another
-tool's config file, invisible when it rots, absent under any other agent harness.
-
-**Rejected: a credential broker at the same uid.** It buys nothing — a process running as `casper`
-connects to the socket and asks. Strictly worse than a file, because a path is something a deny
-rule can name and a socket protocol is not. ssh-agent is precedent for typing a passphrase once,
-not for hiding a key from your own shell.
-
-**Rejected: broker + setgid binary.** A genuine boundary, at the price of a setgid binary that
-parses untrusted YAML and OpenAPI documents fetched over HTTP — large attack surface behind a
-privilege bit — plus a service user, a group, a systemd unit, and install-time root. `go install`
-stops working. The sudo rule achieves the same separation with no new code.
-
-**Rejected: OS keyrings.** libsecret/gnome-keyring is uid-scoped, therefore bypassable by anything
-running as the user. macOS Keychain ACLs are per-binary and would be a genuine boundary — but the
-sessions that matter run in tmux on the Debian VPS. See §10.
-
-### 6.2 `internal/boundary`
-
-Detects the deployment mode from process state alone — caller uid from `SUDO_UID`/`PKEXEC_UID`,
-ours from `os.Getuid()`. Returns `enforced` (caller ≠ us), `policy-only` (single uid), or `none`
-(root, or a group/world-readable config). One function, no I/O beyond a stat, uid lookups
-injectable so tests need no root.
-
-### 6.3 `internal/fileguard`
-
-> **In `enforced` mode, talaria reads only files owned by the calling uid.**
-
-Considered and rejected: emulating the caller's permissions properly. That needs every parent
-directory's execute bit plus the caller's supplementary groups, and `faccessat` checks only
-real-vs-effective uid, not an arbitrary one. Per-thread privilege dropping in Go is worse —
-`setuid` affects one thread and the runtime schedules across threads.
-
-The ownership rule is one `stat`, correct by construction, conservative in the safe direction. The
-escape hatch already exists and is more correct: `--body -` has the agent's own shell perform the
-`open()` at its own uid. In `policy-only` the guard is a no-op.
-
-Call sites — **four, not three**:
-
-- `internal/request/body.go:15` — `--body @path`
-- `internal/spec/load.go:49` and `source.go:87` — `--spec path`, positional spec, cache reads
-- `internal/config/config.go:163` — the profile path
-- `internal/gen/fixtures.go:67` — **`--fixtures dir/`**, missed in the first draft
-
-Any future flag taking a filesystem path is a call site. State this in the package doc comment and
-in `AGENT.md`.
-
-### 6.4 `talaria doctor`
-
-Composes `boundary`, the curl version preflight, file-mode checks on the config and history
-stores, spec-cache age (§4.2), and a warning when `TALARIA_AUTH_*` are present in the environment
-under `enforced` mode. Renders through the standard envelope with a top-level `verdict`.
-
-It returns a **verdict, not a checklist**: `enforced`, `policy-only`, or `none`. A single-uid
-install reports `policy-only` explicitly, stating that the secret is reachable by anything running
-as the user. That is how "this needs more work" stays visible in the tool's own output instead of
-decaying into an assumption.
-
-`--require enforced` exits non-zero when the verdict is weaker, so CI and agent preflight can
-branch on it.
-
-### 6.5 Dogfooding (2b-6) is what feeds the §7 twin gate
-
-DESIGN.md §7: *"Do not start [5–8] on faith; start them because using Phases 1–4 made the absence
-of a twin painful."* That evidence needs usage, and usage needs 2b-1 through 2b-5.
-
-Targets: large public specs (GitHub, Stripe) for `describe` quality, operationId synthesis
-collisions, and load time on multi-megabyte documents; local services (loop-tracker, Woodpecker CI)
-for the end-to-end agent loop. Real 3.0 specs also settle the libopenapi-validator strictness
-question the plan left open.
-
-**Not in phase 2:** cross-platform release matrices, the curl-able install script, the Homebrew
-tap, the pi package. The repo is already public, so `go install
-github.com/Teeeep/talaria/cmd/talaria@latest` works once a tag exists — self-distribution is
-nearly free, and the rest waits for a public v0.1 that has survived a real API.
-
-## 7. Testing
-
-1. **Host binding** — table tests over the allowed-set computation (spec servers, variable
-   substitution, `--allow-host`, profile `allow_hosts`), plus an end-to-end test that points
-   `--base-url` at a capture listener and asserts the credential is **absent from the wire** and
-   `credentials_withheld` is present in the envelope. Wire-level, not output-level: this is the
-   assertion the canary suite structurally cannot make.
-2. **Replay re-derivation** — a hand-edited `history.jsonl` naming a foreign host and method must
-   not reach that host; an entry whose operationId no longer exists must exit 2.
-3. **`boundary`** — injected uid pairs across all three verdicts, including root and loose
-   permissions.
-4. **`fileguard`** — `t.TempDir()` files with an injected ownership lookup (real `chown` needs
-   root); owned/not-owned × each mode.
-5. **Canary suite extension** — closes findings 19 and 20 and adds the read-primitive case: a
-   canary in the profile, then read it back through every path-taking flag under `--dry-run`,
-   `--output json`, and `history show`, asserting refusal under `enforced`.
-
-## 8. What phase 2 does *not* claim
-
-Phase 2a closes A and A′. Phase 2b closes B *only in the enforced deployment*, which talaria
-documents and verifies but does not install. Single-uid installs remain `policy-only` and the tool
-says so. Secrets arriving in response bodies remain uncovered (§10).
-
-## 9. Pending DESIGN.md amendments
-
-**Apply after phase 2a.** Rebased onto v0.4 — the host-binding and untrusted-history sections v0.4
-already added are not repeated here.
+**The six below are applied by phase 2b**, which carries its own copy of this table. Three
+others were applied ahead of 2a as v0.5 (emitted-curl body, cache policy, replay table) along
+with the `run` removal, because 2a *implements* them.
 
 | § | Amendment |
 |---|---|
@@ -419,7 +240,7 @@ already added are not repeated here.
 | §7 | Insert phase 2 between 4 and 5; note it absorbs the self-install slice of the distribution line |
 | §8 | Add macOS: Keychain per-binary ACLs are a stronger mechanism with no Linux equivalent |
 
-## 10. Deferred, tracked
+## 7. Deferred, tracked
 
 - **macOS.** Keychain ACLs scope to a code-signed binary rather than a uid — a genuine boundary
   without uid separation. No Linux equivalent. Unsolved.
@@ -429,13 +250,13 @@ already added are not repeated here.
   not create the user, the sudoers entry, or the units. A `talaria install-boundary` is possible
   later.
 - **Rejected designs** (§6.1) — same-uid broker, broker + setgid, uid-scoped keyrings.
-- **Findings 12, 26, 27, 28, 32** — the five excluded from 2a (§5). Finding 12 is scheduled first
-  in 2b, ahead of dogfooding; the rest are unscheduled.
+- **Findings 27, 28 and 32** — deferred with reasons in 2a's document. 32 is picked up by 2c's
+  dogfooding, where real Swagger 2.0 specs appear. 12 and 26 are moot.
 - **Public distribution** — release matrix, install script, Homebrew tap, pi package.
 
-## 11. Successor phases
+## 8. Successor phases
 
-1. **Deepen the CLI** — driven by the 2b-6 findings doc. Candidates: request chaining via OpenAPI
-   `links`, search ranking, spec overlays. §9 lists several as non-goals; the findings decide
+1. **Deepen the CLI** — driven by the 2c findings doc. Candidates: request chaining via OpenAPI
+   `links`, search ranking, spec overlays. DESIGN.md §9 lists several as non-goals; the findings decide
    whether that stance survives contact.
 2. **The twin** — roadmap 5–8, still behind the §7 gate.
