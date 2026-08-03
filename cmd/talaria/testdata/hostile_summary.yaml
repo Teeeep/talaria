@@ -1,0 +1,30 @@
+openapi: 3.0.3
+info:
+  title: Hostile summaries
+  version: 1.0.0
+# Every summary here is text a spec author controls and a renderer must not
+# trust: the column separator, the row separator, a bare carriage return that
+# overwrites the printed line, and an ANSI sequence that recolours the terminal.
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: "line one\nline two\twith tab"
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: createPet
+      summary: "safe\rspoofed \x1b[31mred\x1b[0m"
+      responses:
+        "201":
+          description: Created
+  /stores:
+    get:
+      operationId: listStores
+      # Long *and* hostile: truncation runs first, and what survives it still
+      # has to be escaped.
+      summary: "\tCreate a store, assigning it an identifier, a name,\ta tag,\ta home and a\tlong tail of tabs"
+      responses:
+        "200":
+          description: OK

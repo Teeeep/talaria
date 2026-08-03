@@ -90,6 +90,83 @@ func TestTSVRendersTabSeparatedRows(t *testing.T) {
 	}
 }
 
+func TestTSVEmitsOneRowPerRowWithHostileCells(t *testing.T) {
+	var out bytes.Buffer
+
+	// A spec summary is attacker-controlled text that reaches a TSV cell. Left
+	// raw, this row becomes two lines with two and three columns, and `cut -f3`
+	// returns garbage with no way for the caller to notice.
+	err := New(FormatTSV, &out).Render(Payload{Table: Table{
+		Rows: [][]string{
+			{"getUser", "GET", "line one\nline two\twith tab"},
+			{"createUser", "POST", "plain"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Render returned error: %v", err)
+	}
+
+	rows := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if len(rows) != 2 {
+		t.Fatalf("TSV emitted %d rows for a 2-row table:\n%q", len(rows), out.String())
+	}
+
+	want := len(strings.Split(rows[0], "\t"))
+	for i, row := range rows {
+		if got := len(strings.Split(row, "\t")); got != want {
+			t.Errorf("row %d has %d columns, row 0 has %d: %q", i, got, want, row)
+		}
+	}
+	if got, want := rows[0], "getUser\tGET\t"+`line one\nline two\twith tab`; got != want {
+		t.Errorf("hostile row = %q, want %q", got, want)
+	}
+}
+
+func TestPrettyStaysColumnAlignedWithAHostileCell(t *testing.T) {
+	var out bytes.Buffer
+
+	// text/tabwriter reads an embedded tab as a cell terminator and
+	// re-partitions the whole column block, so one hostile summary misaligns
+	// every row around it.
+	err := New(FormatPretty, &out).Render(Payload{Table: Table{
+		Headers: []string{"OPERATION", "SUMMARY"},
+		Rows: [][]string{
+			{"getUser", "line one\nline two\twith tab"},
+			{"createUser", "plain"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Render returned error: %v", err)
+	}
+
+	got := lines(out.String())
+	if len(got) != 3 {
+		t.Fatalf("pretty emitted %d lines for a header and 2 rows:\n%s", len(got), out.String())
+	}
+
+	second := []string{"SUMMARY", `line one\nline two\twith tab`, "plain"}
+	want := strings.Index(got[0], second[0])
+	for i, line := range got {
+		at := strings.Index(line, second[i])
+		if at < 0 {
+			t.Fatalf("line %d %q does not contain its second cell %q", i, line, second[i])
+		}
+		if at != want {
+			t.Errorf("line %d starts its second column at %d, line 0 starts at %d:\n%s", i, at, want, out.String())
+		}
+	}
+}
+
+// lines splits rendered output into its non-empty lines.
+func lines(s string) []string {
+	trimmed := strings.TrimRight(s, "\n")
+	if trimmed == "" {
+		return nil
+	}
+
+	return strings.Split(trimmed, "\n")
+}
+
 func TestPrettyRendersHeadersAndRows(t *testing.T) {
 	var out bytes.Buffer
 

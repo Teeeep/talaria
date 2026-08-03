@@ -98,10 +98,13 @@ type tsvRenderer struct{ w io.Writer }
 // Render writes one tab-separated line per row. Headers are deliberately
 // omitted: TSV exists to be cut, awk'd and piped, and a header line would have
 // to be skipped by every consumer. Use --output json for labelled fields.
+//
+// Cells go through escapeCell, so one row in is exactly one line out with a
+// fixed column count however hostile the text inside it.
 func (r tsvRenderer) Render(p Payload) error {
 	var b strings.Builder
 	for _, row := range p.Table.Rows {
-		b.WriteString(strings.Join(row, "\t"))
+		b.WriteString(strings.Join(escapeRow(row), "\t"))
 		b.WriteByte('\n')
 	}
 
@@ -113,6 +116,10 @@ type prettyRenderer struct{ w io.Writer }
 
 // Render prints a column-aligned table. A payload with no table has no human
 // shape to print, so it falls back to JSON rather than emitting nothing.
+//
+// Cells go through escapeCell for the same reason the TSV renderer does, and
+// one more: tabwriter reads an embedded tab as a cell terminator, so a single
+// hostile cell re-partitions the whole column block around it.
 func (r prettyRenderer) Render(p Payload) error {
 	if p.Table.Empty() {
 		return jsonRenderer{w: r.w}.Render(p)
@@ -120,10 +127,10 @@ func (r prettyRenderer) Render(p Payload) error {
 
 	tw := tabwriter.NewWriter(r.w, 0, 0, 2, ' ', 0)
 	if len(p.Table.Headers) > 0 {
-		fmt.Fprintln(tw, strings.Join(p.Table.Headers, "\t"))
+		fmt.Fprintln(tw, strings.Join(escapeRow(p.Table.Headers), "\t"))
 	}
 	for _, row := range p.Table.Rows {
-		fmt.Fprintln(tw, strings.Join(row, "\t"))
+		fmt.Fprintln(tw, strings.Join(escapeRow(row), "\t"))
 	}
 	return tw.Flush()
 }

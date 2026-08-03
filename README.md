@@ -490,6 +490,13 @@ prompts keep working; it only changes on a breaking change to the output shape. 
 deterministic — the same result renders byte-identically every time. `tsv` prints bare
 tab-separated rows with no header line, for `cut` and `awk`.
 
+One row in is exactly one row out, with a fixed number of columns. Cell text is spec-derived
+or read back from the history file, so `tsv` and `pretty` escape anything that would otherwise
+break the row and column structure: `\t`, `\r`, `\n`, `\\`, and `\xNN` for every other control
+character, DEL, and every byte that is not valid UTF-8. Escaped, not stripped — `cut -f3` on a
+value containing a tab gives you the whole value with `\t` in it, rather than a silently wrong
+answer. `--output json` carries the unescaped text.
+
 ## Errors and exit codes
 
 Failures go to stderr as a single line of JSON in the same versioned envelope, saying what

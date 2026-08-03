@@ -144,6 +144,51 @@ func TestListTSVEmitsOneRowPerOperation(t *testing.T) {
 	}
 }
 
+func TestListTSVRowsSurviveAHostileSummary(t *testing.T) {
+	code, stdout, stderr := runList(t, "testdata/hostile_summary.yaml", "--output", "tsv")
+	if code != 0 {
+		t.Fatalf("list = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	got := lines(stdout)
+	if len(got) != 3 {
+		t.Fatalf("list tsv emitted %d rows for 3 operations:\n%q", len(got), stdout)
+	}
+	for i, row := range got {
+		if fields := strings.Split(row, "\t"); len(fields) != 4 {
+			t.Errorf("row %d has %d tab-separated fields, want 4: %q", i, len(fields), row)
+		}
+	}
+
+	// Escaped, not stripped: a consumer can still tell the tab was in the value.
+	if !strings.Contains(stdout, `line one\nline two\twith tab`) {
+		t.Errorf("the hostile summary was lost rather than escaped:\n%q", stdout)
+	}
+}
+
+func TestListPrettyTruncatesAndThenEscapes(t *testing.T) {
+	code, stdout, stderr := runList(t, "testdata/hostile_summary.yaml", "--output", "pretty")
+	if code != 0 {
+		t.Fatalf("list = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	got := lines(stdout)
+	if len(got) != 3 {
+		t.Fatalf("list pretty emitted %d lines for 3 operations:\n%q", len(got), stdout)
+	}
+
+	// fitSummaries runs before the renderer escapes, so the width budget has to
+	// be spent on what is printed, not on what was truncated.
+	for _, line := range got {
+		if len([]rune(line)) > maxPrettyWidth {
+			t.Errorf("pretty line is %d runes, want <= %d:\n%q", len([]rune(line)), maxPrettyWidth, line)
+		}
+		if strings.ContainsAny(line, "\t\r\x1b\x00") {
+			t.Errorf("pretty line still carries a control byte: %q", line)
+		}
+	}
+}
+
 func TestListFiltersByTag(t *testing.T) {
 	code, stdout, stderr := runList(t, "testdata/petstore.yaml", "--tag", "pets", "--output", "tsv")
 	if code != 0 {

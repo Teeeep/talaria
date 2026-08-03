@@ -121,6 +121,9 @@ func listPayload(ops []operation.Operation, format output.Format) output.Payload
 // that cannot be shortened, measured at the width tabwriter will pad them to —
 // the widest cell in each — because that padding is what a row-local
 // measurement would miss.
+//
+// Every measurement is output.CellWidth, not a rune count: the renderer escapes
+// after this runs, and a summary of tabs doubles in width on the way out.
 func fitSummaries(rows [][]string) {
 	const padding = 2 // tabwriter is constructed with two spaces between columns.
 
@@ -128,7 +131,7 @@ func fitSummaries(rows [][]string) {
 	for col := 0; col < summaryColumn; col++ {
 		width := 0
 		for _, row := range rows {
-			width = max(width, len([]rune(row[col])))
+			width = max(width, output.CellWidth(row[col]))
 		}
 		fixed += width + padding
 	}
@@ -140,19 +143,8 @@ func fitSummaries(rows [][]string) {
 
 			continue
 		}
-		row[summaryColumn] = truncate(row[summaryColumn], budget)
+		row[summaryColumn] = output.TruncateCell(row[summaryColumn], budget)
 	}
-}
-
-// truncate shortens s to at most max runes, marking the cut with an ellipsis so
-// a reader can tell the summary continues.
-func truncate(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-
-	return string(runes[:max-1]) + "…"
 }
 
 // loadIndex resolves the spec from the positional argument, --spec or the

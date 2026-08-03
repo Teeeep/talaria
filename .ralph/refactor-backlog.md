@@ -49,6 +49,16 @@ that pass — and task 6's before it — deliberately did not do, and why.
   because a table-driven suite whose subject is "every surface" is exactly where a mid-task
   split loses coverage silently.
 
+- Nine call sites in `cmd/talaria` hand-build `[][]string` rows for `output.Table`
+  (`list.go:103`, `search.go:66`, `history.go:218`/`263`, `uses.go:56`, `describe.go:138`,
+  `call.go:457`, `auth.go:157`, `version.go:31`), each deciding its own column order with no
+  header and no shared shape. Task 14 could make the *escaping* uniform because it lives in the
+  renderer, but nothing stops two commands disagreeing about column count or order for the same
+  data, and `list.go`'s `summaryColumn = 3` is a magic index into a slice built 80 lines away.
+  The seam is a per-command `rows()` returning a named row type, or `Table` carrying its columns
+  as fields rather than positions. Not attempted mid-task: it touches nine files and every
+  golden-output test in `cmd/talaria`.
+
 ## Examined and deliberately not consolidated
 
 - The bounded-read idiom in `internal/corpus/file.go` (`readStore`) and `internal/spec/source.go`

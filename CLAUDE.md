@@ -157,6 +157,21 @@ list history uses — because the body is raw `[]byte` and never becomes a `requ
 is the one display field no `Value` method protects. Never assign `string(req.Body.Data)` to a
 field a caller reads.
 
+**A table cell is escaped by the renderer, not by the command that builds it.** Every cell in
+`output.Table` is untrusted — a spec summary or description routinely contains real newlines,
+and a `history show` cell is a recorded response body, which is raw bytes. `escapeCell`
+(`internal/output/cell.go`) is applied by *both* the TSV and pretty renderers, on rows and
+headers, so one row in is one line out with a fixed column count: a raw `\n` used to split a
+TSV row in two and `cut -f3` returned garbage with no way to detect it, and `text/tabwriter`
+reads an embedded tab as a cell terminator and re-partitions the whole column block. It escapes
+rather than strips (`\t`, `\r`, `\n`, `\\`, `\xNN` for other C0 controls, DEL and invalid UTF-8)
+because a consumer has to be able to tell a tab inside a value from a column break. Never escape
+at a call site — the nine commands that build tables would drift — and never hand a renderer
+pre-escaped text. A command that *sizes* a column measures `output.CellWidth` and cuts with
+`output.TruncateCell`, never a rune count: escaping happens after `fitSummaries`
+(`cmd/talaria/list.go`) runs, so a summary of tabs doubles in width on the way out and overflows
+the line the budget was meant to bound.
+
 **One redaction firewall per invocation.** `newRedactors(cfg)` (`cmd/talaria/record.go`, beside
 `recordCall` and `observed` — the recording plumbing `call` and `history replay` share) is called
 exactly once, in the command's `RunE`, and the `corpus.Redactors` it returns is threaded from
