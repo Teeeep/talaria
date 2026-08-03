@@ -147,27 +147,69 @@ Runnable *and* leak-free. It is the same symbolic substitution already used for
 | 7 | Hostile `minLength` OOMs the process | Cap the pad and array generation at an explicit ceiling; structured skip reason when unsatisfiable |
 | 8 | `--output tsv` emits structurally invalid rows | Escape or strip `\t`/`\r`/`\n` in TSV cells; same for the pretty renderer's tabwriter cells |
 
-### The WARNs that belong in 2a
+### Triage of the other 24
 
-Not all 17. These five, because they are the same class or they weaken the gate itself:
+All 32 findings were read in full and the severity labels re-derived rather than taken at face
+value. Two labels are wrong on inspection, both verified against the code before promotion.
 
-- **9** — unbounded read of a remote spec OOMs the process (same class as 7; the spec is untrusted).
-- **10** — a basic credential with no colon makes curl prompt on the TTY and hang the call.
-- **13** — history entries are not size-bounded on read.
-- **19** — the canary gate has no case for the validation error path.
-- **20** — the canary suite never injects a credential through a profile `auth:` reference.
+**Finding 11 being WARN while finding 1 is CRIT is a labelling error, not a judgement call.** A
+CRIT whose fix is blocked by a WARN means the WARN inherits the severity. The reviewer recorded
+the dependency in both findings without propagating it.
 
-19 and 20 matter disproportionately: the canary suite is what §5a designates as the release gate,
-and a gate with uncovered surfaces is the reason findings 6 and 1 shipped green.
+**Three INFOs share a shape and two of them get promoted:** each is a place where a comment
+asserts a property the code does not have — finding 29's zeroing claim, finding 30's boundary
+rule, finding 31's rationalised `omitempty`. That is the same failure mode as finding 30's guard
+passing green and finding 19's stale *"whoever adds `--fail-on-error` adds the case"*: the
+codebase documents intentions as if they were invariants. A grep pass for that pattern beyond
+what the review caught belongs in 2a.
 
-The remaining WARNs and all 7 INFOs are triaged at the start of 2b, not now.
+#### Tier 1 — blocks installing talaria into agent sessions
 
-### One structural finding worth its own line
+Credential containment, and the gate meant to catch containment bugs.
 
-**Finding 30: `internal/corpus` imports `internal/curl`** — the exact §5 boundary violation Task 32
-was written to assert mechanically against the real import graph. The assertion did not hold. Fix
-the import, then fix the test that was supposed to catch it; a guard that fails silently is worse
-than no guard.
+| Findings | Why |
+|---|---|
+| 1, 2, 3, 22 | The §3 rule through four doors; 18 dissolves with them |
+| **11** | Hard prerequisite for 1 — §5a defines the allowed host set as servers *after variable substitution* |
+| 4 + **21** | `auth check` disagreeing with `call` is what §5 calls non-negotiable; 21 is the doc half and ships in the same commit, or the docs contradict the code |
+| 5, 6 | Header injection into the one component holding credentials; unredacted body on stdout |
+| 9, 13 | Untrusted input killing the process where the design requires entry-level failure |
+| 19, 20 | The canary gate's own holes. 20 covers the profile-`auth:` credential path, never exercised end to end |
+| **29** | Promoted from INFO. `config.go:120` copies the document, then `Reset()` nils the builder without zeroing — the resolved token stays readable on the heap while `cleanupWith` scrubs the copy. The comment at `config.go:85` asserts the opposite, in the one component §5a designates as the sole holder of resolved secrets |
+| **30** | Promoted from INFO. Verified: `internal/corpus/entry.go:24`. `e2e/boundary_test.go:33` does not guard it, so it silently drags the executor into the twin at Phase 6. Cheap now, expensive later |
+
+#### Tier 2 — blocks usable dogfooding
+
+| Findings | Why |
+|---|---|
+| 7, 8 | CRIT already — OOM on a hostile spec; structurally invalid TSV |
+| 10, **14**, 15, 17 | The hang triad plus the TTY prompt. 14 promotes hardest: Ctrl-C and `kill -TERM` both do nothing, only Ctrl-D or `kill -9`. An agent with no way to terminate a wedged call has no recovery path, and parallel tmux sessions make 17's lock contention realistic |
+| 23, 24 | Both make the tool lie about history. 23 reports "not recorded" for a recorded mutating call, so an operator re-runs it. 24 lets `history replay <id>` re-issue a *different* request than `history show <id>` displayed — findings 2/3's class, in code 2a is already rewriting |
+| 25 | Policy decided in §4.2; a stale cache makes `validate` report violations the server never committed |
+| **31** | Promoted from INFO, one line. `history.go:48` uses `int64,omitempty` where `run.go:57` correctly uses `*int64`; 0 ms is the common case against the `127.0.0.1` services 2b-6 targets, not an edge |
+| 16 | Quadratic rewrite under the lock — tens of seconds to minutes on a 500-operation `run`, which is what 2b-6 does. **First to cut if 2a is too large**; with 17 fixed it degrades to slow rather than deadlocked |
+
+#### Excluded from 2a — five findings
+
+| # | Why not |
+|---|---|
+| 12 | Parameter/media-type-level examples ignored by `run`'s data chain. A real quality gap — `foxtrot-906` where the spec said `42` — but not safety. **Do it first in 2b, before dogfooding**, or `run` gets evaluated on generated noise |
+| 26 | Non-unix lock is a no-op. Debian and macOS are both unix. The three-line "refuse to record rather than record unsafely" fix is right, just not now |
+| 27 | Needs `--proxy socks5h://` to trigger |
+| 28 | Needs `--timeout 9223372036` to trigger |
+| 32 | Coverage gap, not a defect — the 2.0 conversion was confirmed correct by hand. Fold into 2b dogfooding, where real 2.0 specs turn up anyway |
+
+### What the review confirms is sound
+
+Recorded so 2a does not re-litigate it. The review traced and confirmed: the `-q -K -`
+config-on-stdin mechanism with `-q` correctly first and no secret in argv; `escapeDirective`
+matching curl's `unslashquote` exactly, including the longest-match `Replacer` that avoids the
+double-escape bug; `--dry-run`'s emitted curl proven byte-identical to the executed request by
+replaying it; `secret` resolving only inside `internal/curl`; profile mode enforcement; history
+store 0700/0600; path params escaped and query credentials symbolic in every display form.
+
+**The architecture held. The failures are at its edges** — which is the argument for fixing the
+edges rather than revisiting the design.
 
 ## 6. Phase 2b — the boundary and distribution
 
@@ -321,7 +363,8 @@ already added are not repeated here.
   not create the user, the sudoers entry, or the units. A `talaria install-boundary` is possible
   later.
 - **Rejected designs** (§6.1) — same-uid broker, broker + setgid, uid-scoped keyrings.
-- **The remaining 12 WARNs and 7 INFOs** — triaged at the start of 2b.
+- **Findings 12, 26, 27, 28, 32** — the five excluded from 2a (§5). Finding 12 is scheduled first
+  in 2b, ahead of dogfooding; the rest are unscheduled.
 - **Public distribution** — release matrix, install script, Homebrew tap, pi package.
 
 ## 11. Successor phases
