@@ -331,6 +331,12 @@ Interrupting talaria — Ctrl-C, or a `kill` — stops the request rather than l
 curl is killed along with talaria, the call exits 1 saying it was cancelled, the attempt is still
 recorded in history, and nothing of the response is left behind in your temp directory.
 
+Interrupting a `run` stops the suite there. The report covers the operations that actually ran
+and nothing else — the request that was in flight is dropped rather than reported as a failure,
+and the operations after it were never attempted, so they are not history entries and not
+failed lines. It exits 1 saying how far it got, so an interrupted suite can never be read as a
+suite that passed.
+
 ## Validating what came back
 
 Every executed call carries a `validation` block alongside the response:

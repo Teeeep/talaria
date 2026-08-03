@@ -34,7 +34,7 @@
       "title": "Stop `run` from fabricating failures and history when cancelled",
       "line_start": 127,
       "line_end": 156,
-      "done": false
+      "done": true
     },
     {
       "id": 5,

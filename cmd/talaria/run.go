@@ -121,7 +121,17 @@ func newRunCmd() *cobra.Command {
 			// parallel calls against a real API are a surprise nobody asked for.
 			results := make([]runResult, 0, len(ops))
 			for _, op := range ops {
-				results = append(results, runner.execute(op))
+				res := runner.execute(op)
+				// A cancelled suite stops here, and the operation that was in
+				// flight is dropped rather than reported: every remaining request
+				// would fail instantly against a context that is already done, and
+				// a report blaming the API for requests nobody made is worse than
+				// a short one.
+				if runner.cancelled {
+					break
+				}
+
+				results = append(results, res)
 			}
 
 			view := runView{Results: results, Summary: summarise(results)}
@@ -258,6 +268,10 @@ type runner struct {
 	// missing collects the security schemes that stopped an operation from
 	// running, in the display form the exit-5 error reports.
 	missing []string
+	// cancelled records that ctx ended mid-suite, which is what stops the loop
+	// and what the verdict reports instead of a result for a suite that never
+	// finished.
+	cancelled bool
 }
 
 func newRunner(
@@ -324,6 +338,14 @@ func (r *runner) execute(op operation.Operation) runResult {
 		Path:        op.Path,
 	}
 
+	// Nothing is attempted once the suite's context has ended — including the
+	// work a skip does before deciding it is a skip.
+	if r.ctx.Err() != nil {
+		r.cancelled = true
+
+		return res
+	}
+
 	if op.IsMutation() && !r.allowMutations {
 		return res.skip("a %s request may change server state: pass --allow-mutations to include it",
 			op.Method)
@@ -369,6 +391,18 @@ func (r *runner) execute(op operation.Operation) runResult {
 	warnQueryCredentials(r.stderr, r.warner, req)
 
 	resp, execErr := curl.ExecuteWith(r.ctx, req, r.opts)
+	// A request the suite's own cancellation killed is not an observation about
+	// the API: it is not recorded, not reported, and it ends the suite. History
+	// in particular must not gain entries for it — they land under SourceRun and
+	// count against the per-source retention cap, so a cancelled run over a large
+	// spec would evict the previous run's real history with requests that were
+	// never made.
+	if execErr != nil && r.ctx.Err() != nil {
+		r.cancelled = true
+
+		return res
+	}
+
 	// Recorded either way, as `call` records: a request that never completed is
 	// still something that was tried.
 	recordCall(r.stderr, r.store, corpus.SourceRun, req, resp, r.redactors)
@@ -401,6 +435,14 @@ func (r *runner) noteMissing(missing []string) {
 // which is a different thing from an API that answered badly, and an agent
 // acts on it by exporting a variable rather than by reading the report.
 func (r *runner) verdict(view runView, failOnError bool) error {
+	// Ahead of both of those, because neither is a statement anyone can make
+	// about a suite that did not finish. It is exit 1, as a cancelled `call` is:
+	// the requests could not be completed. Exiting 0 would tell CI a suite passed
+	// on the strength of the fraction of it that ran.
+	if r.cancelled {
+		return clierr.RequestFailed("the run was cancelled after %s",
+			pluralise(len(view.Results), "operation"))
+	}
 	if len(r.missing) > 0 {
 		return clierr.CredentialMissing("no credential for security %s %s",
 			pluralise(len(r.missing), "scheme"), strings.Join(r.missing, ", "))

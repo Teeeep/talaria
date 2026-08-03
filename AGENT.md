@@ -143,6 +143,12 @@ exit 4. A missing credential exits **5** whichever flags you passed — that ope
 tested, so ask a human to export the variable named in its `reason`. Every request `run` makes is
 recorded in history with `"source": "run"`, and `history --source call` filters them back out.
 
+Interrupting a `run` (Ctrl-C, SIGTERM) stops the suite where it stands and exits **1** saying how
+many operations it got through. The report holds only those: the operation whose request was
+cancelled in flight is dropped rather than counted as `failed`, and the ones after it were never
+attempted, so they are neither report lines nor history entries. Treat a cancelled run as
+telling you nothing about the operations it did not reach.
+
 ## Credentials
 
 You cannot read a credential and you do not need to. talaria maps each security scheme the spec

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"io"
@@ -12,7 +13,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/spec"
 )
 
@@ -650,6 +653,95 @@ func TestRunFixtureContentTypeWinsOverTheGeneratedMediaType(t *testing.T) {
 	}
 	if got := sent[0].Header.Get("Content-Type"); got != "application/vnd.pet+json" {
 		t.Errorf("Content-Type = %q, want the fixture's application/vnd.pet+json", got)
+	}
+}
+
+// A run interrupted partway through reports what it did, and nothing else.
+// Without the loop consulting the suite's context, every operation after the
+// cancellation still went through execute against a context that was already
+// done: each one failed instantly, so the report blamed the API for requests
+// nobody made, --fail-on-error turned that into a validation verdict, and every
+// one of them appended a history entry — which, under the per-source cap, is
+// what evicts the previous run's real history.
+func TestRunCancelledPartwayReportsOnlyTheOperationsThatRan(t *testing.T) {
+	t.Setenv(spec.EnvSpec, "")
+	stateDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateDir)
+	t.Setenv("TALARIA_AUTH_BEARER", callCanary)
+	t.Setenv("TALARIA_AUTH_APIKEY_PETKEY", callCanary)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	var served []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Drained first: net/http only notices the peer going away once the
+		// handler has consumed the request body.
+		io.Copy(io.Discard, r.Body) //nolint:errcheck // Test server.
+
+		mu.Lock()
+		served = append(served, r.Method+" "+r.URL.Path)
+		nth := len(served)
+		mu.Unlock()
+
+		if nth == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"42","name":"Rex"}`)
+
+			return
+		}
+
+		// The second operation is the one the caller interrupts. Answering it
+		// first would race the cancellation; hanging until curl's connection goes
+		// away makes "cancelled in flight" the deterministic outcome.
+		cancel()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	var out, errOut strings.Builder
+	code := runContext(ctx, []string{
+		"run", runSpecFile, "--base-url", srv.URL, "--fail-on-error", "--output", "json",
+	}, &out, &errOut)
+	stdout, stderr := out.String(), errOut.String()
+
+	if strings.Contains(stdout+stderr, callCanary) {
+		t.Fatalf("run leaked the credential:\n%s\n%s", stdout, stderr)
+	}
+	if code != int(clierr.CodeRequestFailed) {
+		t.Fatalf("cancelled run = %d, want %d — neither success nor the validation code (%d); stderr: %s",
+			code, clierr.CodeRequestFailed, clierr.CodeValidation, stderr)
+	}
+	if msg := decodeErr(t, stderr).Error.Message; !strings.Contains(msg, "cancel") {
+		t.Errorf("error message = %q, want it to say the run was cancelled", msg)
+	}
+
+	// listPets was answered; createPet is skipped as a mutation without a
+	// request; getPet is the one that was cancelled in flight. Everything after
+	// it in spec order was never attempted, so none of it belongs in the report.
+	got := decodeRun(t, stdout)
+	want := []string{"listPets", "createPet"}
+	if strings.Join(got.ids(), ",") != strings.Join(want, ",") {
+		t.Fatalf("report covered %v, want only %v", got.ids(), want)
+	}
+	if got.Summary.Failed != 0 {
+		t.Errorf("summary = %+v, want no cancelled operation counted as failed", got.Summary)
+	}
+	if got.Summary.Total != len(want) {
+		t.Errorf("summary = %+v, want %d operations", got.Summary, len(want))
+	}
+
+	code, history, stderr := runHistory(t, "--output", "json")
+	if code != 0 {
+		t.Fatalf("history = %d, want 0; stderr: %s", code, stderr)
+	}
+	entries := decodeHistoryList(t, history).Entries
+	if len(entries) != 1 || entries[0].OperationID != "listPets" {
+		t.Fatalf("history = %+v, want only the operation whose request was actually made", entries)
 	}
 }
 
