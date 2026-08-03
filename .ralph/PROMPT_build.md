@@ -39,12 +39,77 @@ wrong reason proves nothing.
 If the task is a schema/config/scaffolding task with no red/green cycle, just do the work and
 run the verification the task specifies.
 
+## Notice what needs refactoring — record it, do not fix it
+
+You cannot see the whole codebase and you are not supposed to. But you *can* notice, from
+inside one task, that something has gone wrong structurally — and you are the only one who
+will ever be in a position to notice this particular thing.
+
+**Record observations in `.ralph/refactor-backlog.md`. Do not act on them.** Fixing a
+structural problem mid-task breaks the one-task rule, blows out the diff, and makes the commit
+stop matching the task. A compaction task will drain this backlog later. One line per
+observation:
+
+```
+- `path/to/file.go:120` — third near-copy of the response-envelope struct (see also x.go, y.go). Extract to a shared type.
+```
+
+If the backlog already names what you just hit, add nothing — a second mention is noise.
+
+### Signals, in rough order of how often they matter
+
+**The rule of three.** You just wrote the *third* near-identical thing — struct, error
+construction, parse-and-format helper. Two is coincidence, three is a pattern that wants a
+name. This is the highest-yield signal because each iteration only ever sees its own copy.
+
+**You copied and adapted.** If you took code from another file and changed a few lines, you
+have created the second or third copy. Say where the original is.
+
+**The entrypoint grew logic.** CLI commands, HTTP handlers and controllers should parse input,
+call into a package, and render the result. If you put a decision, a transformation, or a
+multi-step workflow in that layer, it belongs in a package that can be tested without the
+entrypoint. Note it even if the task told you to put it there.
+
+**A file you touched is now large.** Run `wc -l` on the files you changed. Past ~400 lines,
+say so and name the seam you would split on. You have just read the file, so you know where it
+divides — nobody later will have that context for free.
+
+**You wrote a comment to excuse the code.** A comment explaining why something is confusing,
+surprising, or has to be done in an odd order is a design problem wearing a disguise. Record
+the confusion, not just the comment.
+
+**The test needed heavy setup.** If exercising one behaviour required a large scaffold, the
+behaviour is coupled to too much. That is a design signal, not a testing inconvenience.
+
+**Shotgun edit.** One conceptual change forced edits across three or more files. Whatever the
+concept is, it has no home.
+
+### Cheap check, every iteration
+
+Before committing, on the files you touched:
+
+```bash
+wc -l <files you changed>
+```
+
+That single number catches the most common decay — a file quietly becoming the place
+everything lands — and costs nothing.
+
 ## On success
 
 1. Run the lint command from `.ralph/stack.json` if one is defined, and fix what it reports
    in the code you touched.
 2. **Doc check** — did this change how someone uses the system?
    - New commands, endpoints, env vars, or workflows → update the conventions file
+   - **Did you establish a pattern the next task will need?** Where a shared type lives, how
+     errors are constructed, what belongs in the entrypoint vs. a package, a naming rule you
+     invented — record it in the conventions file in one line. The next iteration starts with
+     clean context and this file is the only way it can learn what you did. An unrecorded
+     pattern gets re-invented slightly differently by every later task
+   - **Never write a comment asserting a property no test enforces.** "This buffer is zeroed",
+     "callers must hold the lock", "this is validated upstream" — either add the test that
+     makes it true, or do not claim it. A comment that documents an intention as if it were an
+     invariant is worse than silence: later readers, human and agent, will rely on it
    - Setup or install steps changed → update `README.md`
    - Behaviour intentionally diverges from the design doc → note it in the plan
 3. **Edit the `tasks.json` file on disk** with the Edit tool: set your task's `"done": true`.

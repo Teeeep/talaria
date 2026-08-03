@@ -16,7 +16,9 @@ Use parallel subagents to inspect:
 2. **Test setup** — test/spec directories, test config files, existing CI workflows
    (`.github/workflows/*`, `.woodpecker.yml`, `Makefile`) — CI is the most reliable source
    of the real test and lint commands
-3. **Project conventions** — `CLAUDE.md`, `AGENTS.md`, `README.md`, `CONTRIBUTING.md`
+3. **Project conventions** — `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`. These describe *how
+   this codebase is written*. A design doc, spec, or README describing *what to build* is *not*
+   a conventions file — see the rule under `conventions_files` below.
 4. **Source layout** — which top-level directories hold source vs. tests vs. generated code
 
 ## Verify, don't assume
@@ -81,6 +83,33 @@ never invent a command you have not verified.
 
 `test_single_command` must contain the literal token `{file}` where a path goes — the build
 phase substitutes it to run one test file during the red step.
+
+### `conventions_files` is the loop's only long-term memory — get it right
+
+Every build iteration starts with clean context. `conventions_files` is the *sole* channel
+through which one iteration tells the next how this codebase is written. Iteration 20 has no
+other way to learn that iteration 3 already established a pattern.
+
+Two hard rules:
+
+1. **Never list a specification document.** A design doc, a README, or a research write-up
+   answers *what to build*. Listing one here spends every iteration's context on the spec while
+   teaching it nothing about the code — and worse, the build phase is instructed to *write* to
+   the conventions file, so it will edit your design doc as if it were house style.
+   The plan phase reads the spec; build iterations read their task's slice of the plan.
+2. **If no conventions file exists, create one.** Do not fall back to whatever documentation
+   happens to be present. Greenfield projects have nothing to discover — that is exactly when
+   this matters most, because the whole codebase is about to be written by iterations that
+   cannot see each other's work.
+
+For a greenfield project, write a starter `CLAUDE.md` at the repo root (Claude Code loads it
+automatically, so it cannot be skipped or budgeted away) containing what you already know: the
+language, the layout, the test/build/lint commands, and a short "House rules" section for
+iterations to extend. Then set `"conventions_files": ["CLAUDE.md"]`.
+
+Seed the House rules with whatever the project's own docs already commit to — package boundary
+rules, error-handling conventions, where shared types live. Leave a standing instruction that
+patterns get recorded here as they are established.
 
 Use `notes` for anything that would otherwise bite a later phase: a database that must be
 running, a `.env` that must exist, a pre-commit hook that reformats code, a monorepo where

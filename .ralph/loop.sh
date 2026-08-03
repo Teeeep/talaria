@@ -8,6 +8,7 @@
 # Options:
 #   --resume             Continue from .ralph/state
 #   --from PHASE         Force start phase: stack|plan|build|review|pr
+#   --review-every N     Run a review pass every N build iterations (0 = only at the end)
 #   --no-pr              Stop after review; do not open a PR
 #   --no-tracker         Do not require Loop Tracker
 #   --plan-max N         Max plan iterations (default 5)
@@ -31,6 +32,7 @@ NO_TRACKER=false
 PLAN_MAX=5
 BUILD_MAX=0            # 0 = derive from task count
 REVIEW_MAX=3
+REVIEW_EVERY=0        # 0 = review once after all tasks; N = review every N build iterations
 TIME_BUDGET=14400
 RETRY_MAX=5
 RETRY_DELAY=30
@@ -44,6 +46,7 @@ while [ $# -gt 0 ]; do
     --plan-max)     PLAN_MAX="$2"; shift 2 ;;
     --build-max)    BUILD_MAX="$2"; shift 2 ;;
     --review-max)   REVIEW_MAX="$2"; shift 2 ;;
+    --review-every) REVIEW_EVERY="$2"; shift 2 ;;
     --time-budget)  TIME_BUDGET="$2"; shift 2 ;;
     -*)             echo "Unknown option: $1" >&2; exit 1 ;;
     *)              DESIGN_DOC="$1"; shift ;;
@@ -124,7 +127,7 @@ fi
 banner "RALPH IMPLEMENT"
 log "Design doc:  ${DESIGN_DOC:-<resumed>}"
 log "Branch:      $BRANCH  (base: $BASE_BRANCH)"
-log "Caps:        plan=$PLAN_MAX review=$REVIEW_MAX time=${TIME_BUDGET}s"
+log "Caps:        plan=$PLAN_MAX review=$REVIEW_MAX review_every=$REVIEW_EVERY time=${TIME_BUDGET}s"
 log "PR:          $DO_PR"
 log "Log:         $LOG"
 
@@ -375,13 +378,46 @@ phase_build() {
     log "Build cap derived from $n incomplete task(s): $max iterations"
   fi
 
-  run_iterations "$max" "$RALPH_DIR/PROMPT_build.md" "build" 3 all_tasks_done
-  local rc=$?
-  case $rc in
-    0) log "All tasks complete."; return 0 ;;
-    4) return 4 ;;
-    *) log "Build phase ended without completing all tasks (rc=$rc)"; return 1 ;;
-  esac
+  # REVIEW_EVERY=0 keeps the original behaviour: build every task, then review once.
+  if [ "$REVIEW_EVERY" -le 0 ]; then
+    run_iterations "$max" "$RALPH_DIR/PROMPT_build.md" "build" 3 all_tasks_done
+    local rc=$?
+    case $rc in
+      0) log "All tasks complete."; return 0 ;;
+      4) return 4 ;;
+      *) log "Build phase ended without completing all tasks (rc=$rc)"; return 1 ;;
+    esac
+  fi
+
+  # Checkpointed build: review every REVIEW_EVERY iterations instead of hoarding
+  # findings until the end. A review that runs once after N tasks reports N tasks'
+  # worth of drift at once, which is how a fix pass turns into an escalation.
+  local rounds=$(( (max + REVIEW_EVERY - 1) / REVIEW_EVERY ))
+  local round=0
+  while [ "$round" -lt "$rounds" ]; do
+    round=$((round + 1))
+    log "═══════ build checkpoint $round/$rounds (review every $REVIEW_EVERY) ═══════"
+
+    run_iterations "$REVIEW_EVERY" "$RALPH_DIR/PROMPT_build.md" "build" 3 all_tasks_done
+    local rc=$?
+    case $rc in
+      0) log "All tasks complete."; return 0 ;;
+      3) : ;;   # hit the checkpoint with tasks outstanding — review, then continue
+      4) return 4 ;;
+      *) log "Build phase ended without completing all tasks (rc=$rc)"; return 1 ;;
+    esac
+
+    log "Checkpoint reached with tasks outstanding — running an interim review"
+    phase_review
+    local review_rc=$?
+    # Restore the phase marker so --resume comes back to build, not review.
+    set_phase build
+    tracker_phase build
+    [ "$review_rc" -ne 0 ] && return "$review_rc"
+  done
+
+  log "Build phase exhausted its iteration cap ($max) with tasks outstanding"
+  return 1
 }
 
 phase_review() {
