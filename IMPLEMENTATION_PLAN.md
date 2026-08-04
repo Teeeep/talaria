@@ -2115,6 +2115,16 @@ wait the signal context cannot reach is the one case that rule exists for.
 
 **Why:** Finding 21 exists because a shipped document described behaviour the code no longer had.
 
+**Landed:** finding 10's `--data` → `--data-binary` amendment went in early with the cycle-2 plan
+commit (8cf0153, DESIGN.md v0.6 §3.4); this task added the *reason* it names, which was the half
+that made it a rule rather than a spelling. Finding 9 is done in all three documents plus §5a's
+sentence, verified against the binary's actual output rather than the source
+(`{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","present":true,"withheld":true}`,
+`present but withheld` in pretty/TSV). No new test: `cmd/talaria/auth_test.go`'s four withheld
+cases already assert the field name and both polarities. The house rule that would have caught
+finding 9 earlier is now in CLAUDE.md — a field an agent branches on is named in all three
+shipped documents, in the same commit as the code.
+
 ---
 
 ### Task 33: The SIGINT test does not order itself with a sleep — finding 11

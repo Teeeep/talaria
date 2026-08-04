@@ -141,6 +141,21 @@ talaria auth check ./openapi.yaml
 `present` is a lookup; the value is never read. A profile can redirect a scheme to a different
 variable, and `auth check` reports whichever one is actually in force.
 
+**`present` does not mean "will be sent".** When this invocation's destination is outside the
+allowed host set — the same set `call` withholds against — the entry carries `withheld` too:
+
+```sh
+talaria auth check ./openapi.yaml --base-url http://localhost:9000
+{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","present":true,"withheld":true}
+```
+
+Like `supported`, the field appears only when it is true. It is the verdict `call` would reach
+under the same flags, so check it before deciding a 401 means the token is wrong: the answer is
+`--allow-host` (or a profile's `allow_hosts:`), not a new token, and if you are pointing at a
+twin then withholding is working as designed. It is one answer per invocation rather than one
+per operation — true when *any* of the spec's operations would resolve off the set, because the
+operation's path decides the host as much as `--base-url` does.
+
 ### A scheme talaria cannot speak
 
 `oauth2`, `openIdConnect`, `mutualTLS` and an `apiKey` in a place a request does not have are

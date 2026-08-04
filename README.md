@@ -284,6 +284,21 @@ The source follows the same resolution `call` uses, so `--profile staging` repor
 profile's variable (`env:STAGING_TOKEN`) rather than the convention's. Presence is tested with
 a lookup; the value is never read.
 
+Presence is not the same question as "will it be sent". A scheme whose credential a `call` under
+these same flags would withhold — because the destination is outside the [allowed host
+set](#credentials-bind-to-hosts) — carries `withheld` as well, and reads `present but withheld`
+in the pretty and TSV output:
+
+```console
+$ talaria auth check ./openapi.yaml --base-url http://localhost:9000 --output json
+{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","present":true,"withheld":true}
+```
+
+Like `supported` below, it appears only when it is true, so an ordinary report is unchanged. It
+is one verdict for the invocation rather than one per operation: true when *any* operation in the
+spec would resolve to a host outside the set, because an operation's path decides the host as
+much as `--base-url` does. `--allow-host` is the answer when the host is one you meant.
+
 It exits **5** when an operation in the spec has no credential to authenticate it with, naming
 each scheme and the variable to export — including a scheme talaria cannot speak, which is
 reported as unsupported rather than left out:

@@ -170,7 +170,10 @@ Primary motivation remains: a tool for my own workflow. Open source is upside.
    set, useless to exfiltrate (§5a). **A request body is referenced, never inlined, unless the
    caller typed it into argv:** `--body @file` emits `--data-binary @file` and `--body -` emits
    `--data-binary @-`, because a body read from a file or stdin may carry a credential the agent
-   never saw. Only an argv-supplied body is inlined, since it is already in the agent's hands.
+   never saw. `--data-binary` rather than `--data`: `--data` strips the newlines out of a file, so
+   a pretty-printed body file would make the emitted command send different bytes than the call
+   did, and a reproduction that is not the request is worse than none. Only an argv-supplied body
+   is inlined, since it is already in the agent's hands.
    This keeps the emitted command both runnable and safe to print. **The rule is about the body,
    not about the curl field:** it binds every stdout surface that would show the bytes, including
    the envelope's own `request.body`, which carries `"@/path"` / `"@-"` for a referenced body
@@ -227,6 +230,8 @@ talaria twin fault <operationId> --status 429 --rate 0.1 [--header Retry-After=3
 talaria auth check [spec] [--profile p]   # are credentials PRESENT for the spec's security
                                          # schemes? never prints values:
                                          # {"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","present":true}
+                                         # plus "withheld":true when a call under the same flags
+                                         # would not send it (§5a) — present is not sendable
 talaria version
 ```
 
@@ -411,7 +416,9 @@ Withholding rather than refusing is deliberate: pointing at a local twin is the 
 against the twin must not need a flag, and must not be handed a real secret.
 
 `auth check` reports against the *resolved* host set, so "present" never means "will actually
-be sent".
+be sent". The entry carries `"withheld": true` when it would not be — one verdict per
+invocation, true when any of the spec's operations resolves off the set, since the path decides
+the host as much as the base URL does. Like `supported` (§5), it appears only when it is true.
 
 This is default-deny with a deliberate override, the same shape as `--allow-mutations` in §3.5.
 

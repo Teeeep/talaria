@@ -167,6 +167,15 @@ doc, prof)` — and the one place the stderr line is written — `warnWithheld`.
 resolves a credential calls both; do not build a `HostSet` anywhere else, or `call`, `auth check`
 and `history replay` will start disagreeing about where a credential may go.
 
+**A field an agent branches on is named in all three shipped documents.** A new key in an
+envelope — `withheld`, `supported`, `credentials_withheld` — lands in `AGENT.md` (what to *do*
+about it), `README.md` (the human's reference) and `docs/design/DESIGN.md` (the contract), in the
+same commit as the code. Nothing enforces this mechanically, which is why it is written down:
+`auth check`'s `withheld` shipped and stayed undocumented, so AGENT.md went on telling agents
+*"`present` is a lookup"* while the binary was already answering the harder question beside it —
+an agent reading the manual could not learn the credential would not be sent. A behaviour only
+the source states is one an agent cannot use.
+
 **An unsupported security scheme is reported, never hidden.** `config.Credential.Supported` is
 false for a scheme outside v1's set — `oauth2`, `openIdConnect`, `mutualTLS`, an `apiKey` in a
 place a request does not have — and its `Ref` then points at `TALARIA_AUTH_BEARER`: the only
