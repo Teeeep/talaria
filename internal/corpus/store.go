@@ -1,6 +1,7 @@
 package corpus
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,7 +92,7 @@ func (s *Store) Recording() bool {
 //
 // With recording off it does nothing at all — no file, no directory, no lock.
 // An opt-out that still left a history file behind would not be one.
-func (s *Store) Append(e Entry) error {
+func (s *Store) Append(ctx context.Context, e Entry) error {
 	if !s.Recording() {
 		return nil
 	}
@@ -101,7 +102,7 @@ func (s *Store) Append(e Entry) error {
 		return err
 	}
 
-	unlock, err := lock(path)
+	unlock, err := lock(ctx, path)
 	if err != nil {
 		return err
 	}

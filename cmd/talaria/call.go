@@ -183,7 +183,7 @@ func newCallCmd() *cobra.Command {
 			// Recorded either way. A request that never completed is still
 			// something that was tried, and the entry says so by having no
 			// response block at all.
-			recordCall(cmd.ErrOrStderr(), store, corpus.SourceCall, req, resp, redactors)
+			recordCall(cmd.Context(), cmd.ErrOrStderr(), store, corpus.SourceCall, req, resp, redactors)
 			if execErr != nil {
 				return execErr
 			}

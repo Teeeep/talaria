@@ -2,6 +2,7 @@ package corpus
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -85,7 +86,7 @@ func TestAppendStoresWhatWasSentAndWhatCameBack(t *testing.T) {
 	store, _ := newStore(t)
 
 	before := time.Now().Add(-time.Second)
-	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
+	if err := store.Append(context.Background(), NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -139,7 +140,7 @@ func TestAppendStoresWhatWasSentAndWhatCameBack(t *testing.T) {
 func TestAppendWritesAnRFC3339Timestamp(t *testing.T) {
 	store, path := newStore(t)
 
-	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
+	if err := store.Append(context.Background(), NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -161,7 +162,7 @@ func TestAppendGivesEveryEntryAStableID(t *testing.T) {
 	store, _ := newStore(t)
 
 	for i := 0; i < 3; i++ {
-		if err := store.Append(NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
+		if err := store.Append(context.Background(), NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
 	}
@@ -210,7 +211,7 @@ func TestAppendDisambiguatesEntriesSharingATimestamp(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		entry := NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})
 		entry.Timestamp = stamp
-		if err := store.Append(entry); err != nil {
+		if err := store.Append(context.Background(), entry); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
 	}
@@ -241,7 +242,7 @@ func TestAppendDoesNotReportFailureForALineItWrote(t *testing.T) {
 
 	writeStore(t, path, maximalStore(t, 384))
 
-	err := store.Append(Entry{Source: SourceCall, Method: "GET", URL: "https://api.example.com/pets/new"})
+	err := store.Append(context.Background(), Entry{Source: SourceCall, Method: "GET", URL: "https://api.example.com/pets/new"})
 
 	stored, readErr := os.ReadFile(path)
 	if readErr != nil {
@@ -308,7 +309,7 @@ func TestReadKeepsEntriesWrittenBeforeIDsExisted(t *testing.T) {
 	}
 
 	// A new entry alongside it still gets an id, and the old line keeps none.
-	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
+	if err := store.Append(context.Background(), NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	entries, err = store.Read()
@@ -324,7 +325,7 @@ func TestAppendRedactsAtWriteTime(t *testing.T) {
 	store, path := newStore(t)
 
 	entry := NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})
-	if err := store.Append(entry); err != nil {
+	if err := store.Append(context.Background(), entry); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -340,7 +341,7 @@ func TestAppendRedactsAtWriteTime(t *testing.T) {
 func TestAppendRedactsCredentialsSuppliedAsLiterals(t *testing.T) {
 	store, _ := newStore(t)
 
-	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
+	if err := store.Append(context.Background(), NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -369,7 +370,7 @@ func TestAppendRedactsCredentialsSuppliedAsLiterals(t *testing.T) {
 func TestAppendCreatesA0600FileInA0700Directory(t *testing.T) {
 	store, path := newStore(t)
 
-	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
+	if err := store.Append(context.Background(), NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -395,12 +396,12 @@ func TestAppendCapsEachSourceSeparately(t *testing.T) {
 
 	// One interactive call first: a run over a large spec must not be able to
 	// evict a session of `call` history, which a single global cap would allow.
-	if err := store.Append(Entry{Source: SourceCall, Method: "GET", URL: "https://api.example.com/pets/1"}); err != nil {
+	if err := store.Append(context.Background(), Entry{Source: SourceCall, Method: "GET", URL: "https://api.example.com/pets/1"}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	for i := 0; i < maxPerSource+1; i++ {
 		entry := Entry{Source: SourceReplay, Method: "GET", URL: "https://api.example.com/pets/2"}
-		if err := store.Append(entry); err != nil {
+		if err := store.Append(context.Background(), entry); err != nil {
 			t.Fatalf("Append run entry %d: %v", i, err)
 		}
 	}
@@ -427,7 +428,7 @@ func TestAppendTrimsOldestFirst(t *testing.T) {
 
 	for i := 0; i < maxPerSource+2; i++ {
 		entry := Entry{Source: SourceReplay, Method: "GET", URL: "https://api.example.com/pets/" + strconv.Itoa(i)}
-		if err := store.Append(entry); err != nil {
+		if err := store.Append(context.Background(), entry); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
@@ -455,7 +456,7 @@ func TestConcurrentAppendsKeepEveryEntryTheyAcknowledged(t *testing.T) {
 	// under it would exercise nothing.
 	for i := 0; i < maxPerSource-1; i++ {
 		entry := Entry{Source: SourceReplay, Method: "GET", URL: "https://api.example.com/seed/" + strconv.Itoa(i)}
-		if err := store.Append(entry); err != nil {
+		if err := store.Append(context.Background(), entry); err != nil {
 			t.Fatalf("seeding entry %d: %v", i, err)
 		}
 	}
@@ -479,7 +480,7 @@ func TestConcurrentAppendsKeepEveryEntryTheyAcknowledged(t *testing.T) {
 
 			for i := 0; i < each; i++ {
 				url := "https://api.example.com/pets/" + strconv.Itoa(w) + "-" + strconv.Itoa(i)
-				if err := store.Append(Entry{Source: SourceReplay, Method: "GET", URL: url}); err != nil {
+				if err := store.Append(context.Background(), Entry{Source: SourceReplay, Method: "GET", URL: url}); err != nil {
 					return
 				}
 				// Only entries Append reported as written are claimed: a returned
@@ -537,7 +538,7 @@ func TestConcurrentAppendsRepairAnOverBoundStoreWithoutLosingEachOther(t *testin
 			defer wg.Done()
 
 			url := "https://api.example.com/pets/concurrent-" + strconv.Itoa(w)
-			if err := store.Append(Entry{Source: SourceCall, Method: "GET", URL: url}); err != nil {
+			if err := store.Append(context.Background(), Entry{Source: SourceCall, Method: "GET", URL: url}); err != nil {
 				mu.Lock()
 				errs = append(errs, err)
 				mu.Unlock()
@@ -577,7 +578,7 @@ func TestAppendTruncatesLargeBodies(t *testing.T) {
 	}
 	resp := &Observed{Status: 200, Body: []byte(big), TimingMS: 4}
 
-	if err := store.Append(NewEntry(SourceCall, req, resp, Redactors{})); err != nil {
+	if err := store.Append(context.Background(), NewEntry(SourceCall, req, resp, Redactors{})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -621,7 +622,7 @@ func TestAppendIsANoOpWhenTheEnvVarTurnsHistoryOff(t *testing.T) {
 	if store.Recording() {
 		t.Error("Recording() = true, want false with TALARIA_HISTORY=off")
 	}
-	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
+	if err := store.Append(context.Background(), NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -633,7 +634,7 @@ func TestAppendIsANoOpWhenTheStoreIsDisabled(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state")
 	store := New(dir, false)
 
-	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
+	if err := store.Append(context.Background(), NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -646,7 +647,7 @@ func TestTheEnvVarBeatsAnEnabledSetting(t *testing.T) {
 	store, path := newStore(t)
 	t.Setenv(EnvHistory, "off")
 
-	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
+	if err := store.Append(context.Background(), NewEntry(SourceCall, canaryRequest(t), nil, Redactors{})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -745,7 +746,7 @@ func TestAppendSurvivesAnOversizedLineAlreadyInTheStore(t *testing.T) {
 
 	writeStore(t, path, append(oversizedLine(t), '\n'))
 
-	if err := store.Append(NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
+	if err := store.Append(context.Background(), NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 

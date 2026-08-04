@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -139,7 +140,7 @@ func seedHistory(t *testing.T, entries ...corpus.Entry) {
 
 	store := corpus.New("", true)
 	for _, entry := range entries {
-		if err := store.Append(entry); err != nil {
+		if err := store.Append(context.Background(), entry); err != nil {
 			t.Fatalf("seeding the history store: %v", err)
 		}
 	}

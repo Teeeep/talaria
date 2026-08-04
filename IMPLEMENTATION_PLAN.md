@@ -1314,6 +1314,34 @@ The lock file lives in a user-writable state directory.
 `SA_RESTART` — not interruptible by a signal either. A `talaria call` in another terminal blocks in
 `flock` with no output and cannot be Ctrl-C'd.
 
+**Built, with two deviations from the green step.**
+
+*Not a polling loop.* Green step 1 says loop on `LOCK_NB` against a sleep. That is unfair in
+exactly this store's shape: a writer appending in a loop releases and re-takes the lock in
+microseconds while every other waiter is mid-sleep, so a waiter starves through ordinary
+contention and hits the deadline. The blocking `flock` runs in its own goroutine instead,
+selected against `ctx` and the deadline — the `stdinBody` shape for a wait that cannot be
+interrupted once begun — with `abandon` closing the descriptor if the lock is granted after the
+wait gave up. Red test 3's concern (ordinary contention must serialise) is what rules the loop
+out; `TestALockGrantedAfterTheWaitGaveUpIsReleased` covers what the goroutine adds.
+
+*The deadline is a minute, not "a few seconds".* One append over a store at `maxStoreBytes`
+reads it, rewrites it and scans it again, so seconds under the lock are ordinary and several
+writers multiply them: at 5s and again at 15s,
+`TestConcurrentAppendsRepairAnOverBoundStoreWithoutLosingEachOther` failed under `-race` with
+legitimate appends timing out — the deadline was cutting off the repair path the store depends
+on. A minute means "the holder is not making progress", and the context is the fast way out for
+anyone at a keyboard. `lockWith(ctx, path, timeout)` names the deadline the way `preflightWith`
+does, so the give-up cases cost 300ms of suite time rather than a minute, and the Append-level
+tests assert only that the wiring reaches a wait with a way out.
+
+Adversarial item 3 (a stale NFS mount) is covered by the deadline but not tested — there is no
+way to produce one in the suite. Item 4's "deadline of zero" is not reachable: the deadline is a
+constant, and a context already cancelled on entry is item 5's case, which
+`TestAppendRecordsUnderACancelledContextWhenNothingHoldsTheLock` pins deliberately in the other
+direction — an uncontended append still records, because `call` records the request it was
+interrupted in the middle of.
+
 ---
 
 ### Task 18: Refactor pass — tasks 13–17

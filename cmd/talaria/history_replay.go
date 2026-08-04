@@ -93,7 +93,7 @@ func newHistoryReplayCmd() *cobra.Command {
 			renderer := output.New(format, cmd.OutOrStdout())
 
 			resp, execErr := curl.Execute(cmd.Context(), req)
-			recordCall(cmd.ErrOrStderr(), store, corpus.SourceReplay, req, resp, redactors)
+			recordCall(cmd.Context(), cmd.ErrOrStderr(), store, corpus.SourceReplay, req, resp, redactors)
 			if execErr != nil {
 				return execErr
 			}

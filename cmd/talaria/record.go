@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 
@@ -39,6 +40,7 @@ func newRedactors(cfg *config.Config) corpus.Redactors {
 // agent branches on. The warning still goes to stderr, because history silently
 // not recording is how a user discovers weeks later that it never was.
 func recordCall(
+	ctx context.Context,
 	stderr io.Writer,
 	store *corpus.Store,
 	source corpus.Source,
@@ -50,7 +52,7 @@ func recordCall(
 		return
 	}
 
-	if err := store.Append(corpus.NewEntry(source, req, observed(resp), red)); err != nil {
+	if err := store.Append(ctx, corpus.NewEntry(source, req, observed(resp), red)); err != nil {
 		fmt.Fprintf(stderr, "warning: the call was not recorded in history: %v\n", err)
 	}
 }

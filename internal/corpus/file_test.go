@@ -6,6 +6,7 @@ package corpus
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -115,7 +116,7 @@ func TestAStoreGrownPastTheReadBoundIsStillReadableAfterAnAppend(t *testing.T) {
 		t.Fatal("the seeded store is already readable; the bound under test was never crossed")
 	}
 
-	if err := store.Append(Entry{Source: SourceCall, Method: "GET", URL: "https://api.example.com/pets/new"}); err != nil {
+	if err := store.Append(context.Background(), Entry{Source: SourceCall, Method: "GET", URL: "https://api.example.com/pets/new"}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 

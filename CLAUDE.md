@@ -47,7 +47,8 @@ Within a package, a file is one concern. The splits that exist, and what belongs
 go*, `request/wire.go` the charset rules for what may go on the wire, `request/hosts.go` the
 allowed host set; `curl/config.go` builds the document, `curl/firewall.go` is the half that
 resolves, re-checks and zeroes; `corpus/store.go` is the `Store` API and id assignment,
-`corpus/file.go` the file mechanics under it — find, bounded read, append, trim, replace;
+`corpus/file.go` the file mechanics under it — find, bounded read, append, trim, replace —
+and `corpus/lock_unix.go` the append lock with the two ways out of waiting for it;
 `cmd/talaria/call.go` is the `call` command with its binder wiring and view structs,
 `record.go` the recording plumbing `call` and `history replay` share, `history.go` the
 list/show views and the store plumbing, `history_replay.go` the replay command. Tests split
@@ -266,6 +267,29 @@ missing-parameter complaints that are artefacts of the interruption. The tests a
 `cmd/talaria/root_test.go`, which re-execs the test binary (`TALARIA_TEST_SIGNAL_CHILD`, branched
 in `TestMain` before any fixture exists) because the assertion is that a signal kills the
 process, and this process is the suite.
+
+**The history lock is a wait, so it has both of them too.** `lock(ctx, path)`
+(`internal/corpus/lock_unix.go`) took `LOCK_EX` with no deadline and no way out: Go installs its
+handlers with `SA_RESTART`, so a `talaria call` waiting on a wedged writer could not be Ctrl-C'd
+either, and `kill -9` was the answer. It now runs the blocking `flock` in a goroutine and selects
+it against `ctx` and `lockTimeout` — the `stdinBody` shape, for the same reason: a `flock` already
+in progress cannot be interrupted. **The uncontended acquisition is a `LOCK_EX|LOCK_NB` attempt
+made before `ctx` is consulted**, because `recordCall` runs *after* the signal context is
+cancelled — `call` records the request it was interrupted in the middle of — and a context check
+in front of it turns every Ctrl-C into a lost entry for a call that was actually made.
+`TestAppendRecordsUnderACancelledContextWhenNothingHoldsTheLock` is that ordering. Only the
+*wait* is cancellable, and a wait that gave up hands its descriptor to `abandon`, which closes it
+when the flock finally returns — a lock granted after the give-up that nothing closed would be
+held by this process for the rest of its life, having already reported it could not be taken.
+Do not poll `LOCK_NB` against a sleep instead: it is unfair in exactly this store's shape, where a
+writer appending in a loop re-takes the lock while every other waiter is mid-sleep, and the
+starved one then hits the deadline during ordinary contention. `lockTimeout` is a minute because
+a legitimate holder can be slow — one append over a store at `maxStoreBytes` reads it, rewrites it
+and scans it again — so reaching it means the holder is not making progress rather than that it is
+busy; the give-up costs a `recordCall` warning on stderr, never a silent loss
+(`cmd/talaria/record_test.go`). The seam that keeps that minute out of the suite's runtime is
+`lockWith(ctx, path, timeout)`, exactly as `preflightWith` names `preflightTimeout`: the deadline
+cases drive `lockWith` with 300ms and the Append-level tests assert only the wiring.
 
 **The version preflight is a subprocess like any other, and gets the same three bounds.**
 `preflight(ctx, path)` (`internal/curl/version.go`) execs `curl --version` before talaria has done

@@ -138,7 +138,7 @@
       "title": "The history lock has a deadline \u2014 finding 17",
       "line_start": 1248,
       "line_end": 1289,
-      "done": false,
+      "done": true,
       "kind": "fix"
     },
     {
