@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Teeeep/talaria/internal/operation"
 )
 
 // paddedLine is one readable entry marshalling to exactly n bytes, so a test can
@@ -342,6 +344,80 @@ func oversizeEntry() Entry {
 			Status: 200,
 			Body:   &Body{ContentType: "application/json", Data: big},
 		},
+	}
+}
+
+// responseHeavyEntry is over the line bound because of its *response* body
+// alone: the request body is a few dozen bytes of ordinary JSON, the response
+// is MaxBody of 0x01, which encoding/json expands six-fold. oversizeEntry
+// cannot catch what this one does, because with MaxBody in both bodies either
+// order of cutting ends with both cut.
+func responseHeavyEntry() Entry {
+	return Entry{
+		Source:      SourceCall,
+		OperationID: "createPet",
+		Method:      "POST",
+		URL:         "https://api.example.com/pets/asymmetric",
+		Request:     EntryRequest{Body: &Body{ContentType: "application/json", Data: `{"name":"Fido","species":"dog"}`}},
+		Response: &EntryResponse{
+			Status: 200,
+			Body:   &Body{ContentType: "application/json", Data: strings.Repeat("\x01", MaxBody)},
+		},
+	}
+}
+
+// A response body is what the caller did not control and what history can most
+// afford to lose; the request body is what `history replay` re-sends, and
+// Replay refuses any entry whose request body is Truncated. So cutting the
+// request body to fit a line the response blew up is silent, permanent loss of
+// the capability §5a is about — Append returns nil, recordCall warns about
+// nothing, and the entry can never be replayed again.
+func TestAnOversizedResponseBodyDoesNotCostTheRequestBodyItsReplayability(t *testing.T) {
+	store, _ := newStore(t)
+	entry := responseHeavyEntry()
+
+	got, ok := storedOrRefused(t, store, entry)
+	if !ok {
+		t.Fatal("the entry was refused; cutting the response body alone is enough to fit it")
+	}
+
+	if got.Request.Body == nil {
+		t.Fatal("the recorded entry has no request body")
+	}
+	if got.Request.Body.Data != entry.Request.Body.Data {
+		t.Errorf("the request body was cut to %d of its %d bytes", len(got.Request.Body.Data), len(entry.Request.Body.Data))
+	}
+	if got.Request.Body.Truncated {
+		t.Error("the request body is marked truncated, so history replay refuses this entry forever")
+	}
+	if got.Response == nil || got.Response.Body == nil || !got.Response.Body.Truncated {
+		t.Error("the response body is the one over the bound and should be the one cut")
+	}
+
+	if _, err := got.Replay(operation.Operation{ID: "createPet", Method: "POST", Path: "/pets/asymmetric"}); err != nil {
+		t.Errorf("Replay: %v", err)
+	}
+}
+
+// The response body is tried first, but "first" is not "only": an entry with no
+// response body at all still has its request body cut, or a verbose request
+// becomes unrecordable.
+func TestEncodeLineCutsTheRequestBodyWhenThereIsNoResponseToCut(t *testing.T) {
+	entry := responseHeavyEntry()
+	entry.Request.Body = &Body{ContentType: "application/json", Data: strings.Repeat("\x01", MaxBody)}
+	entry.Response = nil
+
+	line, err := encodeLine(entry)
+	if err != nil {
+		t.Fatalf("encodeLine: %v", err)
+	}
+
+	var got Entry
+	if err := json.Unmarshal(line, &got); err != nil {
+		t.Fatalf("the line does not parse: %v", err)
+	}
+	if got.Request.Body == nil || !got.Request.Body.Truncated {
+		t.Error("the request body was the only thing left to cut and was not cut")
 	}
 }
 

@@ -364,17 +364,22 @@ func encodeLine(e Entry) ([]byte, error) {
 	}
 }
 
-// halveBodies cuts each body in half, reporting whether there was anything left
+// halveBodies cuts one body in half, reporting whether there was anything left
 // to cut. Halving rather than computing an offset from the overage, because the
 // cost of a byte in the encoding runs from one to six and only the encoder
 // knows which; the loop above re-measures, and a body reaches empty in at most
 // log2(MaxBody) passes.
+//
+// The response body goes first and the request body is touched only once the
+// response has nothing left to give, because the two are not equally
+// expendable: Replay refuses any entry whose *request* body is Truncated, so
+// cutting it is what permanently disables `history replay` for that entry —
+// silently, since encodeLine then succeeds and Append returns nil. A response
+// the caller did not control (a few tens of KB of C0 bytes, which encoding/json
+// expands six-fold) must not cost the request body that. Emptying one body does
+// not end the pass: the other one is still tried, so an entry that is
+// legitimately over bound is still stored rather than refused.
 func halveBodies(e *Entry) bool {
-	cut := false
-	if body := halfOf(e.Request.Body); body != nil {
-		e.Request.Body = body
-		cut = true
-	}
 	if e.Response != nil {
 		if body := halfOf(e.Response.Body); body != nil {
 			// A copy, because the caller still holds the entry it passed and the
@@ -382,11 +387,17 @@ func halveBodies(e *Entry) bool {
 			response := *e.Response
 			response.Body = body
 			e.Response = &response
-			cut = true
+
+			return true
 		}
 	}
+	if body := halfOf(e.Request.Body); body != nil {
+		e.Request.Body = body
 
-	return cut
+		return true
+	}
+
+	return false
 }
 
 // halfOf is b with half its data, or nil when there is none left to drop.

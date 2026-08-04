@@ -509,10 +509,18 @@ empty id set silently retires `uniqueID`'s collision check.
 longer one and returned nil reported a call recorded that `Read`, `storedIDs`, `trim`, `history`,
 `history show` and `history replay` all skip forever — and `trim`, which rebuilds from `lines`,
 then deleted it with no diagnostic. `encodeLine` is the write side, in the same file as the
-constant and beside `lines`: marshal, and while the line is over, `halveBodies` cuts each body in
+constant and beside `lines`: marshal, and while the line is over, `halveBodies` cuts a body in
 half and marks it `Truncated`, until it fits or there is nothing left to cut, and then the entry
 is *refused* so `recordCall`'s stderr warning fires. Halving rather than computing an offset from
 the overage, because a byte costs one to six in the encoding and only the encoder knows which.
+**The response body is cut first, and the request body only once the response has nothing left to
+give**, because the two are not equally expendable: `Entry.Replay` refuses any entry whose
+*request* body is `Truncated`, so cutting that one permanently disables `history replay` for the
+entry — silently, since `encodeLine` then succeeds and `Append` returns nil. A response the caller
+did not control must not cost the request body its replayability
+(`TestAnOversizedResponseBodyDoesNotCostTheRequestBodyItsReplayability`). Emptying one body does
+not end the pass — the other is still tried, so an entry that is legitimately over bound is stored
+rather than refused.
 **The bound is on the encoded line, never on `MaxBody`** — that is the whole defect: `encoding/json`
 writes a C0 byte as a six-character escape, so `MaxBody` of them is a 393 KB line, and 300 KB of
 ordinary response headers (curl's own ceiling) reaches it with no body at all. Headers are

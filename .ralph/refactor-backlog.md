@@ -215,3 +215,9 @@ that pass — and task 6's before it — deliberately did not do, and why.
   a `call_harness_test.go` — `call_redact_test.go`, `call_dryrun_test.go`, `history_replay_test.go`
   and `hosts_test.go` all reach into it, so the file is really the package's fixture library with
   tests appended. Same pass as the `call_redact_test.go` split recorded above.
+
+- `internal/corpus/file_test.go` is 481 lines and covers three unrelated bounds: the retention
+  arithmetic (`trim`/`tail`/`readStore`), the non-regular-file gate on `openStore`, and the
+  line-bound write side (`shorten`, `halfOf`, `halveBodies`, `encodeLine`). The seam is the write
+  side into an `encode_test.go` — `file.go` itself divides on the same line, everything from
+  `encodeLine` down being about fitting one entry rather than about the file.
