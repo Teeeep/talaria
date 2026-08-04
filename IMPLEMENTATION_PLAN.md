@@ -72,6 +72,15 @@ credential is written, and Task 9 named the boundary-test assertion that would *
 would have sent a builder to write a test that proves nothing. Still locate by symbol: a task ahead
 of you in the queue may have moved a line, and the store.go case shows what stale numbers cost.
 
+**Every task appends to `.ralph/refactor-backlog.md`; the file does not exist yet — create it.**
+Four compaction tasks (6, 11, 17, 21) open with *"read `.ralph/refactor-backlog.md` — that file is
+the work list; this task drains it."* Nothing fills it unless you do. When a task makes you notice
+a structural problem you are not fixing — a duplicated helper, a type that wants to move down out
+of `cmd/talaria`, a comment asserting something untested, a divergence you had to leave — append
+one line naming the file and the problem, then carry on. It is visible only from inside the task
+that hit it; the compaction task cannot rediscover it. An empty backlog at Task 6 means tasks 1–5
+recorded nothing, not that they were clean.
+
 ## Commands
 
 | Purpose | Command |
@@ -199,6 +208,7 @@ It is the largest task in this phase. Work it in the order given below.
 - `internal/config/config.go` (modify) — `Profile.AllowHosts`
 - `cmd/talaria/root.go` (modify) — persistent `--allow-host` flag
 - `cmd/talaria/call.go` (modify) — thread the allowed set, render `credentials_withheld`, warn
+- `cmd/talaria/auth.go` (modify) — `auth check` reports against the **resolved** host set
 - `cmd/talaria/history.go` (modify) — rewrite the replay path; delete the stored-value machinery
 - `README.md`, `AGENT.md` (modify) — replay now needs a spec; document `--allow-host`
 
@@ -224,24 +234,45 @@ It is the largest task in this phase. Work it in the order given below.
 6. **(guard)** A `--base-url` inside the spec's `servers[]` attaches credentials as it does today
    (the no-regression case).
 
+*`auth check` against the resolved set — finding 1's third limb, and it is missing from every
+other task:*
+
+7. `auth check --base-url http://127.0.0.1:PORT` on a spec whose `servers[]` names a different
+   host, with `TALARIA_AUTH_BEARER` set, must **not** report that scheme simply `present`. Today
+   `authPayload` (`cmd/talaria/auth.go:91`) builds `authScheme{Scheme, Source, Present}` from
+   `cred.Present()` alone — the struct (`:24-28`) has no host field and `auth check` never reads
+   `--base-url` — so it reports `present:true` for a credential the very next `call` withholds.
+   Assert the report distinguishes the two.
+8. **(guard)** With no `--base-url`, or one inside `servers[]`, the report is unchanged. This is
+   the guard that host-awareness did not perturb the ordinary case.
+
+   Finding 1's *Suggested fix* ends *"`auth check` must report against the same resolved set"*, and
+   DESIGN.md:389-390 states it as spec: *"`auth check` reports against the resolved host set, so
+   'present' never means 'will actually be sent'."* Without this limb the phase ends with the
+   §5 clause *"`auth check` never reports a scheme satisfied when the call would refuse it"* broken
+   through a second door — the same clause Task 3 exists to fix through the first. **Task 3 also
+   adds a field to `authScheme`** (`Supported bool`); the two tasks are independent and whichever
+   lands second simply adds its own. Do not wait for it, and do not fix its half here.
+
 *Replay re-derivation (findings 2, 3, 22):*
-7. A `history.jsonl` line hand-edited to `"url":"http://127.0.0.1:PORT/steal"` replays to the
+9. A `history.jsonl` line hand-edited to `"url":"http://127.0.0.1:PORT/steal"` replays to the
    **spec's** host, not the stored one; the capture listener at the stored host receives nothing.
-8. `history replay <id> --base-url https://elsewhere.example` retargets the request. Today the
-   flag is accepted and silently discarded, which is worse than erroring.
-9. A stored host outside the currently allowed set makes replay exit **2**, not silently
-   retarget (DESIGN.md §5a replay table).
-10. An entry whose `operation_id` is no longer in the spec fails **that entry** with exit 2.
-11. A replay emits a `validation` block, like `call`.
-12. A stored request body containing `secret.Placeholder` is **refused** with exit 2 rather than
+10. `history replay <id> --base-url https://elsewhere.example` retargets the request. Today the
+    flag is accepted and silently discarded, which is worse than erroring.
+11. A stored host outside the currently allowed set makes replay exit **2**, not silently
+    retarget (DESIGN.md:407, the replay table's *Target host* row).
+12. An entry whose `operation_id` is no longer in the spec fails **that entry** with exit 2.
+13. A replay emits a `validation` block, like `call`.
+14. A stored request body containing `secret.Placeholder` is **refused** with exit 2 rather than
     sent verbatim. Today the replayed POST arrives as
     `{"grant":"x","refresh_token":"<redacted>"}` with empty stderr.
-13. The symbol `replayableEnv` is **absent** from the tree. Grep for it in the test or assert its
+15. The symbol `replayableEnv` is **absent** from the tree. Grep for it in the test or assert its
     absence in review — the finding requires deletion, not narrowing.
 
 **Adversarial — what does hostile or malformed input do here?**
 Both inputs here are hostile by the design's own premise: `--base-url` is attacker-reachable via
-the agent, and the history file is *"data, never instruction"* (DESIGN.md §5a).
+the agent, and *"a history **entry** is data, never instruction"* (DESIGN.md:411 — the rule is
+per-entry, which is why every refusal below fails that entry rather than the command).
 1. **Host comparison must not be fooled.** Test: uppercase host vs lowercase spec host (equal);
    `api.example.com:443` vs `https://api.example.com` (equal — normalise the default port);
    `api.example.com.attacker.com` (**not** equal — suffix match is the classic bug here);
@@ -274,7 +305,15 @@ the agent, and the history file is *"data, never instruction"* (DESIGN.md §5a).
 5. `cmd/talaria/call.go`: pass the flag into `buildRequest`; add
    `CredentialsWithheld []request.Withheld` to `callView`; emit the one-line stderr warning
    (follow `secret.QueryKeyWarner`'s shape — it is the existing one-line-warning convention).
-6. `cmd/talaria/history.go`: rewrite the replay `RunE` (an anonymous closure at
+6. `cmd/talaria/auth.go`: make `auth check` read the same allowed set. `authPayload` (`:91`)
+   currently takes only `[]config.Credential` and sets `Present: cred.Present()` from the env
+   alone; give it the resolved host and add a field to `authScheme` (`:24-28`) distinguishing
+   *"exported and would be sent"* from *"exported but would be withheld to this host"*. Reuse the
+   set helper from step 3 — do not compute the host set a second time here; that duplication is
+   what step 3's *"one normalising comparison function used everywhere"* exists to prevent.
+   The doc comment at `auth.go:20-23` says the struct is *"DESIGN.md §4's object, field for
+   field"* — update it, or it becomes a comment asserting a property no test enforces.
+7. `cmd/talaria/history.go`: rewrite the replay `RunE` (an anonymous closure at
    `history.go:175`, inside `newHistoryReplayCmd` at `:163`) to `loadSpec` → `index.Lookup(
    entry.OperationID)` → recover path params by matching the stored path against the operation's
    path template → `config.Resolve` → `request.Build` (passing the stored query/headers/body as
@@ -292,8 +331,22 @@ the agent, and the history file is *"data, never instruction"* (DESIGN.md §5a).
    Replay also currently calls `curl.Execute`, not `ExecuteWith`; switching it is part of this
    rewrite. Note `--spec` is inherited and silently ignored today for the same reason
    `--base-url` is: `history.go` never reads either. Both must work after this task.
-7. Update `README.md` and `AGENT.md`: `history replay` now resolves a spec (positional, `--spec`
+8. Update `README.md` and `AGENT.md`: `history replay` now resolves a spec (positional, `--spec`
    or `TALARIA_SPEC`) and honours `--base-url`; document `--allow-host` and `allow_hosts:`.
+
+   **Two shipped passages describe the machinery this task deletes, and both become false the
+   moment `replayableEnv` goes.** They are not "documentation polish" — they are the same class as
+   finding 21, which Task 3 ships in-commit for exactly this reason. Rewrite both:
+   - `README.md:394-398` — *"The names replay will resolve are an allowlist, not whatever the file
+     asks for: `TALARIA_AUTH_BEARER`, `TALARIA_AUTH_BASIC`, any `TALARIA_AUTH_APIKEY_*`, and the
+     variables the selected profile's `auth:` map names… Such an entry is refused with exit 2,
+     naming the variable and the field it stood in."* After this task **nothing** in a stored entry
+     is resolved (DESIGN.md:408), so there is no allowlist to describe. Finding 2 cites
+     `README.md:397` as the passage that *"names this threat and then closes only the variable-name
+     half of it"* — this is the other half.
+   - `AGENT.md:204-207` — the same claim, ending *"An entry naming any other variable is refused
+     with exit 2 rather than resolved."* This one is load-bearing on the suite: `agentdoc_test.go`
+     cross-checks AGENT.md's exit-code claims, so a stale exit-2 sentence is not free.
 
    **`cmd/talaria/agentdoc_test.go` is stricter than "documentation consistency" suggests — read
    it before writing prose.** It (a) cross-checks AGENT.md's exit-code table against the
@@ -350,7 +403,7 @@ README contradicts the code)
    bring-your-own-token clause; `TALARIA_AUTH_BEARER` is inert today.
 3. `call --dry-run` on that spec with nothing exported exits **5** naming the scheme *and*
    `TALARIA_AUTH_BEARER`. It exits 2 with "no usable security scheme" today.
-4. `auth check` and `Resolve` agree on every arrangement the test covers — the non-negotiable
+4. `auth check` and `Resolve` agree on every arrangement the test covers — the by-construction
    clause of §5. Extend `TestResolveAgreesWithTheCoverageAuthCheckReports` rather than writing a
    parallel assertion; that test is the guard against the two drifting again.
 5. **(guard)** A supported scheme's report is unchanged (`supported:true`), so the field is
@@ -404,7 +457,7 @@ scheme's report is unchanged) as the guard that you did not move the supported p
 
 **Verify:** `go test ./...`
 
-**Why:** DESIGN.md calls the `auth check`/`call` agreement non-negotiable — *"or `auth check` is
+**Why:** DESIGN.md:330-331 says the two agree *"**by construction**, or `auth check` is
 worthless to an agent."* Three §5 clauses break at once today, and the exit-code contract that
 agents branch on is wrong for the one case it exists to serve.
 
@@ -649,6 +702,11 @@ test is likeliest, because failure and refusal already look alike on the unhappy
    well-formed entry that is merely enormous.
 4. `Body.Bytes()` on a base64 payload whose decoded length exceeds `MaxBody` returns an error
    rather than allocating. `MaxBody` is enforced only at write today (`newBody`).
+5. **The regression this task can cause, asserted up front.** A store past the file cap, plus an
+   append that triggers a trim, loses **no** entry that was there before. `trim` (`store.go:247`)
+   rewrites the whole file from what it read (`replace` at `:293`); bound its read naively and this
+   test goes from green-today to red-after-your-change. Write it first and watch it stay green —
+   it is the one assertion here that guards against the fix, not the bug. See the Green note.
 
 **Adversarial — what does hostile or malformed input do here?**
 Both of these files are named in `CLAUDE.md` as untrusted: one is fetched, one is edited outside
@@ -677,6 +735,22 @@ this process.
 2. `internal/corpus/store.go`: bound the file read and the per-line length at all **three** call
    sites (`:161`, `:187`, `:248`), and treat an over-cap line the way an unparseable line is
    already treated at `Read` (skip it).
+
+   **`:248` is `trim`, and `trim` is a writer. A truncated read there deletes history
+   permanently — read this before you touch it.** `trim` does not merely read: it reads the whole
+   file, classifies every line, and on any source over `maxPerSource` calls
+   `replace(path, kept.Bytes())` (`store.go:293`), an *atomic whole-file rewrite* from exactly the
+   bytes it read. Bound that read the way you bound `Read`'s and the next append past the cap
+   silently rewrites the store to just the prefix that fit — every entry beyond the bound gone, no
+   error, from the write path, in *"the highest-risk artifact talaria produces"*. That converts
+   finding 9's OOM into data loss, which is worse.
+
+   So `trim`'s bound is not the same bound. Either it stops at a line boundary **and then refuses
+   to rewrite** (return nil, leave the file alone — an oversized store is not trimmed, which is
+   safe), or it streams the file rather than slurping it. Pick one and say which in a comment. The
+   invariant to hold, and to assert: **`replace` is never called with a buffer derived from a
+   truncated read.** Write that test — a store larger than the file cap, an append that would
+   trigger a trim, and an assertion that no entry present before the append is absent after it.
 
    **The two caps are not the same kind of refusal, and red tests 2 and 3 must not be written as
    if they were.** The per-*entry* cap skips that entry and keeps the rest — that is DESIGN.md
@@ -877,7 +951,14 @@ as a failure to reproduce.
    The only `--report` mention is `canary_test.go:473`, about a different test, and `run` no longer
    exists as a command at all. The plan's earlier claim that a second comment needs deleting was
    wrong; delete one comment.
-2. A `mechanism` whose `env` sets an arbitrarily-named variable and whose harness writes
+2. **A stage that exercises Task 2's withheld path** — this is why this task depends on Task 2, and
+   without it that dependency is spurious and needlessly serialises the phase. A stage with a
+   credential set and `--base-url` at a host outside the spec's `servers[]`: the canary must appear
+   in **neither** the `credentials_withheld` envelope entry, nor the stderr warning line, nor the
+   request the local server received. That last one is the point — the withheld path is the one
+   place the tool decides *not* to send a credential, and a leak there would be invisible to every
+   existing mechanism, all of which assert the credential *was* received.
+3. A `mechanism` whose `env` sets an arbitrarily-named variable and whose harness writes
    `profiles: {p: {auth: {bearerAuth: "${MY_TOKEN}"}}}`, driven through the same
    `call`/`history`/`replay` sequence as the env-var mechanisms. Every one of the five existing
    mechanisms sets a `TALARIA_AUTH_*` variable; the profile-reference path — one of the two
@@ -1081,6 +1162,13 @@ that is a lie. Both violate the "never interactive" principle an agent depends o
 **Depends on:** none
 
 **Fixes findings:** 14, 17
+
+**Finding 14 names *three* context-ignoring blockers; this task closes two.** They are
+`io.ReadAll(b.in.Stdin)` (`internal/request/body.go:102`), `syscall.Flock(…, LOCK_EX)`
+(`internal/corpus/lock_unix.go:36`) — both below — and the version preflight, which the finding
+hands to finding 15 and this plan hands to **Task 13**. The two tasks have no dependency on each
+other and can land in either order, so nothing here proves all three are closed; Task 20 asserts
+it. If Task 13 has not landed when you finish, say so in the commit rather than assuming.
 
 **Test files:**
 - `cmd/talaria/main_test.go` or a new `cmd/talaria/signal_test.go` (create/modify) — signal
@@ -1306,6 +1394,12 @@ The cache directory is on disk and the server is remote; both are outside this p
 4. **A 304 with a body**, and a 304 for a cache entry that no longer exists on disk.
 5. Combine with Task 7: a revalidation returning an oversized body must still hit the read cap.
 6. Cache files must stay 0600 in a 0700 directory (`TestLoaderWritesCacheFilesPrivately`).
+7. **Finding 9's second clause lands here, not in Task 7.** The finding says the fetched bytes are
+   *"written to the never-expiring cache (`writeCache` has no size or count bound)"* — two
+   defects. Task 7 bounds the read, which bounds each entry's size; the **count** is still
+   unbounded, one file per distinct URL, forever. The 24h TTL does not evict, it only revalidates.
+   Decide: bound the count (evict oldest), or record in `.ralph/refactor-backlog.md` that you did
+   not and why. DESIGN.md §4 does not settle this, so either is defensible — silence is not.
 
 **Green — minimal implementation:**
 1. Store the `ETag`/`Last-Modified`/fetch-time beside the cached bytes (a sidecar file or a small
@@ -1539,6 +1633,18 @@ Every trust boundary this phase touched, in one place:
 2. Assert the exit-code contract still holds across the whole spec
    (`TestTheExitCodeContractIsObservableAcrossOneSpec`), including the new exit-5 path from
    Task 3.
+3. **All three of finding 14's blockers are closed, in one place.** Tasks 13 and 14 split them —
+   stdin and the history lock in 14, the version preflight in 13 — with no dependency between them,
+   so this is the only assertion that covers the set. Under a cancelled or signalled context,
+   none of the three blocks: `--body -` on a stalled pipe, an `Append` against a held lock, and a
+   `curl` on `PATH` that never exits. Finding 14's own failure sentence is the acceptance bar —
+   Ctrl-C and `kill -TERM` must both work, not only `kill -9`.
+4. **`auth check` and `call` agree about hosts**, not just about schemes. On one spec: a
+   `--base-url` outside `servers[]` makes `auth check` report the scheme as not-actually-sendable
+   (Task 2) *and* makes `call` withhold it; a `--base-url` inside `servers[]` makes both agree the
+   other way. This is the §5 clause *"`auth check` never reports a scheme satisfied when the call
+   would refuse it"*, which this phase fixes through two independent doors (Task 2 for hosts,
+   Task 3 for unsupported schemes) and which nothing else checks end to end.
 
 **Verify:** `go test ./...`, then the full lint command, then
 `go test -race -count=1 ./...` — the race workflow gates the branch and this is the last chance
@@ -1583,7 +1689,15 @@ time.
    four places (it is how the markers are tracked), so a bare `grep -r 'phase-2a task 1' .` never
    returns empty and will read as a failure. Grep `cmd internal .golangci.yml`, or `-r` with
    `--exclude=IMPLEMENTATION_PLAN.md`.
-   Also: no `REVIEW_FINDINGS.md`-shaped file was created at the repo root;
+   Also: no `REVIEW_FINDINGS.md`-shaped file was created at the repo root — **but do not gitignore
+   it, add it to `hygiene.yml`, or teach anything to delete it.** That path is a harness contract,
+   not stale detritus: `.ralph/loop.sh` reads it at the repo root to count findings, CRITs,
+   `Blocked-by: design` and `Repeat-of:` and decide whether to escalate (`:377-412`), removes it
+   itself before each review cycle (`:607`), and archives it (`:562-563`); `.ralph/PROMPT_review.md`
+   has the reviewer write and commit it (`:85`, `:145`). This plan's opening note says the file
+   "does not exist" — true during the build phase, and only then. The check here is *"no build task
+   invented one"*, nothing more. Blocking the path makes the next review cycle's counters read zero
+   from a missing file and the escalation gate silently pass.
    `internal/ci/workflow_test.go` still passes, meaning `.ralph/stack.json` and
    `.github/workflows/ci.yml` still agree (it reads them at `:23-24`, plus `racePath` for
    `.github/workflows/race.yml` at `:235`).
