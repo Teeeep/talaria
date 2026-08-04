@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"unicode/utf8"
 )
 
@@ -216,17 +217,18 @@ func lineHead(line []byte) (entryHead, bool) {
 // it needed the whole file to run, the over-bound state would be absorbing and
 // an operator's only way out would be rm.
 func tail(path string) ([]byte, bool, error) {
-	f, err := os.Open(path)
+	f, info, err := openStore(path)
 	if err != nil {
 		return nil, false, err
 	}
 	defer f.Close() //nolint:errcheck // Read-only; the read error is the one worth reporting.
 
 	// Stat only chooses where to start reading. The bound below is on the bytes
-	// actually read, for the same reason readStore's is: a FIFO or a symlink to a
-	// character device stats as empty and reads forever.
+	// actually read, for the same reason readStore's is: the file is appended to
+	// by every other talaria on this machine, so its size at the seek is not its
+	// size at the read.
 	cut := false
-	if info, err := f.Stat(); err == nil && info.Mode().IsRegular() && info.Size() > maxKeptBytes {
+	if info.Size() > maxKeptBytes {
 		if _, err := f.Seek(info.Size()-maxKeptBytes, io.SeekStart); err != nil {
 			return nil, false, fmt.Errorf("cannot read the history file: %w", err)
 		}
@@ -254,16 +256,49 @@ func tail(path string) ([]byte, bool, error) {
 	return data, cut, nil
 }
 
+// openStore opens the history file for reading and refuses anything that is not
+// a regular file. Two reasons it is not just os.Open, and the type check is the
+// one the byte bounds cannot make for themselves.
+//
+// The open is non-blocking because a FIFO's is not: os.Open on one waits for a
+// writer that may never arrive, and Append holds the append lock across the read,
+// so the wait belongs to every other talaria on the same store as well — a
+// process-level failure where §3.1 allows only an entry-level one. A bound on
+// bytes read protects nothing when the open never returns.
+//
+// And the refusal names the path rather than reading on, because this file is
+// user-writable by design: a FIFO, a device, or a directory there is not a store
+// talaria wrote, and what such a file returns is not history.
+func openStore(path string) (*os.File, fs.FileInfo, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		f.Close() //nolint:errcheck // The Stat failure is the one worth reporting.
+		return nil, nil, fmt.Errorf("cannot read the history file at %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		f.Close() //nolint:errcheck // Read-only; the refusal is the one worth reporting.
+		return nil, nil, fmt.Errorf("the history file at %s is not a regular file; move it aside", path)
+	}
+
+	return f, info, nil
+}
+
 // readStore reads the whole history file, refusing one past maxStoreBytes.
 //
-// The bound is on the bytes actually read, not on what os.Stat reports: a store
-// that is a symlink to /dev/zero or a FIFO stats as empty and reads forever, and
-// this file is user-writable by design. Every caller passes the refusal up: a
-// store this size has stopped being the file trim maintains, and whether to move
-// it aside is a decision only its owner can make. Getting there is not a dead
-// end, because trim reads the tail instead and any Append repairs it first.
+// The bound is on the bytes actually read, not on what os.Stat reports: the file
+// is appended to by every other talaria on this machine, and it is user-writable
+// besides. openStore is what keeps the read to a file that can end. Every caller
+// passes the refusal up: a store this size has stopped being the file trim
+// maintains, and whether to move it aside is a decision only its owner can make.
+// Getting there is not a dead end, because trim reads the tail instead and any
+// Append repairs it first.
 func readStore(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	f, _, err := openStore(path)
 	if err != nil {
 		return nil, err
 	}

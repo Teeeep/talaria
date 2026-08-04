@@ -383,11 +383,19 @@ this process. Bound every read, size-check before allocating, and treat any spec
 that reaches the wire as hostile until checked — a media type became a header-injection vector
 exactly this way. Failures must be entry-level or request-level, never process-level.
 
-**Every read of the history file is bounded.** `readStore(path)` in `internal/corpus/file.go`
-loads the store for `Read` and `storedIDs`, and `tail(path)` loads it for `trim`; both bound the
-bytes *actually read* through an `io.LimitReader` rather than trusting `os.Stat`, because a store
-that is a symlink to `/dev/zero` or a FIFO stats as empty and reads forever. Never re-introduce
-an `os.ReadFile` on this path. Two bounds, both
+**Every read of the history file is bounded, and it starts by opening a file that can end.**
+`readStore(path)` in `internal/corpus/file.go` loads the store for `Read` and `storedIDs`, and
+`tail(path)` loads it for `trim`; both go through `openStore`, and both bound the bytes *actually
+read* through an `io.LimitReader` rather than trusting `os.Stat`, since the file is appended to by
+every other talaria on the machine and user-writable besides. Never re-introduce an `os.ReadFile`
+on this path. `openStore` is the gate the byte bounds cannot be: it opens
+`os.O_RDONLY|syscall.O_NONBLOCK` and refuses anything `Mode().IsRegular()` does not accept, because
+a plain `os.Open` on a FIFO waits for a writer that may never come — and `Append` holds the append
+lock across that read, so the wait becomes every other talaria's too, which is the process-level
+failure §3.1 forbids. A bound on bytes read protects nothing when the open never returns; a symlink
+to `/dev/zero` is refused at the same gate, before the first byte.
+`TestAStoreThatIsAFIFOIsRefusedRatherThanWaitedOn` is both halves — it fails on a blocking open and
+on a non-blocking one that reads EOF and calls it an empty store. Two byte bounds under it, both
 entry-level where they can be: `maxStoreBytes` (64 MiB) refuses the whole file, since a file that
 size has stopped being the store `trim` maintains; `maxEntryBytes` (256 KiB) is applied in
 `lines`, which drops an over-long line exactly as an unparseable one is dropped, so the entries

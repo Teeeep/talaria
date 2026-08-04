@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -234,6 +235,48 @@ func TestTrimOfAnEndlessStoreTerminates(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("trim did not return within 30s on an endless store")
+	}
+}
+
+// A FIFO at the history path is worse than an endless store: the bound on bytes
+// read never runs, because os.Open on one blocks until a writer arrives. Append
+// holds the append lock across the read, so the wait is not this process's alone
+// — every other talaria on the same store queues behind it, which is the
+// process-level failure §3.1 forbids. Both readers refuse it instead, with the
+// entry-level refusal the over-bound case gives, naming the path.
+func TestAStoreThatIsAFIFOIsRefusedRatherThanWaitedOn(t *testing.T) {
+	readers := map[string]func(string) error{
+		"readStore": func(path string) error { _, err := readStore(path); return err },
+		"tail":      func(path string) error { _, _, err := tail(path); return err },
+	}
+
+	for name, read := range readers {
+		t.Run(name, func(t *testing.T) {
+			_, path := newStore(t)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if err := syscall.Mkfifo(path, 0o600); err != nil {
+				t.Skipf("cannot create a FIFO at %s: %v", path, err)
+			}
+
+			done := make(chan error, 1)
+			go func() { done <- read(path) }()
+
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatalf("%s accepted a FIFO as the store, want a refusal", name)
+				}
+				if !strings.Contains(err.Error(), path) {
+					t.Errorf("%s refused a FIFO without naming it: %v", name, err)
+				}
+			case <-time.After(10 * time.Second):
+				// Nothing will ever open this FIFO for writing, so the goroutine
+				// stays blocked for the rest of the run: the leak is the defect.
+				t.Fatalf("%s blocked on a FIFO; the open must not wait for a writer", name)
+			}
+		})
 	}
 }
 
