@@ -16,9 +16,14 @@ context fills, quality drops, and the commit boundary stops matching the task bo
      stalls that round against a condition it cannot meet.
    - Otherwise pick the highest-priority task with `done: false`. You decide priority:
      respect `depends_on` and prefer whatever unblocks the most other work.
-3. Read **only your task's section** of the plan file — `plan_file` in `tasks.json`,
-   lines `line_start` to `line_end`. Reading the whole plan wastes the context you need for
-   the actual work.
+3. Read **only your task's section** of the plan file (`plan_file` in `tasks.json`). Find it by
+   its heading — `### Task <id>:` — with grep, and read from there to the next `### Task`.
+   `line_start`/`line_end` are a hint, not the truth: a build iteration that appends a note to
+   an earlier section shifts every line below it, and on 2026-08-04 every range in the file was
+   between 9 and 55 lines stale, so iterations were reading a neighbouring task's section.
+   **If the heading at `line_start` is not your task's, trust the heading and carry on** —
+   and fix the ranges in `tasks.json` when you update it at the end.
+   Reading the whole plan wastes the context you need for the actual work.
 4. Read any conventions files listed in `.ralph/stack.json` (`conventions_files`).
 5. Check `.ralph/stack.json` `notes` for anything that will bite you (services that must run,
    required env vars, pre-commit hooks that rewrite code).

