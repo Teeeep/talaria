@@ -113,6 +113,25 @@ func hasControl(s string) bool {
 	return false
 }
 
+// isPathTemplate reports whether s can be an operation's path.
+//
+// A `paths:` key is spec-controlled text that reaches the wire, and Request.URL
+// joins it to the base URL as *text* — so a key that does not start with a `/`
+// is not a path at all: `@evil.example.com/steal` turns the allowed host into
+// userinfo, and `.evil.example.com/steal` extends it into a domain the spec
+// never declared. Credentials follow the host, which is the same argument
+// authorityChars makes for a server variable.
+//
+// Requiring the leading slash is what makes everything after it a path: past
+// that point the authority is fixed, so `@`, `?` and `#` name a userinfo, a
+// query and a fragment of a URL whose host is already decided, and `/pets@archive`
+// stays a legal path. A space or a control character is refused anywhere,
+// because the path sits in the request line between two spaces and a CR or LF
+// in it would end that line early.
+func isPathTemplate(s string) bool {
+	return strings.HasPrefix(s, "/") && !hasControl(s)
+}
+
 // isMediaType reports whether s can be sent as a Content-Type value: a
 // type/subtype pair of tokens, followed by any number of `; parameter=value`
 // parameters (RFC 9110 §8.3.1).

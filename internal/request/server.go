@@ -10,13 +10,20 @@ import (
 	v3high "github.com/pb33f/libopenapi/datamodel/high/v3"
 
 	"github.com/Teeeep/talaria/internal/config"
+	"github.com/Teeeep/talaria/internal/operation"
 	"github.com/Teeeep/talaria/internal/spec"
 )
 
-// Destination is where a call built from these inputs would go: --base-url,
-// then the profile's base URL, then the spec's first server (DESIGN.md §4).
-// The candidate is returned as it stands, without the check that it is usable
-// as a base URL — an unusable one still names the host a caller meant.
+// Destination is where a call built from these inputs would go: the base URL —
+// --base-url, then the profile's, then the spec's first server (DESIGN.md §4) —
+// joined to in.Op's path, exactly as Request.URL joins them. The candidate is
+// returned as it stands, without the check that it is usable as a base URL: an
+// unusable one still names the host a caller meant.
+//
+// The path is part of the answer, not decoration. The join is textual, so a
+// `paths:` key beginning `@` makes the base URL the userinfo of a request to
+// another host; a destination computed without it names a host the call never
+// reaches.
 //
 // It exists so a command that needs only the *host* — `auth check`, deciding
 // whether a call under these same flags would have its credentials withheld —
@@ -27,15 +34,54 @@ import (
 // The empty string means nothing named a destination: no flag, no profile, and
 // a spec with no server or one whose variables do not substitute.
 func Destination(in Inputs) string {
+	base := ""
 	for _, c := range baseURLCandidates(in) {
 		if c.raw != "" {
-			return strings.TrimSuffix(c.raw, "/")
+			base = c.raw
+			break
+		}
+	}
+	if base == "" {
+		base, _ = firstServer(in.Doc)
+	}
+	if base == "" {
+		return ""
+	}
+
+	return strings.TrimSuffix(base, "/") + in.Op.Path
+}
+
+// Withholds reports whether a call to any of ops, under these inputs, would
+// have its credentials withheld because the host it reaches is outside
+// in.Hosts (§5a). It is the whole of what `auth check`'s pre-flight asks.
+//
+// It is per operation because the destination is per operation: the base URL is
+// one string for the whole spec, but the path joined to it is not, and a single
+// `paths:` key able to move the authority is enough to divert a credential. One
+// operation off the set is reported for the spec, because `auth check` answers
+// about the spec.
+func Withholds(in Inputs, ops []operation.Operation) bool {
+	if len(ops) == 0 {
+		return offSet(in)
+	}
+
+	for _, op := range ops {
+		in.Op = op
+		if offSet(in) {
+			return true
 		}
 	}
 
-	raw, _ := firstServer(in.Doc)
+	return false
+}
 
-	return strings.TrimSuffix(raw, "/")
+// offSet reports whether these inputs name a destination outside in.Hosts. A
+// destination it cannot name is not a withholding: there is no host to be
+// outside the set.
+func offSet(in Inputs) bool {
+	dest := Destination(in)
+
+	return dest != "" && !in.Hosts.Allows(dest)
 }
 
 // baseURLCandidate is one possible base URL and where it came from, so a

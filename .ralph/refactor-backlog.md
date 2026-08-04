@@ -88,3 +88,11 @@ that pass — and task 6's before it — deliberately did not do, and why.
   error message, and the hostile test that fails without it — not a constant picked in a
   refactor pass. `fileBody` is also unbounded in *time*: `os.ReadFile` on a FIFO blocks forever
   and no context reaches it, which is precisely the wait the second Ctrl-C now exists for.
+
+- `internal/request/request_test.go` (1506 lines) — it is the whole package's test file plus the
+  shared helpers (`fixture`, `inputs`, `specHosts`, `build`, `buildErr`, `find`), while the
+  package itself is split five ways and `hosts_test.go`/`body_test.go` already sit beside their
+  subjects. CLAUDE.md's "tests split the same way, with the same names" is not true here. The
+  seam is `build_test.go` — parameter binding, path templating, method, credentials/withholding —
+  leaving the helpers and the Request/Value/render cases in `request_test.go`. Task 25 added
+  ~110 lines to it and had nowhere else to put them.

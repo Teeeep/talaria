@@ -212,7 +212,21 @@ func (b *binder) params() map[string]string {
 // Values are escaped with url.PathEscape, so a value containing / or ? stays
 // inside its own segment instead of rewriting the request's target — the same
 // reason SQL uses placeholders rather than string concatenation.
+//
+// The template itself is held to isPathTemplate first. A path is joined to the
+// base URL as text, so one that is not absolute moves the URL's authority and
+// takes the credential with it; a spec shaped like that is broken rather than
+// unauthorised, which is why it is exit 2 here as well as a withholding in
+// credentials.
 func (b *binder) path(bound map[string]string) string {
+	if !isPathTemplate(b.in.Op.Path) {
+		b.fail("the spec gives %s the path %q, which is not an absolute path: it must begin with / "+
+			"and hold no space or control character, or it would move the request to another host",
+			operationName(b.in.Op), b.in.Op.Path)
+
+		return ""
+	}
+
 	path := b.in.Op.Path
 	for _, p := range b.in.Op.Params {
 		if p.In != inPath {
@@ -405,15 +419,22 @@ const WithheldOffSpec = "host not in spec servers[]"
 // The host decides first. Redaction answers *does it print*; the host set
 // answers *who receives it*, and a credential bound for a host outside that set
 // is diverted onto req.Withheld instead of onto the wire.
+//
+// The question is asked about `BaseURL + Path`, the string Request.URL hands to
+// the executor, and never about BaseURL alone: the join is textual, so a path
+// beginning `@` makes the base URL the userinfo of a request to somewhere else
+// entirely. Asking about the base is asking about a host that is no longer the
+// one being talked to.
 func (b *binder) credentials(req *Request) {
-	allowed := b.in.Hosts.Allows(req.BaseURL)
+	target := req.BaseURL + req.Path
+	allowed := b.in.Hosts.Allows(target)
 
 	for _, cred := range b.in.Creds {
 		if !allowed {
 			req.Withheld = append(req.Withheld, Withheld{
 				Scheme: cred.Scheme,
 				Reason: WithheldOffSpec,
-				Host:   b.in.Hosts.Key(req.BaseURL),
+				Host:   b.in.Hosts.Key(target),
 			})
 			continue
 		}

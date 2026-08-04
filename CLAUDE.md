@@ -92,12 +92,29 @@ raw one names the host `{region}.api.example.com`. A variable's value may not ho
 the URL's authority (`/?#@:[]\{}`, space, control), and a server that fails to substitute is
 left out of the result: the host set may be narrower than the spec, never wider.
 
-**There is one answer to "where would this call go".** `request.Destination(Inputs)` is
-DESIGN.md §4's precedence — `--base-url`, then the profile, then the spec's first server — and
-`binder.baseURL` reads the same `baseURLCandidates` list, differing only in that it validates
-and reports. `auth check` asks `Destination` rather than re-deriving the order; a pre-flight
-that names a different host than the call reaches is worse than no pre-flight.
-`TestDestinationAgreesWithTheBaseURLBuildChooses` is what holds them together.
+**There is one answer to "where would this call go", and the path is half of it.**
+`request.Destination(Inputs)` is DESIGN.md §4's precedence — `--base-url`, then the profile, then
+the spec's first server — *joined to `in.Op.Path`*, and `binder.baseURL` reads the same
+`baseURLCandidates` list, differing only in that it validates and reports. The join is textual
+(`Request.URL` is `BaseURL + Path`), so the path decides the host as much as the base does: a
+`paths:` key beginning `@` makes an allowed server the userinfo of a request to somewhere else.
+A destination computed without it names a host the call never reaches.
+`auth check` asks `request.Withholds(in, ops)` — `Destination` per operation against the host
+set — rather than re-deriving anything, because the base URL is one string for the whole spec
+and the path is not. A pre-flight that names a different host than the call reaches is worse
+than no pre-flight. `TestDestinationAgreesWithTheBaseURLBuildChooses` compares `Destination`
+against `BaseURL + Path`, and `TestAuthCheckReportsACredentialWithheldByAHostilePathKey` is the
+two-command half.
+
+**An operation's path is a template, and it is spec-controlled text on the wire.**
+`isPathTemplate` (`internal/request/wire.go`) requires a leading `/` and no space or control
+character, and `binder.path` refuses anything else with exit 2 before substituting a single
+parameter. The leading slash is the whole rule: past it the authority is fixed, so `/pets@archive`
+stays a legal path while `@evil.example.com/steal` and `.evil.example.com/steal` are refused
+where they are read. This is the same argument `authorityChars` (`internal/request/server.go`)
+makes for a server variable, and it is deliberately *two* gates with `binder.credentials` —
+the refusal turns a hostile document into an exit code, and the host check closes the class
+wherever a path comes from. Do not drop either half.
 
 **Credentials bind to hosts.** A resolved credential goes only to a host the spec declares or a
 human explicitly allowed. Redaction answers *does it print*; it does not answer *who receives
@@ -110,10 +127,12 @@ server contributes nothing, silently; a malformed *human* entry is exit 2, becau
 would read as allowed. There is no wildcard and the empty set allows nothing — never add an
 "empty means allow everything" shortcut.
 
-Enforcement is `request.Inputs.Hosts` (a `HostSet`): `binder.credentials` asks `Allows(BaseURL)`
-once and, on a no, appends `request.Withheld{Scheme, Reason, Host}` to `req.Withheld` instead of
-attaching the credential. The zero `HostSet` withholds everything, so forgetting to build one
-fails closed. `cmd/talaria/hosts.go` is the one place the set is assembled — `allowedHosts(cmd,
+Enforcement is `request.Inputs.Hosts` (a `HostSet`): `binder.credentials` asks
+`Allows(req.BaseURL + req.Path)` once — the string the executor will use, never `BaseURL` alone —
+and, on a no, appends `request.Withheld{Scheme, Reason, Host}` to `req.Withheld` instead of
+attaching the credential. `Key` is asked about the same string, so the host it prints is the one
+that would have received the credential. The zero `HostSet` withholds everything, so forgetting
+to build one fails closed. `cmd/talaria/hosts.go` is the one place the set is assembled — `allowedHosts(cmd,
 doc, prof)` — and the one place the stderr line is written — `warnWithheld`. Every command that
 resolves a credential calls both; do not build a `HostSet` anywhere else, or `call`, `auth check`
 and `history replay` will start disagreeing about where a credential may go.

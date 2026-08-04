@@ -651,6 +651,10 @@ func TestBuildReportsARelativeServerURLRatherThanIgnoringIt(t *testing.T) {
 // what decides it for the call itself. They are one precedence or they are a
 // disagreement waiting to happen: an `auth check` that pre-flights a different
 // host than the call reaches is worse than no pre-flight at all.
+//
+// The comparison is against the whole target, base *and* path, because the
+// path is half of what decides the host: the join is textual, so a path
+// template is able to move the authority the base named.
 func TestDestinationAgreesWithTheBaseURLBuildChooses(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -674,7 +678,8 @@ func TestDestinationAgreesWithTheBaseURLBuildChooses(t *testing.T) {
 			in.Params = []string{"limit=10"}
 			in.BaseURL, in.Profile = tc.baseURL, tc.profile
 
-			if got, want := Destination(in), build(t, in).BaseURL; got != want {
+			req := build(t, in)
+			if got, want := Destination(in), req.BaseURL+req.Path; got != want {
 				t.Errorf("Destination = %q, but Build sent it to %q", got, want)
 			}
 		})
@@ -1169,6 +1174,109 @@ func TestBuildWithholdsCredentialsUnderTheZeroHostSet(t *testing.T) {
 
 	if len(req.Withheld) != len(creds) {
 		t.Errorf("the zero HostSet delivered credentials: withheld %d of %d", len(req.Withheld), len(creds))
+	}
+}
+
+// The host set has to be asked about the URL curl will receive, not about the
+// base URL on its own. Request.URL joins BaseURL and Path as text, so a path
+// beginning `@` turns the allowed host into userinfo and the request lands on
+// whatever follows it — with the credential attached, because the check said
+// yes about a host that is no longer the one being talked to.
+//
+// White-box, and deliberately: binder.path refuses a template this shape before
+// Build ever reaches credentials, so the only way to hold *this* half of the
+// answer honest is to ask credentials directly. Two independent gates, two
+// tests.
+func TestCredentialsAskTheHostSetTheURLTheRequestWillUse(t *testing.T) {
+	op, doc := fixture(t, "getSecured")
+
+	creds, err := config.Resolve(op, doc, nil)
+	if err != nil {
+		t.Fatalf("config.Resolve: %v", err)
+	}
+	if len(creds) == 0 {
+		t.Fatal("the fixture resolved no credentials, so this test proves nothing")
+	}
+
+	b := &binder{in: Inputs{Op: op, Doc: doc, Creds: creds, Hosts: specHosts(t, doc)}}
+	req := &Request{
+		// The base is the spec's own host, so a check that stops here says yes.
+		// It carries no path of its own, which is what lets the `@` reach the
+		// authority: a base ending in /v1 would make the key a path segment.
+		BaseURL: "https://api.example.com",
+		Path:    "@evil.example.com/steal",
+	}
+
+	b.credentials(req)
+
+	for _, group := range []struct {
+		where string
+		pairs []Pair
+	}{
+		{"header", req.Headers}, {"query", req.Query}, {"cookie", req.Cookies},
+	} {
+		for _, p := range group.pairs {
+			if p.Value.IsSecret() {
+				t.Errorf("%s %q carries a credential to %s, which the path moved the request to",
+					group.where, p.Name, "evil.example.com")
+			}
+		}
+	}
+
+	if len(req.Withheld) != len(creds) {
+		t.Fatalf("credentials_withheld has %d entries, want one per resolved credential (%d): %+v",
+			len(req.Withheld), len(creds), req.Withheld)
+	}
+	for _, w := range req.Withheld {
+		if w.Host != "evil.example.com:443" {
+			t.Errorf("withheld host = %q, want the host the request actually reaches", w.Host)
+		}
+	}
+}
+
+// A `paths:` key is spec-controlled text that reaches the wire, and the spec is
+// untrusted. Refusing it where it is read turns a hostile document into an exit
+// 2 instead of a request nobody asked for.
+func TestBuildRefusesAnOperationPathThatCouldMoveTheHost(t *testing.T) {
+	refused := []struct{ name, path string }{
+		{"userinfo", "@evil.example.com/steal"},
+		{"bare host", "evil.example.com/steal"},
+		{"subdomain suffix", ".evil.example.com/steal"},
+		{"backslash", "\\evil.example.com/steal"},
+		{"query first", "?next=/pets"},
+		{"fragment first", "#/pets"},
+		{"empty", ""},
+		{"just an at", "@"},
+		{"leading space", " /pets"},
+		{"embedded newline", "/pets\r\nX-Injected: 1"},
+		{"embedded space", "/pets HTTP/1.1"},
+	}
+
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			in := inputs(t, "listPets")
+			in.Params = []string{"limit=10"}
+			in.Op.Path = tc.path
+
+			err := buildErr(t, in)
+			if !strings.Contains(err.Error(), "path") {
+				t.Errorf("error %v does not name the path it refused", err)
+			}
+		})
+	}
+
+	// The other half: an ordinary path, and the awkward-but-legal ones, still
+	// build. A refusal that also refuses `/pets` proves nothing.
+	for _, path := range []string{"/pets", "/a//b", "/../pets", "/pets@archive"} {
+		t.Run("allowed "+path, func(t *testing.T) {
+			in := inputs(t, "listPets")
+			in.Params = []string{"limit=10"}
+			in.Op.Path = path
+
+			if got := build(t, in).Path; got != path {
+				t.Errorf("Path = %q, want %q", got, path)
+			}
+		})
 	}
 }
 

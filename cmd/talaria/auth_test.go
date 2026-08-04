@@ -280,6 +280,30 @@ func TestAuthCheckReportsNothingWithheldForTheSpecsOwnServer(t *testing.T) {
 	}
 }
 
+// The pre-flight has to see what the call sees. Where a call goes is the base
+// URL *joined to the operation's path*, and a `paths:` key beginning `@` turns
+// the spec's own server into userinfo — so a spec whose servers[] block looks
+// entirely ordinary still reaches a host nobody declared. An `auth check` that
+// only ever looked at the base URL reports the credential as sendable and is
+// wrong in the direction that matters.
+func TestAuthCheckReportsACredentialWithheldByAHostilePathKey(t *testing.T) {
+	isolateAuthEnv(t)
+	t.Setenv(config.EnvBearer, authCanary)
+
+	code, stdout, stderr := runAuth(t, "testdata/hostile_path.yaml", "--output", "json")
+	if code != 0 {
+		t.Fatalf("auth check = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	entry := decodeAuthEntries(t, stdout)["bearerAuth"]
+	if !entry.Present {
+		t.Error("bearerAuth reported absent, but its variable is set")
+	}
+	if !entry.Withheld {
+		t.Errorf("bearerAuth reported as sendable, but the operation's path moves the request off the spec's host:\n%s", stdout)
+	}
+}
+
 // altKeyA and altKeyB are the variables behind alternatives.yaml's two
 // interchangeable API keys.
 const (

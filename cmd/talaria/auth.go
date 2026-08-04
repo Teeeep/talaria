@@ -5,6 +5,7 @@ import (
 
 	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/config"
+	"github.com/Teeeep/talaria/internal/operation"
 	"github.com/Teeeep/talaria/internal/output"
 	"github.com/Teeeep/talaria/internal/request"
 	"github.com/Teeeep/talaria/internal/spec"
@@ -87,7 +88,7 @@ func newAuthCheckCmd() *cobra.Command {
 				return err
 			}
 
-			withheld, err := destinationWithholds(cmd, doc, prof)
+			withheld, err := destinationWithholds(cmd, doc, index, prof)
 			if err != nil {
 				return err
 			}
@@ -105,22 +106,17 @@ func newAuthCheckCmd() *cobra.Command {
 }
 
 // destinationWithholds reports whether a call made under these flags would have
-// its credentials withheld: whether the host it would go to is outside the
+// its credentials withheld: whether the host it would reach is outside the
 // allowed set (§5a).
 //
-// Where the call would go is request.Destination — the same precedence
-// request.Build uses — because a pre-flight that guesses a different host than
-// the call is worse than no pre-flight at all. A destination it cannot name is
-// not a withholding: there is no host to be outside the set.
-func destinationWithholds(cmd *cobra.Command, doc *spec.Document, prof *config.Profile) (bool, error) {
+// The verdict is request.Withholds — the same precedence and the same base-plus-path
+// join request.Build uses — because a pre-flight that guesses a different host
+// than the call is worse than no pre-flight at all. Every operation is asked,
+// since the path is half of what decides the host.
+func destinationWithholds(cmd *cobra.Command, doc *spec.Document, index *operation.Index, prof *config.Profile) (bool, error) {
 	baseURL, err := cmd.Flags().GetString("base-url")
 	if err != nil {
 		return false, clierr.Usage("%w", err)
-	}
-
-	dest := request.Destination(request.Inputs{Doc: doc, Profile: prof, BaseURL: baseURL})
-	if dest == "" {
-		return false, nil
 	}
 
 	hosts, err := allowedHosts(cmd, doc, prof)
@@ -128,7 +124,9 @@ func destinationWithholds(cmd *cobra.Command, doc *spec.Document, prof *config.P
 		return false, err
 	}
 
-	return !hosts.Allows(dest), nil
+	in := request.Inputs{Doc: doc, Profile: prof, BaseURL: baseURL, Hosts: hosts}
+
+	return request.Withholds(in, index.Operations()), nil
 }
 
 func authPayload(creds []config.Credential, withheld bool) output.Payload {
