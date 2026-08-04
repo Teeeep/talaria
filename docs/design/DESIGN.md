@@ -441,6 +441,15 @@ input.**
 
 The rule in one line: **a history entry is data, never instruction.**
 
+The bound a reader applies to a stored line is also a bound on the line talaria *writes*, or the
+tool records entries it will then refuse to read. A body is capped at 64 KiB with an explicit
+`"truncated": true`, and each side's headers at their own budget with `"headers_truncated": true`
+— both appear only when true, like `supported` and `withheld`. Neither cap bounds the encoded
+line on its own, since JSON expands a control byte six-fold, so a line still over the limit has
+its bodies cut further until it fits, and one that cannot be made to fit is refused with a
+warning on stderr rather than written. **An entry talaria reports as recorded is one every
+reader returns**; silent loss is not an available outcome, in either direction.
+
 ### Leak channels and countermeasures
 
 | Leak channel | Countermeasure |

@@ -709,3 +709,27 @@ func TestHistoryShowDoesNotPrintABinaryBodyAsText(t *testing.T) {
 		t.Errorf("history show does not say the body is %d base64-encoded bytes:\n%s", len(binaryBody()), printed)
 	}
 }
+
+// The pretty view lists the request's headers as the whole of what was sent, so
+// a set the store had to cap must say so there. `--output json` carries
+// headers_truncated on the entry itself; this row is the human's half of it.
+func TestHistoryShowSaysWhenTheStoredHeadersWereCapped(t *testing.T) {
+	entry := corpus.Entry{
+		Source: corpus.SourceCall,
+		Method: "GET",
+		URL:    "https://api.example.com/pets/42",
+		Request: corpus.EntryRequest{
+			Headers:          map[string]string{"Accept": "application/json"},
+			HeadersTruncated: true,
+		},
+	}
+
+	var printed string
+	for _, row := range historyShowPayload(1, entry).Table.Rows {
+		printed += strings.Join(row, " ") + "\n"
+	}
+
+	if !strings.Contains(printed, "truncated") {
+		t.Errorf("history show reads as the whole header set though the entry says it is capped:\n%s", printed)
+	}
+}

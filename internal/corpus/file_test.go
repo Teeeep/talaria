@@ -7,6 +7,7 @@ package corpus
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // paddedLine is one readable entry marshalling to exactly n bytes, so a test can
@@ -242,4 +244,119 @@ func TestTrimOfAStoreThatWasNeverWrittenIsANoOp(t *testing.T) {
 		t.Fatalf("trim: %v", err)
 	}
 	assertNoFile(t, path)
+}
+
+// shortenCases are the two ways a Data may be cut without corrupting what is
+// left: a base64 Data at a four-character quantum, and text at a rune boundary.
+// Cutting either at the byte the arithmetic asks for is silent corruption — a
+// base64 prefix that no longer decodes, or a split UTF-8 sequence that
+// encoding/json rewrites to U+FFFD, so a replay sends bytes the original call
+// never sent.
+func TestShorteningTextCutsAtARuneBoundary(t *testing.T) {
+	// Three bytes per rune, so every offset that is not a multiple of three
+	// splits one.
+	data := strings.Repeat("☃", 8)
+
+	for n := 0; n <= len(data); n++ {
+		got := shorten(data, n, false)
+		if len(got) > n {
+			t.Fatalf("shorten(%d) kept %d bytes", n, len(got))
+		}
+		if !utf8.ValidString(got) {
+			t.Fatalf("shorten(%d) split a rune: %q", n, got)
+		}
+		if want := n - n%3; len(got) != want {
+			t.Errorf("shorten(%d) kept %d bytes, want the %d before the boundary", n, len(got), want)
+		}
+	}
+}
+
+func TestShorteningBase64CutsAtAQuantum(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xff, 0xfe, 0xfd}, 32))
+
+	for n := 0; n <= len(encoded); n++ {
+		got := shorten(encoded, n, true)
+		if len(got) > n {
+			t.Fatalf("shorten(%d) kept %d characters", n, len(got))
+		}
+		if _, err := base64.StdEncoding.DecodeString(got); err != nil {
+			t.Fatalf("shorten(%d) left %d characters that do not decode: %v", n, len(got), err)
+		}
+	}
+}
+
+// oversizeEntry is an entry whose encoded line is past maxEntryBytes because of
+// its bodies, so encodeLine has something to cut.
+func oversizeEntry() Entry {
+	big := strings.Repeat("\x01", MaxBody) // six bytes each once encoded
+
+	return Entry{
+		Source:  SourceCall,
+		Method:  "POST",
+		URL:     "https://api.example.com/pets",
+		Request: EntryRequest{Body: &Body{ContentType: "application/json", Data: big}},
+		Response: &EntryResponse{
+			Status: 200,
+			Body:   &Body{ContentType: "application/json", Data: big},
+		},
+	}
+}
+
+func TestEncodeLineCutsTheBodiesUntilTheLineFits(t *testing.T) {
+	line, err := encodeLine(oversizeEntry())
+	if err != nil {
+		t.Fatalf("encodeLine: %v", err)
+	}
+	if len(line) > maxEntryBytes {
+		t.Fatalf("the line is %d bytes, past the %d lines() admits", len(line), maxEntryBytes)
+	}
+
+	var got Entry
+	if err := json.Unmarshal(line, &got); err != nil {
+		t.Fatalf("the line does not parse: %v", err)
+	}
+	for name, body := range map[string]*Body{"request": got.Request.Body, "response": got.Response.Body} {
+		if body == nil {
+			t.Fatalf("%s body is nil", name)
+		}
+		if !body.Truncated {
+			t.Errorf("%s body was cut but is not marked truncated", name)
+		}
+	}
+}
+
+// The entry Append is handed is the caller's, and its Response and its bodies
+// are pointers into it. call still holds that entry — recordCall is handed the
+// same request the executor sent — so a cut that reached through them would
+// shorten what the caller believes it recorded.
+func TestEncodeLineLeavesTheCallersEntryAlone(t *testing.T) {
+	entry := oversizeEntry()
+	requestBody, responseBody := *entry.Request.Body, *entry.Response.Body
+
+	if _, err := encodeLine(entry); err != nil {
+		t.Fatalf("encodeLine: %v", err)
+	}
+
+	if *entry.Request.Body != requestBody {
+		t.Error("encodeLine cut the caller's request body")
+	}
+	if *entry.Response.Body != responseBody {
+		t.Error("encodeLine cut the caller's response body")
+	}
+}
+
+func TestEncodeLineRefusesWhatItCannotCut(t *testing.T) {
+	entry := Entry{
+		Source: SourceCall,
+		Method: "GET",
+		URL:    "https://api.example.com/pets?q=" + strings.Repeat("x", maxEntryBytes),
+	}
+
+	line, err := encodeLine(entry)
+	if err == nil {
+		t.Fatalf("encodeLine returned a %d-byte line, which lines() drops", len(line))
+	}
+	if !strings.Contains(err.Error(), fmt.Sprint(maxEntryBytes)) {
+		t.Errorf("the refusal does not name the %d-byte bound: %v", maxEntryBytes, err)
+	}
 }

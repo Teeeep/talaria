@@ -266,6 +266,14 @@ Credentials are stored as names, so nothing in history can be read back into a v
 nothing stored is resolved at all any more. Every credential position in the entry is dropped and
 re-resolved from the current environment and profile, subject to the host rule above.
 
+**An entry says when it is not the whole call.** A body past 64 KiB carries `"truncated": true`,
+and a request or response whose headers did not fit carries `"headers_truncated": true` beside
+them — so `headers` is what was kept, not what was sent. Both appear only when they are true.
+Do not conclude a header was absent from a request whose entry says `headers_truncated`; re-run
+the call with `--dry-run` if you need the full list. A call that could not be recorded at all
+says so on stderr — a `warning:` line naming history — and still exits on the call's own result.
+An entry reported as recorded is one `talaria history` will give back.
+
 ## Rules
 
 1. Never ask a human for a credential value. Ask them to export a named variable.

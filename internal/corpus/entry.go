@@ -36,6 +36,15 @@ import (
 // cannot.
 const MaxBody = 64 << 10
 
+// maxHeaderBytes is how much of one side's headers an entry keeps. Headers are
+// the other unbounded contributor to a stored line, and curl accepts 300 KB of
+// response headers on its own — past what any one line may hold — so a store
+// that bounded only bodies wrote entries no reader would return. The budget is
+// over the whole map rather than per value, because what the reader holds is
+// the map; a set that did not fit is marked HeadersTruncated, the way a cut
+// body is marked Truncated.
+const maxHeaderBytes = 8 << 10
+
 // Source says which command produced an entry. It exists because the retention
 // cap is applied per source: a `run` over a large spec must not be able to evict
 // a session of interactive `call` history.
@@ -80,17 +89,25 @@ type Entry struct {
 // joined the way HTTP joins repeated field values.
 type EntryRequest struct {
 	Headers map[string]string `json:"headers,omitempty"`
-	Cookies map[string]string `json:"cookies,omitempty"`
-	Body    *Body             `json:"body,omitempty"`
+	// HeadersTruncated reports that Headers is what fitted in maxHeaderBytes and
+	// not every header the request carried. Like Body.Truncated it is explicit,
+	// so a reader never mistakes a capped set for the whole of it.
+	HeadersTruncated bool              `json:"headers_truncated,omitempty"`
+	Cookies          map[string]string `json:"cookies,omitempty"`
+	Body             *Body             `json:"body,omitempty"`
 }
 
 // EntryResponse is the redacted response. Headers keep their repetitions, since
 // Set-Cookie legitimately appears more than once.
 type EntryResponse struct {
-	Status   int                 `json:"status"`
-	Headers  map[string][]string `json:"headers,omitempty"`
-	Body     *Body               `json:"body,omitempty"`
-	TimingMS int64               `json:"timing_ms"`
+	Status  int                 `json:"status"`
+	Headers map[string][]string `json:"headers,omitempty"`
+	// HeadersTruncated reports that Headers is what fitted in maxHeaderBytes.
+	// curl accepts 300 KB of response headers, which is past what one stored
+	// line may hold on its own, so this is reachable without a hostile peer.
+	HeadersTruncated bool  `json:"headers_truncated,omitempty"`
+	Body             *Body `json:"body,omitempty"`
+	TimingMS         int64 `json:"timing_ms"`
 }
 
 // EncodingBase64 marks a Data that holds standard base64 rather than the body's
@@ -202,19 +219,23 @@ func NewEntry(source Source, req *request.Request, obs *Observed, red Redactors)
 		// request.Redacted cannot fail, and a URL that somehow did not render is
 		// not worth dropping the whole recording over.
 		entry.URL, _ = req.URL(request.Redacted)
+		headers, cut := capHeaders(red.headers(req.Headers))
 		entry.Request = EntryRequest{
-			Headers: red.headers(req.Headers),
-			Cookies: red.cookies(req.Cookies),
-			Body:    red.requestBody(req.Body),
+			Headers:          headers,
+			HeadersTruncated: cut,
+			Cookies:          red.cookies(req.Cookies),
+			Body:             red.requestBody(req.Body),
 		}
 	}
 
 	if obs != nil {
+		headers, cut := capMultiHeaders(red.Response.Headers(obs.Headers))
 		entry.Response = &EntryResponse{
-			Status:   obs.Status,
-			Headers:  red.Response.Headers(obs.Headers),
-			Body:     newBody(contentType(obs.Headers), red.Response.Body(obs.Body)),
-			TimingMS: obs.TimingMS,
+			Status:           obs.Status,
+			Headers:          headers,
+			HeadersTruncated: cut,
+			Body:             newBody(contentType(obs.Headers), red.Response.Body(obs.Body)),
+			TimingMS:         obs.TimingMS,
 		}
 	}
 
@@ -280,6 +301,60 @@ func (r Redactors) requestBody(b *request.Body) *Body {
 	}
 
 	return newBody(b.ContentType, r.Response.Body(b.Data))
+}
+
+// capHeaders keeps as many headers as fit in maxHeaderBytes, reporting whether
+// it had to leave any out.
+//
+// The order is by name rather than the map's own, so two entries recording the
+// same headers keep the same ones; a header that does not fit is skipped rather
+// than ending the pass, so a short one after a long one still gets in. Sizing
+// by name plus value ignores the JSON quoting around them, which is what makes
+// this a budget on the headers and not a bound on the line — Append still
+// checks the encoded line itself.
+func capHeaders(in map[string]string) (map[string]string, bool) {
+	out := make(map[string]string, len(in))
+	dropped := false
+	spent := 0
+	for _, name := range sortedNames(in) {
+		if cost := len(name) + len(in[name]); spent+cost > maxHeaderBytes {
+			dropped = true
+		} else {
+			spent += cost
+			out[name] = in[name]
+		}
+	}
+	if len(out) == 0 {
+		return nil, dropped
+	}
+
+	return out, dropped
+}
+
+// capMultiHeaders is capHeaders over the response's repeated values. A name is
+// kept with every one of its values or not at all: half of a Set-Cookie list
+// reads as the whole of one.
+func capMultiHeaders(in map[string][]string) (map[string][]string, bool) {
+	out := make(map[string][]string, len(in))
+	dropped := false
+	spent := 0
+	for _, name := range sortedNames(in) {
+		cost := len(name)
+		for _, value := range in[name] {
+			cost += len(value)
+		}
+		if spent+cost > maxHeaderBytes {
+			dropped = true
+		} else {
+			spent += cost
+			out[name] = in[name]
+		}
+	}
+	if len(out) == 0 {
+		return nil, dropped
+	}
+
+	return out, dropped
 }
 
 // newBody keeps at most MaxBody bytes of data, reporting whether it had to cut.

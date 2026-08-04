@@ -143,3 +143,15 @@ that pass — and task 6's before it — deliberately did not do, and why.
   31 added. The seam is the one `source.go` itself would split on: a `fetch_test.go` for
   everything whose subject is the network read — bounds, redirects, Content-Length, cancellation
   — leaving resolution, the cache and local paths in `source_test.go`.
+
+- `internal/corpus/entry.go:322` — `capHeaders` and `capMultiHeaders` are the same loop twice,
+  differing only in how a value's cost is measured (`len(v)` vs a sum over `[]string`). Two
+  copies is not yet three, but a third capped map — cookies are the obvious candidate, and are
+  unbounded today — makes it one. The seam is a `capMap[V any](m map[string]V, cost func(V) int)`,
+  which `sortedNames` is already generic enough to feed.
+
+- `internal/corpus/file.go` is 404 lines and now holds two concerns, not one: the *reading* side
+  (`readStore`, `tail`, `lines`, `trim`, `replace`, the four bound constants) and the *writing*
+  side task 34 added (`encodeLine`, `halveBodies`, `halfOf`, `shorten`). They meet only at
+  `maxEntryBytes`. The seam is a `line.go` for the write side, with the constant staying here;
+  `file_test.go` (362 lines) splits on exactly the same line.

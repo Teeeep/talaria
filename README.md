@@ -490,6 +490,15 @@ talaria processes can share one history file: each append takes an exclusive adv
 a sibling `history.jsonl.lock` for the whole of the write and the retention trim, so an entry
 talaria reported as recorded is one you will find in the file.
 
+One line has to stay a line a reader will hold, and a body's 64 KiB does not bound one on its
+own: JSON writes a control byte as a six-character escape, and a response may carry 300 KB of
+headers before any body at all. So each side's headers are capped too, with an explicit
+`"headers_truncated": true` beside them, and a line still over the limit has its bodies cut
+further — marked `"truncated"` as ever — until it fits. An entry that cannot be made to fit,
+such as one whose URL alone is over the limit, is **not written**: talaria prints
+`warning: the call was not recorded in history` on stderr and leaves the call's own exit code
+alone. What it never does is report an entry recorded that `history` will not give back.
+
 Recording is off for a profile that says so, and off everywhere when the environment says so:
 
 ```yaml

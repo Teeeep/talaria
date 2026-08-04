@@ -248,6 +248,11 @@ func historyShowPayload(index int, entry corpus.Entry) output.Payload {
 	for _, name := range sortedKeys(entry.Request.Headers) {
 		rows = append(rows, []string{name + ": " + entry.Request.Headers[name]})
 	}
+	if entry.Request.HeadersTruncated {
+		// The list above is the whole of what was sent everywhere else, so a
+		// capped one has to say so here rather than read as complete.
+		rows = append(rows, []string{"<headers truncated: the entry kept what fit>"})
+	}
 	if entry.Request.Body != nil {
 		rows = append(rows, []string{bodyLine(entry.Request.Body)})
 	}

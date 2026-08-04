@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 )
 
 const (
@@ -293,6 +294,96 @@ func lines(data []byte) [][]byte {
 	}
 
 	return out
+}
+
+// encodeLine is the write side of the bound lines() reads with, and the two are
+// one rule: a stored line past maxEntryBytes is one Read, storedIDs, `history`,
+// `history show` and `history replay` all skip forever, and trim then deletes it
+// with no diagnostic, because trim rebuilds the file from lines(). An Append
+// that wrote one and returned nil would report a call recorded that no reader
+// can find — the inverse of the hazard the write-last ordering closed, with the
+// same consequence: a mutating call re-run.
+//
+// The bound is on the *encoded* line, never on MaxBody, because the expansion
+// happens in the encoding: encoding/json writes a C0 byte as a six-character
+// escape, so MaxBody of them is a 393 KB line.
+//
+// What is cut is what history can most afford to lose. The headers were capped
+// on the way in, by capHeaders; here it is the bodies, halved until the line
+// fits and marked Truncated to say so. An entry with nothing left to cut — a
+// URL of three 100 KB query values, say — is refused rather than written, so
+// recordCall's stderr warning fires. Silent loss is the one outcome that must
+// not survive.
+func encodeLine(e Entry) ([]byte, error) {
+	for {
+		line, err := json.Marshal(e)
+		if err != nil {
+			return nil, fmt.Errorf("cannot encode the history entry: %w", err)
+		}
+		if len(line) <= maxEntryBytes {
+			return line, nil
+		}
+		if !halveBodies(&e) {
+			return nil, fmt.Errorf("the entry encodes to %d bytes, past the %d a stored line may hold, and nothing left in it can be cut", len(line), maxEntryBytes)
+		}
+	}
+}
+
+// halveBodies cuts each body in half, reporting whether there was anything left
+// to cut. Halving rather than computing an offset from the overage, because the
+// cost of a byte in the encoding runs from one to six and only the encoder
+// knows which; the loop above re-measures, and a body reaches empty in at most
+// log2(MaxBody) passes.
+func halveBodies(e *Entry) bool {
+	cut := false
+	if body := halfOf(e.Request.Body); body != nil {
+		e.Request.Body = body
+		cut = true
+	}
+	if e.Response != nil {
+		if body := halfOf(e.Response.Body); body != nil {
+			// A copy, because the caller still holds the entry it passed and the
+			// Response behind it is a pointer.
+			response := *e.Response
+			response.Body = body
+			e.Response = &response
+			cut = true
+		}
+	}
+
+	return cut
+}
+
+// halfOf is b with half its data, or nil when there is none left to drop.
+func halfOf(b *Body) *Body {
+	if b == nil || b.Data == "" {
+		return nil
+	}
+
+	cut := *b
+	cut.Data = shorten(b.Data, len(b.Data)/2, b.Encoding == EncodingBase64)
+	cut.Truncated = true
+
+	return &cut
+}
+
+// shorten cuts data to at most n bytes without corrupting what is left. A
+// base64 Data is cut at a four-character quantum, since a prefix at any other
+// offset does not decode; text is cut back to a rune boundary, since
+// encoding/json rewrites a split sequence to U+FFFD and a replay would then
+// send bytes the original call never sent.
+func shorten(data string, n int, base64 bool) string {
+	if base64 {
+		return data[:n-n%4]
+	}
+	for n > 0 {
+		if r, size := utf8.DecodeLastRuneInString(data[:n]); r != utf8.RuneError || size > 1 {
+			break
+		}
+		n--
+	}
+
+	return data[:n]
 }
 
 // stateDir is $XDG_STATE_HOME/talaria, falling back to ~/.local/state/talaria.

@@ -118,9 +118,9 @@ func (s *Store) Append(ctx context.Context, e Entry) error {
 	}
 	e.ID = uniqueID(taken, e)
 
-	line, err := json.Marshal(e)
+	line, err := encodeLine(e)
 	if err != nil {
-		return fmt.Errorf("cannot encode the history entry: %w", err)
+		return err
 	}
 
 	return write(path, append(line, '\n'))

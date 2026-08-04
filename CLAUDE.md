@@ -399,6 +399,25 @@ about to write, so the cap still means `maxPerSource` and not one more. For the 
 `storedIDs` returns an error: a store that exists and cannot be read is not an empty one, and an
 empty id set silently retires `uniqueID`'s collision check.
 
+**The bound `lines` reads with is the bound `Append` writes to.** `lines`
+(`internal/corpus/file.go`) drops a stored line past `maxEntryBytes`, so an `Append` that wrote a
+longer one and returned nil reported a call recorded that `Read`, `storedIDs`, `trim`, `history`,
+`history show` and `history replay` all skip forever — and `trim`, which rebuilds from `lines`,
+then deleted it with no diagnostic. `encodeLine` is the write side, in the same file as the
+constant and beside `lines`: marshal, and while the line is over, `halveBodies` cuts each body in
+half and marks it `Truncated`, until it fits or there is nothing left to cut, and then the entry
+is *refused* so `recordCall`'s stderr warning fires. Halving rather than computing an offset from
+the overage, because a byte costs one to six in the encoding and only the encoder knows which.
+**The bound is on the encoded line, never on `MaxBody`** — that is the whole defect: `encoding/json`
+writes a C0 byte as a six-character escape, so `MaxBody` of them is a 393 KB line, and 300 KB of
+ordinary response headers (curl's own ceiling) reaches it with no body at all. Headers are
+therefore capped on the way in, by `capHeaders`/`capMultiHeaders` in `NewEntry`, at
+`maxHeaderBytes` in `sortedNames` order with `HeadersTruncated` to say so — the same shape
+`newBody` uses. Cutting is copy-on-write: `e.Response` is a pointer the caller still holds
+(`recordCall` is handed the request the executor sent), so `halveBodies` copies it before
+assigning. Never write to the store without going through `encodeLine`, and if you add a field
+that can carry unbounded text, cap it in `NewEntry` — the refusal is the backstop, not the plan.
+
 **Reading a stored entry back belongs to `internal/corpus`.** `Entry.Replay(op)` returns a
 `Replayable` — the `name=value` strings `request.Inputs` takes — and it is where the path-template
 match, the redaction-marker drops and the body refusals live, so they are testable without cobra.

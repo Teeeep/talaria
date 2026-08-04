@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -915,4 +916,241 @@ func firstLine(t *testing.T, path string) []byte {
 	line, _, _ := strings.Cut(string(data), "\n")
 
 	return []byte(line)
+}
+
+// ---------------------------------------------------------------------------
+// The line Append writes is one a reader will hold.
+//
+// lines() drops any stored line past maxEntryBytes, so an Append that writes a
+// longer one and returns nil reports an entry recorded that Store.Read, trim,
+// storedIDs, `history`, `history show` and `history replay` all skip forever —
+// and the next retention pass then deletes it with no diagnostic. None of the
+// routes below needs a hostile peer: ordinary headers, an ordinary body of
+// control bytes, and ordinary --query input each reach the bound on their own,
+// because the expansion happens in the JSON encoding and MaxBody bounds the
+// bytes before it.
+
+// storedOrRefused is that invariant, as a helper: Append returning nil means
+// Read returns the entry, and never both nil. It reports the entry Read gave
+// back, so a caller can assert on what survived the shrink.
+func storedOrRefused(t *testing.T, store *Store, e Entry) (Entry, bool) {
+	t.Helper()
+
+	appendErr := store.Append(context.Background(), e)
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	for _, got := range entries {
+		if got.URL == e.URL {
+			return got, true
+		}
+	}
+
+	if appendErr == nil {
+		t.Fatalf("Append returned nil for an entry Read does not return; %d entries in the store", len(entries))
+	}
+
+	return Entry{}, false
+}
+
+// assertEveryLineIsReadable checks the file itself through lines() — the same
+// split Read, storedIDs and trim's rewrite all work from, so a line it leaves
+// out is one no reader returns and the next trim silently drops.
+func assertEveryLineIsReadable(t *testing.T, path string, want int) {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the store: %v", err)
+	}
+	if got := len(lines(data)); got != want {
+		t.Fatalf("lines() returns %d of the %d lines in the store; the rest are past the %d-byte bound", got, want, maxEntryBytes)
+	}
+}
+
+func TestAppendRecordsABodyWhoseJSONEncodingExpandsPastTheLineBound(t *testing.T) {
+	store, path := newStore(t)
+
+	// MaxBody of 0x01: valid UTF-8, so newBody stores it as text, and
+	// encoding/json expands every byte of it six-fold as  — a
+	// 393,693-byte line from a body newBody considered in bounds.
+	req := &request.Request{Method: "POST", BaseURL: "https://api.example.com", Path: "/pets/expanded"}
+	obs := &Observed{Status: 200, Body: bytes.Repeat([]byte{1}, MaxBody), TimingMS: 7}
+
+	got, ok := storedOrRefused(t, store, NewEntry(SourceCall, req, obs, Redactors{}))
+	if !ok {
+		t.Fatal("the entry was refused; cutting the body further is enough to fit it")
+	}
+	if got.Response == nil || got.Response.Body == nil {
+		t.Fatal("the recorded entry has no response body")
+	}
+	if !got.Response.Body.Truncated {
+		t.Error("the body was cut to fit the line bound but is not marked truncated")
+	}
+	if got.Response.Status != 200 || got.Response.TimingMS != 7 {
+		t.Errorf("the response metadata did not survive: %+v", got.Response)
+	}
+	assertEveryLineIsReadable(t, path, 1)
+}
+
+// verboseHeaders is ~280 KB of ordinary response headers: past the line bound
+// on its own, and inside curl's own 300 KB ceiling, so no hostile peer is
+// needed to produce it.
+func verboseHeaders() map[string][]string {
+	headers := map[string][]string{"Content-Type": {"application/json"}}
+	for i := 0; i < 280; i++ {
+		headers[fmt.Sprintf("X-Trace-%03d", i)] = []string{strings.Repeat("v", 1000)}
+	}
+
+	return headers
+}
+
+func TestAppendRecordsAnEntryWhoseResponseHeadersAreVerbose(t *testing.T) {
+	store, path := newStore(t)
+
+	req := &request.Request{Method: "GET", BaseURL: "https://api.example.com", Path: "/pets/verbose"}
+	obs := &Observed{Status: 200, Headers: verboseHeaders(), Body: []byte(`{"id":42}`), TimingMS: 11}
+
+	got, ok := storedOrRefused(t, store, NewEntry(SourceCall, req, obs, Redactors{}))
+	if !ok {
+		t.Fatal("the entry was refused; a verbose-but-legitimate server still gets its metadata recorded")
+	}
+	if got.Response == nil || got.Response.Status != 200 {
+		t.Fatalf("the response metadata did not survive: %+v", got.Response)
+	}
+	if !got.Response.HeadersTruncated {
+		t.Error("headers were dropped to fit the budget but the entry does not say so")
+	}
+	if len(got.Response.Headers) == 0 {
+		t.Error("every header was dropped; the cap keeps what fits")
+	}
+	if got.Response.Body == nil || got.Response.Body.Data != `{"id":42}` {
+		t.Errorf("the body did not survive the header cap: %+v", got.Response.Body)
+	}
+	assertEveryLineIsReadable(t, path, 1)
+}
+
+func TestAppendRefusesALineNothingLeftCanShrink(t *testing.T) {
+	store, path := newStore(t)
+
+	// Three --query values of 100 KB each: ordinary user input, no server
+	// involved. The URL is not something history can cut and still be about the
+	// call that was made, so the entry is refused — loudly, since recordCall
+	// turns the error into a warning on stderr.
+	req := &request.Request{
+		Method:  "GET",
+		BaseURL: "https://api.example.com",
+		Path:    "/pets",
+		Query: []request.Pair{
+			{Name: "a", Value: request.Literal(strings.Repeat("x", 100_000))},
+			{Name: "b", Value: request.Literal(strings.Repeat("y", 100_000))},
+			{Name: "c", Value: request.Literal(strings.Repeat("z", 100_000))},
+		},
+	}
+
+	entry := NewEntry(SourceCall, req, &Observed{Status: 200, TimingMS: 3}, Redactors{})
+	err := store.Append(context.Background(), entry)
+	if err == nil {
+		t.Fatal("Append reported an entry recorded that no reader can return")
+	}
+	if !strings.Contains(err.Error(), strconv.Itoa(maxEntryBytes)) {
+		t.Errorf("the refusal does not name the %d-byte bound: %v", maxEntryBytes, err)
+	}
+
+	entries, readErr := store.Read()
+	if readErr != nil {
+		t.Fatalf("Read: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("the refused entry left %d entries behind", len(entries))
+	}
+	if data, statErr := os.ReadFile(path); statErr == nil && len(data) != 0 {
+		t.Errorf("the refused entry wrote %d bytes to the store", len(data))
+	}
+}
+
+// lineOfLength is an entry whose encoded line is exactly n bytes. The id is set
+// so Append keeps it rather than assigning one of its own length, and the
+// timestamp is fixed for the same reason; the URL carries the padding, since a
+// run of ASCII costs one byte per byte in JSON.
+func lineOfLength(t *testing.T, n int) Entry {
+	t.Helper()
+
+	entry := Entry{
+		ID:        "2026-08-04T07:34:10.123456789Z",
+		Timestamp: time.Date(2026, 8, 4, 7, 34, 10, 123456789, time.UTC),
+		Source:    SourceCall,
+		Method:    "GET",
+		URL:       "https://api.example.com/pets/",
+	}
+	line, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshalling the padded entry: %v", err)
+	}
+	if len(line) > n {
+		t.Fatalf("the unpadded entry is already %d bytes, past the %d asked for", len(line), n)
+	}
+	entry.URL += strings.Repeat("x", n-len(line))
+
+	if line, err = json.Marshal(entry); err != nil || len(line) != n {
+		t.Fatalf("padded entry is %d bytes (err %v), want %d", len(line), err, n)
+	}
+
+	return entry
+}
+
+func TestAppendRecordsALineExactlyAtTheReadBound(t *testing.T) {
+	store, path := newStore(t)
+
+	if _, ok := storedOrRefused(t, store, lineOfLength(t, maxEntryBytes)); !ok {
+		t.Fatalf("a line of exactly %d bytes was refused; lines() admits it", maxEntryBytes)
+	}
+	assertEveryLineIsReadable(t, path, 1)
+}
+
+func TestAppendRefusesALineOneByteOverTheReadBound(t *testing.T) {
+	store, _ := newStore(t)
+
+	if err := store.Append(context.Background(), lineOfLength(t, maxEntryBytes+1)); err == nil {
+		t.Fatalf("Append accepted a %d-byte line; lines() drops it", maxEntryBytes+1)
+	}
+}
+
+func TestAShrunkBase64BodyStillDecodes(t *testing.T) {
+	store, path := newStore(t)
+
+	// Two bodies at MaxBody that are not valid UTF-8, so both are base64'd:
+	// ~175 KB of the 256 KB before a single header, and the headers here are
+	// 200 KB. Cutting a base64 Data at any offset that is not a four-character
+	// quantum leaves a Data that no longer decodes.
+	binary := bytes.Repeat([]byte{0xff, 0xfe}, MaxBody/2)
+	req := &request.Request{
+		Method:  "POST",
+		BaseURL: "https://api.example.com",
+		Path:    "/pets/binary",
+		Body:    &request.Body{ContentType: "application/octet-stream", Data: binary},
+	}
+	obs := &Observed{Status: 200, Headers: verboseHeaders(), Body: binary, TimingMS: 5}
+
+	got, ok := storedOrRefused(t, store, NewEntry(SourceCall, req, obs, Redactors{}))
+	if !ok {
+		t.Fatal("the entry was refused; cutting the bodies is enough to fit it")
+	}
+	for name, body := range map[string]*Body{
+		"request":  got.Request.Body,
+		"response": got.Response.Body,
+	} {
+		if body == nil {
+			t.Fatalf("%s body is nil", name)
+		}
+		if body.Encoding != EncodingBase64 {
+			t.Fatalf("%s body encoding = %q, want %s", name, body.Encoding, EncodingBase64)
+		}
+		if _, err := body.Bytes(); err != nil {
+			t.Errorf("%s body no longer decodes after the cut: %v", name, err)
+		}
+	}
+	assertEveryLineIsReadable(t, path, 1)
 }

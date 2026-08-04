@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -247,5 +249,55 @@ func TestNewEntryWithoutAnObservationRecordsTheRequestAlone(t *testing.T) {
 	}
 	if entry.URL != "https://api.example.com/pets/42" {
 		t.Errorf("url = %q, want the request's", entry.URL)
+	}
+}
+
+// A response's headers are unbounded — curl accepts 300 KB of them, which is
+// past what one stored line may hold — so an entry keeps what fits in
+// maxHeaderBytes and says that it did.
+func TestNewEntryCapsVerboseResponseHeaders(t *testing.T) {
+	headers := map[string][]string{"X-Small": {"kept"}}
+	for i := 0; i < 300; i++ {
+		headers[fmt.Sprintf("X-Trace-%03d", i)] = []string{strings.Repeat("v", 1000)}
+	}
+
+	entry := NewEntry(SourceCall, nil, &Observed{Status: 200, Headers: headers}, Redactors{})
+
+	spent := 0
+	for name, values := range entry.Response.Headers {
+		spent += len(name)
+		for _, value := range values {
+			spent += len(value)
+		}
+	}
+	if spent > maxHeaderBytes {
+		t.Errorf("the entry kept %d bytes of headers, past the %d budget", spent, maxHeaderBytes)
+	}
+	if !entry.Response.HeadersTruncated {
+		t.Error("headers were dropped but the entry does not say so")
+	}
+	// Skipped, not stopped at: a short header after a long one still fits.
+	if _, ok := entry.Response.Headers["X-Small"]; !ok {
+		t.Error("X-Small was dropped, though it fits in what the long ones left")
+	}
+	// Two entries recording the same headers must keep the same ones, or a
+	// reader diffing them sees changes the server never made.
+	again := NewEntry(SourceCall, nil, &Observed{Status: 200, Headers: headers}, Redactors{})
+	if !reflect.DeepEqual(entry.Response.Headers, again.Response.Headers) {
+		t.Error("two entries over the same headers kept different ones")
+	}
+}
+
+func TestNewEntryLeavesOrdinaryHeadersAlone(t *testing.T) {
+	entry := NewEntry(SourceCall, canaryRequest(t), canaryResponse(), Redactors{})
+
+	if entry.Response.HeadersTruncated || entry.Request.HeadersTruncated {
+		t.Error("an ordinary entry is marked as having had headers dropped")
+	}
+	if len(entry.Response.Headers) != 2 {
+		t.Errorf("kept %d of 2 response headers", len(entry.Response.Headers))
+	}
+	if len(entry.Request.Headers) != 3 {
+		t.Errorf("kept %d of 3 request headers", len(entry.Request.Headers))
 	}
 }

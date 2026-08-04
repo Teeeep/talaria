@@ -278,8 +278,9 @@ func declaredLocations(op operation.Operation) map[string]string {
 }
 
 // sortedNames is the deterministic iteration order for the maps a stored entry
-// holds.
-func sortedNames(m map[string]string) []string {
+// holds: what replay binds, and what capHeaders keeps when it cannot keep
+// everything — two entries recording the same headers must keep the same ones.
+func sortedNames[V any](m map[string]V) []string {
 	names := make([]string, 0, len(m))
 	for name := range m {
 		names = append(names, name)
