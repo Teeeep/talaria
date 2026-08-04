@@ -2413,3 +2413,68 @@ DESIGN.md §4's payload sketch and AGENT.md in the same commit, since an agent p
 
 **Why:** §3 principle 0 is the stated reason the curl rule exists, and it applies identically to
 the field beside it. `9e8e4e0` established the principle and `callPayload` never got it.
+
+---
+
+## Review fixes — cycle 3
+
+### Task 43: An oversized response body does not cost the request body its replayability — cycle-3 finding 1 (CRIT)
+
+**Fixes findings:** #1
+
+**Files:**
+- `internal/corpus/file.go` (modify) — `halveBodies` (~:337)
+- `internal/corpus/file_test.go` (modify) — the asymmetric fixture and its regression test
+
+**Why:** `halveBodies` cuts *both* bodies on every pass, whichever one caused the overage, and it
+cuts the request body first and unconditionally. `Entry.Replay` refuses any entry whose *request*
+body is `Truncated` (`internal/corpus/replay.go:165`), so cutting it is strictly the more
+destructive of the two: a response the caller did not control — a few tens of KB of C0 bytes,
+which `encoding/json` expands six-fold — permanently disables `history replay` for that entry.
+Silently: `encodeLine` succeeds, `Append` returns nil, so `recordCall` prints no warning. The
+reviewer measured a 25-byte request body cut to 12 bytes while one halving of the response alone
+brought the line to 196,929 bytes against the 262,144 bound — the request body was destroyed for
+nothing. This is the capability §5a and README are about.
+
+**Red — write the failing test first:**
+1. New fixture in `internal/corpus/file_test.go` beside `oversizeEntry`: a *small* request body
+   (a few dozen bytes of ordinary JSON) and an escape-heavy response body at `MaxBody`
+   (`strings.Repeat("\x01", MaxBody)`, as `oversizeEntry` already uses) so only the response
+   drives the line past `maxEntryBytes`. The existing fixtures cannot catch this — `oversizeEntry`
+   puts `MaxBody` in both bodies and
+   `TestAppendRecordsABodyWhoseJSONEncodingExpandsPastTheLineBound`
+   (`internal/corpus/store_test.go:973`) builds a request with no body at all.
+2. Assert, after an `Append` + `Read` round trip: `got.Request.Body.Data` equals what was stored
+   verbatim and `got.Request.Body.Truncated == false`, while the response body *is* truncated.
+3. Assert the entry still `Replay`s without error — that is the capability the finding is about,
+   and it is the assertion that goes red today.
+4. Keep the existing `oversizeEntry` cases green: when both bodies are maximal the request body
+   still gets cut, because the response alone cannot free enough.
+
+**Green — minimal implementation:**
+Cut in order of what history can most afford to lose. In `halveBodies`, try the response body
+first and return as soon as it yielded something; touch the request body only when the response
+body has nothing left to give (`halfOf` already returns nil for a nil or empty `Data`, so
+"nothing left" is the existing signal and the loop still terminates — a body reaches empty in at
+most log2(MaxBody) passes, then the other one starts). `halveBodies` still returns true whenever
+either step cut something, so `encodeLine`'s loop and its refusal are unchanged. Keep the
+copy-on-write of `e.Response`: it is a pointer the caller still holds.
+
+**Adversarial — what does hostile or malformed input do here?**
+1. Response body only, no request body at all — the request branch must not be reached and must
+   not panic on a nil `Body`.
+2. Request body only, no response (`e.Response == nil`) — the request body must still be cut, or
+   an oversized request-only entry becomes unrecordable.
+3. Both bodies base64 and near `MaxBody` — `shorten`'s four-character quantum still applies on
+   every pass and the decoded prefix must stay decodable.
+4. A response body that reaches empty while the line is still over bound — the pass must move on
+   to the request body rather than reporting nothing left to cut, otherwise a legitimately
+   oversized entry is refused where it used to be stored.
+
+**Verify:** `go test ./internal/corpus/...` (and `go test ./...` before commit)
+- [ ] A small request body plus an escape-heavy `MaxBody` response round-trips with
+      `Request.Body.Data` intact and `Request.Body.Truncated == false`
+- [ ] That entry `Replay`s without error, where today it exits 2 forever
+- [ ] The both-bodies-maximal case still encodes, still fits, and `encodeLine` still refuses when
+      neither body has anything left to cut
+- [ ] `go test ./...` green
