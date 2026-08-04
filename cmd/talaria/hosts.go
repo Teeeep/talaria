@@ -15,7 +15,13 @@ import (
 
 // allowedHosts is the set of hosts this invocation may send a resolved
 // credential to: the spec's servers[] after variable substitution, plus every
-// --allow-host, plus the active profile's allow_hosts (DESIGN.md §5a).
+// --allow-host, plus the active profile's allow_hosts and its own base-url
+// (DESIGN.md §5a, sources 1 to 4).
+//
+// prof is the profile the caller *selected*, which is what makes its base-url a
+// human allowing that host. --base-url is deliberately absent from the list: a
+// flag is a per-invocation redirection, and pointing one at a twin is exactly
+// the case withholding exists for.
 //
 // Every command that resolves a credential builds it the same way, so `call`,
 // `auth check` and `history replay` cannot disagree about where one may go.
@@ -26,11 +32,12 @@ func allowedHosts(cmd *cobra.Command, doc *spec.Document, prof *config.Profile) 
 	}
 
 	var profileHosts []string
+	var profileBaseURL string
 	if prof != nil {
-		profileHosts = prof.AllowHosts
+		profileHosts, profileBaseURL = prof.AllowHosts, prof.BaseURL
 	}
 
-	return request.NewHostSet(request.ServerURLs(doc), flags, profileHosts)
+	return request.NewHostSet(request.ServerURLs(doc), flags, profileHosts, profileBaseURL)
 }
 
 // warnWithheld reports on stderr the credentials the host-binding rule kept off

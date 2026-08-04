@@ -182,8 +182,14 @@ different failure — no variable can fix it — and both commands exit 2.
 A resolved credential is sent only to a host the spec declares or a human explicitly allowed.
 The allowed set is every host in the spec's `servers[]` (after server-variable substitution),
 plus every `--allow-host HOST` (repeatable), plus every entry in the active profile's
-`allow_hosts:`. An entry is a bare host, which matches on any port, or `host:port`, which
-matches only that one. There is no wildcard.
+`allow_hosts:`, plus the host of the selected profile's own `base-url`. An entry is a bare host,
+which matches on any port, or `host:port`, which matches only that one. There is no wildcard.
+
+A profile's `base-url` is in the set because selecting a profile that names a base URL and a
+credential together *is* a human allowing that host — it needs no redundant `allow_hosts:` entry
+repeating it. A profile you did not select contributes nothing, and `--base-url` on the command
+line is still outside the set unless something else names its host: a flag is a per-invocation
+redirection, and pointing one at a twin is what withholding exists for.
 
 Point `--base-url` at a host outside that set — a local twin, most often — and the call **still
 runs**, but every credential is withheld. The omission is reported both ways: one line on

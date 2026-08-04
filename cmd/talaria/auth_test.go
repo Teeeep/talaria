@@ -280,6 +280,30 @@ func TestAuthCheckReportsNothingWithheldForTheSpecsOwnServer(t *testing.T) {
 	}
 }
 
+// The two commands have to agree about source 4 as well. A profile that names
+// a base URL and a credential together is a human allowing that host (§5a), so
+// the pre-flight must report the credential as sendable — an `auth check` that
+// says "withheld" where `call` sends is the disagreement DESIGN.md:329 forbids.
+func TestAuthCheckDoesNotWithholdFromTheProfilesOwnBaseURL(t *testing.T) {
+	isolateAuthEnv(t)
+	writeRedactConfig(t, "profiles:\n  staging:\n    base-url: https://staging.example.com\n"+
+		"    auth:\n      bearerAuth: ${"+authProfileVar+"}\n")
+	t.Setenv(authProfileVar, authCanary)
+
+	code, stdout, stderr := runAuth(t, "testdata/auth.yaml", "--profile", "staging", "--output", "json")
+	if code != 0 {
+		t.Fatalf("auth check --profile staging = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	entry := decodeAuthEntries(t, stdout)["bearerAuth"]
+	if !entry.Present {
+		t.Error("bearerAuth reported absent, but the profile's variable is set")
+	}
+	if entry.Withheld {
+		t.Errorf("bearerAuth reported withheld from the base-url the profile itself names:\n%s", stdout)
+	}
+}
+
 // The pre-flight has to see what the call sees. Where a call goes is the base
 // URL *joined to the operation's path*, and a `paths:` key beginning `@` turns
 // the spec's own server into userinfo — so a spec whose servers[] block looks

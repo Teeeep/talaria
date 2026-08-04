@@ -67,6 +67,20 @@ that pass — and task 6's before it — deliberately did not do, and why.
   eight plus the two helpers; nothing else moves. Task 16 left them where its plan said to put
   them.
 
+- `cmd/talaria/auth_test.go` (580 lines) holds two subjects: what `auth check` *reports* about a
+  scheme (source, present, supported, the agreement matrix with `call`) and what the *host set*
+  does to that report (four `Withheld` cases). Task 27 added the fifth withholding case and put
+  the `call` half in the new `cmd/talaria/hosts_test.go`, which is where the whole host-set half
+  belongs — the seam is `Withheld` versus everything else, and after the move `auth_test.go` is
+  back under 450 lines.
+
+- `writeRedactConfig` (`cmd/talaria/call_redact_test.go:21`) is now the config-file helper for
+  four test files (redaction, auth, history, hosts) and only one of them is about redaction. It
+  writes a 0600 `config.yaml` into an isolated `XDG_CONFIG_HOME`; the name is left over from its
+  first caller. Rename to `writeConfig` and move it beside the other cross-file helpers when the
+  command layer's tests are next reorganised — it is one rename plus four call sites, but it
+  collides with the `call_redact_test.go` split already recorded below, so they want one pass.
+
 ## Examined and deliberately not consolidated
 
 - The bounded-read idiom in `internal/corpus/file.go` (`readStore`) and `internal/spec/source.go`

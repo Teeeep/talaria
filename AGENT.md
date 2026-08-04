@@ -74,7 +74,8 @@ talaria call getPet --param petId=42 --query verbose=true --header X-Trace=abc
 - `--allow-host HOST` (repeatable) adds a host to the allowed set, so a credential *is* sent
   there. `HOST` is a bare host, matching any port, or `host:port`. This is the flag to reach for
   when the withheld warning names a host you meant to talk to; a profile's `allow_hosts:` is the
-  same thing made permanent.
+  same thing made permanent. A selected profile's own `base-url` host is in the set already, so
+  a call that takes its destination from the profile needs no flag.
 - Every request is bounded: 10s to connect, 30s in total, `--timeout <seconds>` to change the
   total. An API that stops answering exits 1 with curl's status 28 in the message — talaria
   never hangs waiting for one.

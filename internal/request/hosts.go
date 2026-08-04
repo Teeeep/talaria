@@ -9,7 +9,8 @@ import (
 
 // HostSet is the set of hosts a resolved credential may be sent to: DESIGN.md
 // §5a's "every host in the spec's servers[], plus every --allow-host, plus
-// every allow_hosts entry in the active profile".
+// every allow_hosts entry in the active profile, plus the host of the active
+// profile's own base-url".
 //
 // It is default-deny and has no wildcard. The zero HostSet allows nothing, and
 // so does one built from a spec whose servers all failed to parse — the set may
@@ -25,16 +26,20 @@ type HostSet struct {
 	anyPort map[string]bool
 }
 
-// NewHostSet builds the allowed host set from its three sources.
+// NewHostSet builds the allowed host set from its four sources.
 //
 // The two halves are treated differently on purpose. specURLs comes from the
 // spec, which is untrusted: an entry that does not parse, is relative, names no
 // host or speaks a scheme talaria will not use contributes nothing, silently —
-// it has already been reported where it was read. allowFlags and profileHosts
-// were written by a human, so an entry that is not a host is a bad invocation
-// and says so rather than being dropped, which would leave the user believing a
-// host was allowed when it was not.
-func NewHostSet(specURLs, allowFlags, profileHosts []string) (HostSet, error) {
+// it has already been reported where it was read. allowFlags, profileHosts and
+// profileBaseURL were written by a human, so an entry that is not a host is a
+// bad invocation and says so rather than being dropped, which would leave the
+// user believing a host was allowed when it was not.
+//
+// profileBaseURL is the *selected* profile's base-url and is empty when no
+// profile was selected: §5a source 4 is a human allowing a host by choosing the
+// file that names it, not by having written one somewhere in the config.
+func NewHostSet(specURLs, allowFlags, profileHosts []string, profileBaseURL string) (HostSet, error) {
 	set := HostSet{
 		exact:   make(map[string]bool, len(specURLs)+len(allowFlags)+len(profileHosts)),
 		anyPort: map[string]bool{},
@@ -60,7 +65,36 @@ func NewHostSet(specURLs, allowFlags, profileHosts []string) (HostSet, error) {
 		}
 	}
 
+	if err := set.allowBase(profileBaseURL); err != nil {
+		return HostSet{}, err
+	}
+
 	return set, nil
+}
+
+// allowBase adds the active profile's own base-url host (§5a source 4).
+//
+// It is a URL rather than a `host[:port]` entry, so it is read with splitHost —
+// the same reading Allows gives a destination, which is what makes source 4
+// mean exactly "the host a call under this profile would reach". Only the host
+// survives that reading: a base-url carrying userinfo contributes its host and
+// nothing else, and binder.baseURL is what refuses the userinfo itself, with
+// the message that names the fix.
+//
+// A value splitHost cannot read is exit 2 like every other human-written source
+// here, rather than a silent drop, which would show up much later as a
+// credential withheld from the host the operator's own file names.
+func (s HostSet) allowBase(rawURL string) error {
+	if rawURL == "" {
+		return nil
+	}
+
+	if _, key := splitHost(rawURL); key != "" {
+		s.exact[key] = true
+		return nil
+	}
+
+	return clierr.Usage("base URL %q from the profile is not an absolute http(s) URL", rawURL)
 }
 
 // allow adds one human-written `host` or `host:port` entry.

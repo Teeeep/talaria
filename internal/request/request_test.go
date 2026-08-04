@@ -54,7 +54,7 @@ func inputs(t *testing.T, id string) Inputs {
 func specHosts(t *testing.T, doc *spec.Document) HostSet {
 	t.Helper()
 
-	set, err := NewHostSet(ServerURLs(doc), nil, nil)
+	set, err := NewHostSet(ServerURLs(doc), nil, nil, "")
 	if err != nil {
 		t.Fatalf("NewHostSet: %v", err)
 	}
@@ -1140,7 +1140,7 @@ func TestBuildDeliversCredentialsToAnAllowedHost(t *testing.T) {
 		t.Fatalf("config.Resolve: %v", err)
 	}
 
-	hosts, err := NewHostSet(ServerURLs(doc), []string{"localhost"}, nil)
+	hosts, err := NewHostSet(ServerURLs(doc), []string{"localhost"}, nil, "")
 	if err != nil {
 		t.Fatalf("NewHostSet: %v", err)
 	}

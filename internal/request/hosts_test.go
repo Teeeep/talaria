@@ -8,12 +8,14 @@ import (
 	"github.com/Teeeep/talaria/internal/clierr"
 )
 
-// mustHostSet builds a HostSet and fails the test if construction errored. Most
-// tests here are about matching, not about rejecting a bad entry.
+// mustHostSet builds a HostSet from the three list sources and fails the test
+// if construction errored. Most tests here are about matching, not about
+// rejecting a bad entry. The profile's own base-url is the fourth source and
+// has its own tests, which call NewHostSet directly.
 func mustHostSet(t *testing.T, specURLs, allowFlags, profileHosts []string) HostSet {
 	t.Helper()
 
-	set, err := NewHostSet(specURLs, allowFlags, profileHosts)
+	set, err := NewHostSet(specURLs, allowFlags, profileHosts, "")
 	if err != nil {
 		t.Fatalf("NewHostSet(%q, %q, %q): %v", specURLs, allowFlags, profileHosts, err)
 	}
@@ -192,6 +194,90 @@ func TestUserinfoInASpecServerNeverEntersTheSet(t *testing.T) {
 	}
 }
 
+// Source 4: the selected profile's own base-url. A profile that names a base
+// URL and a credential together is a human allowing that host, so the host set
+// admits it without a redundant allow_hosts entry beside it.
+func TestTheProfilesOwnBaseURLIsInTheSet(t *testing.T) {
+	set, err := NewHostSet(nil, nil, nil, "https://staging.example.com/v1")
+	if err != nil {
+		t.Fatalf("NewHostSet: %v", err)
+	}
+
+	if !set.Allows("https://staging.example.com/v1/pets") {
+		t.Error("the profile's own base-url is not in the allowed host set")
+	}
+	// Only the host, and only the port it named: the base URL is a URL, so its
+	// port is explicit or implied by the scheme, never "any".
+	if set.Allows("https://staging.example.com:8443/pets") {
+		t.Error("the profile's base-url admitted a port it did not name")
+	}
+	if set.Allows("https://attacker.example/pets") {
+		t.Error("the profile's base-url admitted a host nobody named")
+	}
+}
+
+// An empty base-url is the ordinary case — no profile selected, or one that
+// names none — and must add nothing rather than fail.
+func TestNoProfileBaseURLAddsNothing(t *testing.T) {
+	set, err := NewHostSet(nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("NewHostSet: %v", err)
+	}
+	if len(set.exact) != 0 || len(set.anyPort) != 0 {
+		t.Fatalf("an empty base-url contributed entries: exact=%v anyPort=%v", set.exact, set.anyPort)
+	}
+}
+
+// The base-url is human-written, so an unreadable one is exit 2 rather than a
+// silent drop — the same rule --allow-host and allow_hosts follow, for the same
+// reason: a dropped entry reads as allowed until a credential goes missing.
+func TestAnUnusableProfileBaseURLIsRefused(t *testing.T) {
+	for _, raw := range []string{
+		"not a url at all",
+		"://staging.example.com",
+		"/v1/pets",
+		"https://",
+		"ftp://staging.example.com",
+		"file:///etc/passwd",
+		"http://%zz",
+		"https://staging.example.com\n",
+	} {
+		set, err := NewHostSet(nil, nil, nil, raw)
+		if err == nil {
+			t.Errorf("base-url %q was accepted", raw)
+			continue
+		}
+		if got := clierr.From(err).Code; got != clierr.CodeUsage {
+			t.Errorf("base-url %q exits %d, want %d", raw, got, clierr.CodeUsage)
+		}
+		// Quoted, so a value carrying a newline is named on one line rather than
+		// splitting the message the caller prints.
+		if !strings.Contains(err.Error(), strconv.Quote(raw)) {
+			t.Errorf("the error does not name the value it refused: %v", err)
+		}
+		// Failing closed: a refusal returns the zero set, which allows nothing.
+		if set.Allows("https://staging.example.com/pets") {
+			t.Errorf("base-url %q was refused but its host is in the returned set", raw)
+		}
+	}
+}
+
+// The host, and nothing else. A base-url with userinfo is refused further along
+// by binder.baseURL, with the message that names the fix; what must never
+// happen is the credential in it becoming part of a set entry.
+func TestUserinfoInTheProfileBaseURLNeverEntersTheSet(t *testing.T) {
+	set, err := NewHostSet(nil, nil, nil, "https://user:hunter2@staging.example.com")
+	if err != nil {
+		t.Fatalf("NewHostSet: %v", err)
+	}
+
+	for key := range set.exact {
+		if strings.ContainsAny(key, "@") || strings.Contains(key, "hunter2") {
+			t.Errorf("set entry %q carries the base-url's userinfo", key)
+		}
+	}
+}
+
 func TestAnUnusableAllowHostEntryIsRefused(t *testing.T) {
 	for _, entry := range []string{
 		"",
@@ -206,13 +292,13 @@ func TestAnUnusableAllowHostEntryIsRefused(t *testing.T) {
 		"api.example.com\n",
 		"api%2Eexample.com",
 	} {
-		if _, err := NewHostSet(nil, []string{entry}, nil); err == nil {
+		if _, err := NewHostSet(nil, []string{entry}, nil, ""); err == nil {
 			t.Errorf("--allow-host %q was accepted", entry)
 		} else if got := clierr.From(err).Code; got != clierr.CodeUsage {
 			t.Errorf("--allow-host %q exits %d, want %d", entry, got, clierr.CodeUsage)
 		}
 
-		if _, err := NewHostSet(nil, nil, []string{entry}); err == nil {
+		if _, err := NewHostSet(nil, nil, []string{entry}, ""); err == nil {
 			t.Errorf("allow_hosts entry %q was accepted", entry)
 		}
 	}

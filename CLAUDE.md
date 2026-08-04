@@ -120,12 +120,23 @@ wherever a path comes from. Do not drop either half.
 human explicitly allowed. Redaction answers *does it print*; it does not answer *who receives
 it*. Both questions need an answer for every new path that carries a credential.
 The set itself is `request.HostSet` (`internal/request/hosts.go`):
-`NewHostSet(specURLs, allowFlags, profileHosts)` unions `request.ServerURLs(doc)`, `--allow-host`
-(persistent, repeatable, on the root) and the profile's `allow_hosts`. Ask it `Allows(rawURL)`;
+`NewHostSet(specURLs, allowFlags, profileHosts, profileBaseURL)` unions §5a's four sources —
+`request.ServerURLs(doc)`, `--allow-host` (persistent, repeatable, on the root), the profile's
+`allow_hosts`, and the *selected* profile's own `base-url`. Ask it `Allows(rawURL)`;
 `Key(rawURL)` is the `host:port` form `credentials_withheld[].host` prints. A malformed *spec*
 server contributes nothing, silently; a malformed *human* entry is exit 2, because a dropped one
 would read as allowed. There is no wildcard and the empty set allows nothing — never add an
 "empty means allow everything" shortcut.
+
+Source 4 is a URL where the other human sources are `host[:port]` entries, so `allowBase` reads
+it with `splitHost` — the same reading `Allows` gives a destination, which is what makes it mean
+"the host a call under this profile would reach" and not an approximation of it. Only the host
+survives: a `base-url` with userinfo contributes its host, and `binder.absoluteBase` is still
+what refuses the userinfo, with the message naming `TALARIA_AUTH_BASIC`. It is the profile the
+caller *selected* — an unselected one in the same file allows nothing — and `--base-url` stays
+outside the set, with a profile active or without, because a flag is a per-invocation
+redirection and the twin case is exactly why withholding is right there.
+`cmd/talaria/hosts_test.go` is that boundary, one test per edge.
 
 Enforcement is `request.Inputs.Hosts` (a `HostSet`): `binder.credentials` asks
 `Allows(req.BaseURL + req.Path)` once — the string the executor will use, never `BaseURL` alone —
