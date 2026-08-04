@@ -8,13 +8,28 @@ context fills, quality drops, and the commit boundary stops matching the task bo
 
 ## Orient
 
+0. **If `.ralph/VERIFY_FAILED.md` exists, read it before anything else.** The loop runs the
+   stack's build, lint and test commands after every iteration that commits, and rolls the
+   commit back if any of them fails. That file is what the last iteration left behind: the
+   command that failed and the tail of its output. The work is gone; the mistake is not.
+   Fix the cause first, and delete the file in the commit that fixes it. Do not re-attempt
+   the same approach without reading why it failed.
 1. Read `.ralph/stack.json` — the test, build, and lint commands for this project.
-2. Read `tasks.json`. Pick the highest-priority task with `done: false`. You decide priority:
-   respect `depends_on`, prefer whatever unblocks the most other work, and prefer CRIT-derived
-   fix tasks over everything else.
-3. Read **only your task's section** of the plan file — `plan_file` in `tasks.json`,
-   lines `line_start` to `line_end`. Reading the whole plan wastes the context you need for
-   the actual work.
+2. Read `tasks.json` and pick your task:
+   - **If any task has `"kind": "fix"` and `done: false`, take the lowest-numbered one.
+     No exceptions, whatever else looks more urgent.** A review cycle appended those, and
+     the loop's fix round ends when they are all closed — picking a feature task instead
+     stalls that round against a condition it cannot meet.
+   - Otherwise pick the highest-priority task with `done: false`. You decide priority:
+     respect `depends_on` and prefer whatever unblocks the most other work.
+3. Read **only your task's section** of the plan file (`plan_file` in `tasks.json`). Find it by
+   its heading — `### Task <id>:` — with grep, and read from there to the next `### Task`.
+   `line_start`/`line_end` are a hint, not the truth: a build iteration that appends a note to
+   an earlier section shifts every line below it, and on 2026-08-04 every range in the file was
+   between 9 and 55 lines stale, so iterations were reading a neighbouring task's section.
+   **If the heading at `line_start` is not your task's, trust the heading and carry on** —
+   and fix the ranges in `tasks.json` when you update it at the end.
+   Reading the whole plan wastes the context you need for the actual work.
 4. Read any conventions files listed in `.ralph/stack.json` (`conventions_files`).
 5. Check `.ralph/stack.json` `notes` for anything that will bite you (services that must run,
    required env vars, pre-commit hooks that rewrite code).
@@ -31,10 +46,23 @@ Follow the task's test-first structure:
 right reason* — missing behaviour, not a typo or an import error. A test that fails for the
 wrong reason proves nothing.
 
+Write the smallest set that pins the behaviour, and **at least one hostile case**: malformed,
+oversized, attacker-controlled, or crossing a trust boundary. The existing suite is 2.4x the
+production code and caught none of the first review's 32 findings, because it only ever asserted
+what the feature should do. Bulk is not coverage — one test that fails on the defect beats six
+that restate the happy path.
+
+Before writing a test, ask what change would turn it red. If the only answer names an internal
+function rather than a behaviour, do not write it: it will break on the next refactor and protect
+nothing. Do not test what `golangci-lint` already enforces.
+
 **Green** — Write the minimum implementation that passes. Then run the full suite
 (`test_command`) and confirm everything is green, not just your new tests.
 
-**Refactor** — Only if the task calls for it. Stay green.
+**Refactor** — After green, before committing. Not optional, and this is where the suite stays
+lean: remove the duplication the change introduced, and delete any test the new one subsumes,
+naming it in the commit message. Tests are code — read, maintained and believed — so a redundant
+one costs on every future iteration. Stay green throughout.
 
 If the task is a schema/config/scaffolding task with no red/green cycle, just do the work and
 run the verification the task specifies.
@@ -47,7 +75,8 @@ will ever be in a position to notice this particular thing.
 
 **Record observations in `.ralph/refactor-backlog.md`. Do not act on them.** Fixing a
 structural problem mid-task breaks the one-task rule, blows out the diff, and makes the commit
-stop matching the task. A compaction task will drain this backlog later. One line per
+stop matching the task. A refactor pass task will drain this backlog later. Create the file if
+it does not exist yet — you may be the first iteration to notice anything. One line per
 observation:
 
 ```

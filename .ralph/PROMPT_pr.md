@@ -18,49 +18,73 @@ git diff --stat "$BASE"...HEAD
 
 ## Write the PR body
 
-Write `.ralph/pr_body.md`. Write it for a reviewer who has not read the design doc and was
-not watching the loop run.
+Write `.ralph/pr_body.md` for one human reviewing alone, who did not watch the loop run and has
+finite attention. That attention is what this document allocates.
+
+**No filler.** Every line either changes where the reviewer looks or gets cut. No restating the
+diff, no "this PR implements the changes described above", no section written to look complete.
+An empty section is deleted, not filled — except where noted below, where absence is itself the
+information.
+
+**Never claim a check you did not run**, and **volunteer what you are unsure about**. A reviewer
+who finds a problem you knew of and did not mention discounts every future PR.
 
 ```markdown
 ## Summary
 
-[2–4 sentences: what this delivers and why. Lead with user-visible impact, not file counts.]
+[2-3 sentences, user-visible terms.]
 
-## What changed
+## Read in this order
 
-- [Substantive change, grouped by area — not a file listing]
-- [Another]
+[3-6 entries, each a file with one clause on why it comes here. Start with whatever makes the rest
+legible — usually a type, not a command.]
 
-## Design doc
+## Look hardest at
 
-`<path to design doc>`
+[Ranked, highest risk first. Each: what, why it is risky, and the question to ask. Cover, when
+present: anything touching a credential or what reaches the wire; changes to a published contract;
+where you deviated from the plan and why; code you rewrote more than once — that is the best
+predictor you have; anywhere tests pass but you are not confident.
 
-## Verification
+If nothing in the branch touches credentials, say that in one line. Silence reads as an omission.]
 
-- Test command: `<test_command from stack.json>`
-- Status: [what the final suite run reported]
+## Skim
 
-## Review
+[The mechanical bulk, with line counts, from `git diff --stat`: renames, moved code, generated
+files, repeated table cases. "1,800 of 2,400 lines are a test table and a file move" is the single
+most useful sentence in the document.]
 
-Automated review ran <N> cycle(s), no CRIT findings outstanding.
+## Contract changes
 
-[If REVIEW_FINDINGS.md has WARN/INFO entries, list them here under
-"Outstanding non-blocking findings" with file:line and one line each.
-If there are none, say "No outstanding findings."]
+[Exit codes, envelope fields, flag names, output shapes, config keys — anything a script breaks on.
+Before and after, one line each. "None" if none.]
 
-## Notes for the reviewer
+## Tests and verification
 
-[Anything genuinely worth a human's attention: deliberate tradeoffs, deferred work,
-assumptions the loop made, places where implementation diverged from the design doc and why.
-If there is nothing, omit this section entirely.]
+- Suite: [count], [+/-N] on base. Added: [what hostile cases are now covered].
+- **Deleted: every removed test, by name, with why.** Highest-suspicion edit in any diff.
+- `<build_command>` / `<lint_command>` / `<test_command>` — results, all run after the final commit.
+- Race: `.github/workflows/race.yml` runs it on this PR; say whether you also ran it locally.
+- **Not verified:** [what rests on argument rather than a test. "Nothing" only if true.]
+
+## Outstanding
+
+[WARN/INFO from REVIEW_FINDINGS.md, file:line, one line each. Anything deliberately not fixed, and
+why — the reviewer may overturn it. Tracked debt added: `grep -rn "TRACKED DEBT"`. "None" if none.]
 
 ---
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
 
-Be accurate about verification status. If the last suite run had failures, say so plainly —
-do not write "all tests pass" unless you confirmed it. An inaccurate PR body is worse than a
-sparse one, because it costs the reviewer their trust in every other line.
+Gather the facts, do not recall them:
+
+```bash
+BASE=$(jq -r .base_branch .ralph/stack.json)
+git diff --stat "$BASE"...HEAD
+git log --oneline "$BASE"..HEAD
+git diff "$BASE"...HEAD -- '*_test.go' | grep '^-func Test'
+grep -rn "TRACKED DEBT" --include='*.go' --include='*.yml' .
+```
 
 ## Create the PR
 

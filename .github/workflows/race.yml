@@ -1,0 +1,39 @@
+# The race detector, on its own schedule.
+#
+# It lives outside ci.yml deliberately. ci.yml runs the three commands recorded
+# in .ralph/stack.json verbatim — internal/ci/workflow_test.go enforces that, so
+# that what CI checks and what the ralph loop checks after every iteration are
+# the same thing, and neither can drift into being a different gate.
+#
+# `-race` cannot be one of those commands. The loop runs test_command after
+# every iteration that commits, and the suite is 11s clean against 1m41s under
+# the detector: paying that on each of ~30 iterations spends most of an hour to
+# re-test unchanged packages. So the fast suite gates the loop and the detector
+# gates the branch, which is the boundary each is actually good at.
+#
+# internal/ci/workflow_test.go's TestRaceWorkflowRunsTheDetector reads this file,
+# so deleting it or dropping the flag fails the suite rather than going quiet.
+name: Race
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.0"
+
+      # -count=1 defeats the test cache: a cached pass was recorded without the
+      # detector and would report green for a run that never happened.
+      - name: Test with the race detector
+        run: go test -race -count=1 ./...

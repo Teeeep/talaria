@@ -32,8 +32,14 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+          install-mode: binary
+          args: --version
+
       - name: Lint
-        run: 'test -z "$(gofmt -l .)" && go vet ./...'
+        run: 'test -z "$(gofmt -l .)" && go vet ./... && golangci-lint run ./...'
 
       - name: Test
         run: go test ./...

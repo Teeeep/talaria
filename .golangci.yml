@@ -1,0 +1,84 @@
+version: "2"
+
+# Linter set chosen against a labelled dataset rather than a blog post: the 87
+# findings in docs/review/, from five multi-reviewer passes over the phase-2a
+# attempt. Each exclusion below records why, because an unexplained exclusion is
+# how a linter becomes decoration.
+#
+# What the set actually caught on first run, honestly scored:
+#   noctx / contextcheck  3 sites, all one class — an HTTP request or a
+#                         subprocess built without a context. Two of them are
+#                         cycle-2 finding 8 and the curl-preflight hang, each of
+#                         which cost a multi-hour four-reviewer pass to find.
+#   unused                1 site — validateWith, orphaned when `talaria run` was
+#                         removed on 2026-08-03 and never swept.
+#   bodyclose             1 site, FALSE — internal/validate builds a synthetic
+#                         *http.Response over io.NopCloser(bytes.NewReader),
+#                         which owns no descriptor.
+#   gosec G101/G302       2 sites, FALSE — an env-var name prefix is not a
+#                         credential, and 0700 is correct for a directory.
+#   errcheck/staticcheck  the rest: best-effort writes to stderr and style.
+#
+# So: one class of real defect, found in seconds, that humans found in hours.
+# That is the case for the tool, and it is narrower than "linters catch bugs".
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - noctx # a request or subprocess with no context — the class it earned its place on
+    - contextcheck # a context dropped between call frames
+    - errorlint # == on a wrapped error; clierr wraps everywhere
+    - gosec # file modes, path joins, subprocess construction
+    - nilerr # returning nil after a non-nil error
+    - makezero # append to a non-zero-length make, an aliasing footgun
+    - bodyclose # kept for internal/spec's real fetches; see the exclusion below
+  settings:
+    errcheck:
+      # A deferred Close on a read handle releases nothing a caller can act on.
+      # A dropped error on a *write* path is the cache-poisoning class, and is
+      # not excluded here.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - fmt.Fprintf
+        - fmt.Fprintln
+  exclusions:
+    presets:
+      - common-false-positives
+    rules:
+      # G101 fires on the *name* of an environment variable. TALARIA_AUTH_APIKEY_
+      # is the prefix a scheme name is appended to; the value never appears here.
+      - path: internal/config/auth\.go
+        text: "G101"
+        linters: [gosec]
+      # G302 wants a mode of 0600 or less. That rule is about files: a directory
+      # at 0600 cannot be entered by its owner. 0700 is the intended mode and
+      # internal/curl tests it.
+      - text: "G302"
+        linters: [gosec]
+      # internal/validate never performs a request. buildResponse assembles an
+      # *http.Response over io.NopCloser(bytes.NewReader(…)) so the library can
+      # validate bytes already in hand — there is no connection to leak.
+      - path: internal/validate/
+        linters: [bodyclose]
+      # internal/canary is test-only (CLAUDE.md), a fixture walking its own
+      # temp tree. G122's symlink-TOCTOU concern is about untrusted roots.
+      - path: internal/canary/
+        linters: [gosec]
+      # G104 duplicates errcheck, which is configured above with reasons; two
+      # linters reporting one unchecked Close is noise, not defence in depth.
+      - text: "G104"
+        linters: [gosec]
+      # TRACKED DEBT (phase-2a task 1): the call command does not thread
+      # cmd.Context() into the binder. It is the same class as the two noctx
+      # waivers in internal/spec and internal/curl and is fixed with them; this
+      # exclusion is deleted in that commit.
+      - path: cmd/talaria/root\.go
+        linters: [contextcheck]
+      # Tests assert on the failure itself, and a test server's unchecked Write
+      # is not the class this set exists to catch.
+      - path: _test\.go
+        linters: [errcheck, gosec, noctx, bodyclose]
+
+formatters:
+  enable:
+    - gofmt

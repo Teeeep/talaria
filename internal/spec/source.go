@@ -114,7 +114,12 @@ func (l *Loader) fetch(url string) ([]byte, error) {
 		client = &http.Client{Timeout: fetchTimeout}
 	}
 
-	resp, err := client.Get(url)
+	// TRACKED DEBT (phase-2a task 1): this is cycle-2 finding 8 — a spec fetch is a
+	// wait the signal context cannot reach, so Ctrl-C during one costs the full
+	// fetchTimeout. Fixing it threads a context through Load and is a signature
+	// change across every caller, so it gets a task and a test, not a drive-by.
+	// Remove this waiver in the commit that fixes it; the linter is the checker.
+	resp, err := client.Get(url) //nolint:noctx // phase-2a task 1
 	if err != nil {
 		return nil, clierr.SpecLoad("fetching spec %s: %w", url, err)
 	}
@@ -166,7 +171,7 @@ func writeCache(path string, data []byte) {
 	if err != nil {
 		return
 	}
-	defer os.Remove(tmp.Name())
+	defer os.Remove(tmp.Name()) //nolint:errcheck // Best effort: the rename below usually wins the race with it.
 
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
@@ -180,5 +185,7 @@ func writeCache(path string, data []byte) {
 		return
 	}
 
-	os.Rename(tmp.Name(), path)
+	// Caching is an optimisation, as the doc comment says: a spec that loaded is
+	// not reported broken because it could not be written down.
+	os.Rename(tmp.Name(), path) //nolint:errcheck // Deliberate; see above.
 }

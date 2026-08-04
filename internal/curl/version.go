@@ -39,7 +39,10 @@ var (
 // one.
 func preflight(path string) error {
 	preflightOnce.Do(func() {
-		out, err := exec.Command(path, "--version").Output()
+		// TRACKED DEBT (phase-2a task 1): same class as the spec fetch — a
+		// subprocess with no context is a wrapper script on PATH able to wedge
+		// the process before it has done anything (DESIGN.md §3.1).
+		out, err := exec.Command(path, "--version").Output() //nolint:noctx // phase-2a task 1
 		if err != nil {
 			preflightErr = clierr.RequestFailed("cannot run %s --version: %w", path, err)
 			return
@@ -67,11 +70,11 @@ func checkVersion(output string) error {
 	// curl with a 20-digit major version is above the floor either way.
 	major, err := strconv.Atoi(match[1])
 	if err != nil {
-		return nil
+		return nil //nolint:nilerr // Out of range means a 20-digit major, which is above the floor.
 	}
 	minor, err := strconv.Atoi(match[2])
 	if err != nil {
-		return nil
+		return nil //nolint:nilerr // As above: the regexp matched \d+, so this is range, not shape.
 	}
 
 	if major > minMajor || (major == minMajor && minor >= minMinor) {

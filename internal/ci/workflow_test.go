@@ -228,3 +228,42 @@ func setupGoVersion(w workflow) (string, bool) {
 
 	return "", false
 }
+
+// racePath is the second workflow: the race detector, kept out of ci.yml because
+// ci.yml may only run the commands .ralph/stack.json records, and the loop runs
+// those after every iteration. See .github/workflows/race.yml for the split.
+const racePath = "../../.github/workflows/race.yml"
+
+// TestRaceWorkflowRunsTheDetector keeps the detector from quietly disappearing.
+// It was absent from CI entirely until 2026-08-04 while the suite ran green
+// locally, which is the same shape as the ralph loop reading three commands and
+// never running them: a gate everyone believed in and nothing executed.
+func TestRaceWorkflowRunsTheDetector(t *testing.T) {
+	raw, err := os.ReadFile(filepath.FromSlash(racePath))
+	if err != nil {
+		t.Fatalf("reading the race workflow: %v", err)
+	}
+
+	var w workflow
+	if err := yaml.Unmarshal(raw, &w); err != nil {
+		t.Fatalf("parsing %s as YAML: %v", racePath, err)
+	}
+
+	var ran string
+	for _, job := range w.Jobs {
+		for _, step := range job.Steps {
+			if strings.Contains(step.Run, "-race") {
+				ran = step.Run
+			}
+		}
+	}
+
+	if ran == "" {
+		t.Fatalf("%s runs nothing with -race, so the detector gates nothing", racePath)
+	}
+	// A cached pass was recorded without the detector; -count=1 is what makes
+	// the run real rather than a replay of one that never used it.
+	if !strings.Contains(ran, "-count=1") {
+		t.Errorf("the race step is %q, want -count=1 so the test cache cannot answer for it", ran)
+	}
+}

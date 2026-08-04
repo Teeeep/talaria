@@ -7,14 +7,18 @@
 #
 # Options:
 #   --resume             Continue from .ralph/state
-#   --from PHASE         Force start phase: stack|plan|build|review|pr
+#   --from PHASE         Force start phase: stack|plan|build|review|consolidate|pr
 #   --review-every N     Run a review pass every N build iterations (default 5; 0 = only at the end)
 #   --no-pr              Stop after review; do not open a PR
 #   --no-tracker         Do not require Loop Tracker
 #   --plan-max N         Max plan iterations (default 5)
 #   --build-max N        Max build iterations (default: 2x task count, min 10)
 #   --review-max N       Max review cycles (default 3)
-#   --time-budget SECS   Wall-clock budget (default 14400 = 4h)
+#   --branch-cap N       Insertions against the base branch before the run stops to be
+#                        merged (default 4000; 0 disables). A branch nobody can review
+#                        is not reviewed.
+#   --time-budget SECS   Wall-clock budget (default: none — the phase runs until its
+#                        iteration cap or completion, however long that takes)
 #
 # Exit codes: 0 shipped/complete, 1 error, 2 stopped at a cap (resumable)
 
@@ -32,10 +36,16 @@ NO_TRACKER=false
 PLAN_MAX=5
 BUILD_MAX=0            # 0 = derive from task count
 REVIEW_MAX=3
-REVIEW_EVERY=5        # review every N build iterations; 0 = only once, after all tasks
-TIME_BUDGET=14400
+REVIEW_EVERY=6        # review every N build iterations; 0 = only once, after all tasks.
+                      # 6 = the planner's block size (5 feature tasks + 1 refactor pass), so
+                      # each checkpoint lands just after a refactor pass rather than before it.
+TIME_BUDGET=99999999  # ~3 years: the work is bounded by the task list, not by the clock.
+                      # The iteration caps (BUILD_MAX, REVIEW_MAX) are the real stops; a
+                      # wall-clock stop only ever interrupted a phase mid-way.
 RETRY_MAX=5
 RETRY_DELAY=30
+BRANCH_CAP=${BRANCH_CAP:-4000}  # insertions against the base branch before the run stops
+                                # to be merged. Override with --branch-cap or the env var.
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,6 +58,7 @@ while [ $# -gt 0 ]; do
     --review-max)   REVIEW_MAX="$2"; shift 2 ;;
     --review-every) REVIEW_EVERY="$2"; shift 2 ;;
     --time-budget)  TIME_BUDGET="$2"; shift 2 ;;
+    --branch-cap)   BRANCH_CAP="$2"; shift 2 ;;
     -*)             echo "Unknown option: $1" >&2; exit 1 ;;
     *)              DESIGN_DOC="$1"; shift ;;
   esac
@@ -201,6 +212,23 @@ has_open_tasks() {
   [ "${incomplete:-0}" -gt 0 ]
 }
 
+# Tasks a review cycle appended, tagged `"kind": "fix"` by PROMPT_review_plan.md.
+# The interim fix round is bounded to these. Its predecessor used all_tasks_done, so the
+# first checkpoint review that found a CRIT built every remaining feature task inside the
+# review phase — and no later checkpoint ever fired, which defeats --review-every entirely.
+count_open_fix_tasks() {
+  [ -f tasks.json ] || { echo 0; return; }
+  local c
+  c=$(jq '[.tasks[] | select(.done != true and .kind == "fix")] | length' tasks.json 2>/dev/null || echo 0)
+  echo "${c:-0}"
+}
+
+# Done-condition for the fix round: every fix task closed. Feature tasks still open are
+# not this round's business — the checkpointed build loop picks them back up.
+fix_tasks_done() {
+  [ "$(count_open_fix_tasks)" -eq 0 ]
+}
+
 tracker_phase() {
   [ "$NO_TRACKER" = true ] && return 0
   local phase="$1"
@@ -217,6 +245,59 @@ tracker_phase() {
 # ── Iteration driver ─────────────────────────────────────────────────────────
 # run_iterations <max> <prompt> <type> <no_change_limit> <done_check_fn|->
 # Exit: 0 done-condition met | 2 converged | 3 max reached | 4 out of time
+
+# ── The mechanical gate ──────────────────────────────────────────────────────
+# Until 2026-08-04 this loop read build_command, lint_command and test_command
+# out of stack.json and only ever *logged* them. The single signal it used to
+# judge an iteration was whether HEAD moved, so "the suite is green" was always
+# the build agent's own prose about itself, and ten hours of work produced 87
+# review findings with nothing able to contradict it. The agent asserts; the
+# loop verifies.
+verify_head() {
+  local cmd
+  for key in build_command lint_command test_command; do
+    cmd=$(jq -r ".$key // empty" "$STACK_FILE")
+    [ -z "$cmd" ] && continue
+    log "verify: $cmd"
+    if ! bash -c "$cmd" >>"$LOG" 2>&1; then
+      log "VERIFY FAILED: $cmd"
+      {
+        echo "# The last commit did not pass the stack commands"
+        echo
+        echo "Failed: \`$cmd\`"
+        echo
+        echo "This ran after an iteration committed, and the commit was rolled back."
+        echo "**Read this before taking a task.** Whatever you were doing last iteration"
+        echo "left the tree failing this command; the work is gone but the mistake is not."
+        echo "Fix the cause, do not re-attempt the same approach blind, and delete this file"
+        echo "in the commit that fixes it."
+        echo
+        echo '```'
+        tail -n 60 "$LOG"
+        echo '```'
+      } > "$RALPH_DIR/VERIFY_FAILED.md"
+      return 1
+    fi
+  done
+  rm -f "$RALPH_DIR/VERIFY_FAILED.md"
+  return 0
+}
+
+# A branch nobody can review is a branch nobody does review. The phase-2a
+# post-mortem: +20,669 insertions over 104 files, re-read in full five times,
+# and the reviewer's denominator never shrank. SmartBear's Cisco study puts the
+# effective ceiling at 200-400 LOC per review; this is a loose multiple of that,
+# meant to force a merge rather than to be precise.
+branch_too_large() {
+  # 0 disables the cap. That is not a convenience: the phase-2a A/B needs one arm
+  # run under attempt 1's conditions, and a run that stops early is not comparable
+  # to one that never stopped. Outside an experiment, leave it on.
+  [ "$BRANCH_CAP" -eq 0 ] && return 1
+  local ins
+  ins=$(git diff --numstat "$BASE_BRANCH"...HEAD 2>/dev/null | awk '{s+=$1} END {print s+0}')
+  [ "${ins:-0}" -gt "$BRANCH_CAP" ] && { echo "$ins"; return 0; }
+  return 1
+}
 
 run_iterations() {
   local max="$1" prompt="$2" itype="$3" nochange_limit="$4" done_fn="$5"
@@ -251,6 +332,32 @@ run_iterations() {
     else
       nochange=0
       log "New commit: $after"
+
+      # Verified before it is pushed, so a rollback is a local reset rather than
+      # a force-push, and a red commit never reaches the branch the reviewer reads.
+      if ! verify_head; then
+        log "Rolling back $after — it does not pass the stack commands."
+        git reset --hard "$before" >>"$LOG" 2>&1 \
+          || git revert --no-edit "$after" >>"$LOG" 2>&1 \
+          || log "ERROR: could not roll back $after — the tree needs a human."
+        nochange=$((nochange + 1))
+        log "Rolled back ($nochange/$nochange_limit consecutive iterations without a kept commit)"
+        if [ "$nochange" -ge "$nochange_limit" ]; then
+          log "Converged: $nochange_limit iterations produced nothing that verifies"
+          return 2
+        fi
+        sleep 5
+        continue
+      fi
+
+      local ins
+      if ins=$(branch_too_large); then
+        log "Branch is +$ins lines against $BASE_BRANCH (cap $BRANCH_CAP)."
+        log "Stopping so this can be reviewed and merged before it grows further."
+        push_changes
+        write_escalation "branch exceeded the review budget (+$ins lines against $BASE_BRANCH)" "0"
+        return 5
+      fi
     fi
 
     if [ "$done_fn" != "-" ] && "$done_fn"; then
@@ -284,6 +391,28 @@ count_repeats() {
   [ -f REVIEW_FINDINGS.md ] || { echo 0; return; }
   local c; c=$(grep -c '^\- \*\*Repeat-of:\*\* cycle' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
 }
+
+# The guardrails below are all about CRITs — their messages say so. Counting a
+# property across findings of *every* severity and comparing that total to the
+# CRIT count is an accident waiting for equal numbers, and it happened twice:
+# 2026-08-03 (2 design-blocked WARNs, 2 unrelated CRITs) and 2026-08-04 (1
+# design-blocked WARN, 1 unrelated CRIT). Both times the loop stopped with
+# "every CRIT is blocked on a design decision" over CRITs that were marked
+# `Blocked-by: none` and were fixable. These read the two fields per finding.
+count_crits_with() {
+  [ -f REVIEW_FINDINGS.md ] || { echo 0; return; }
+  awk -v field="$1" -v want="$2" '
+    # $3 is the value, not $NF: "Repeat-of" reads "cycle 1 findings 3 and 4
+    # (partial fix)", so the last field is a word from the prose.
+    function flush() { if (sev == "CRIT" && val == want) n++; sev = ""; val = "" }
+    /^## Finding/                 { flush() }
+    /^\- \*\*Severity:\*\*/       { sev = $3 }
+    $0 ~ "^\\- \\*\\*" field ":"  { val = $3 }
+    END                           { flush(); print n+0 }
+  ' REVIEW_FINDINGS.md
+}
+count_design_blocked_crits() { count_crits_with "Blocked-by" "design"; }
+count_repeat_crits()         { count_crits_with "Repeat-of"  "cycle"; }
 
 # Everything the loop could not resolve on its own, in one file for the human.
 write_escalation() {
@@ -420,6 +549,30 @@ phase_build() {
   return 1
 }
 
+# Findings are the most valuable thing a run produces and the working files at the repo
+# root are scratch: the next cycle deletes REVIEW_FINDINGS.md before the reviewer writes a
+# new one. Archive every cycle under a timestamp so nothing is ever overwritten, and later
+# work can cite a stable path instead of a file that changes under it.
+REVIEW_ARCHIVE_DIR="docs/review"
+
+archive_review() {
+  local cycle="$1" stamp
+  stamp=$(date -u +%Y%m%d-%H%M%S)
+  mkdir -p "$REVIEW_ARCHIVE_DIR"
+  [ -f REVIEW_FINDINGS.md ] \
+    && cp REVIEW_FINDINGS.md "$REVIEW_ARCHIVE_DIR/${stamp}-cycle${cycle}-findings.md"
+  [ -f REVIEW_ESCALATION.md ] \
+    && cp REVIEW_ESCALATION.md "$REVIEW_ARCHIVE_DIR/${stamp}-cycle${cycle}-escalation.md"
+  # Commit the archive by path so it survives even if the run dies here, and so it cannot
+  # be swept into an unrelated commit by whatever the next iteration stages.
+  if [ -n "$(git status --porcelain "$REVIEW_ARCHIVE_DIR" 2>/dev/null)" ]; then
+    git add "$REVIEW_ARCHIVE_DIR" 2>/dev/null || true
+    git commit -q -m "docs: archive review cycle $cycle findings" -- "$REVIEW_ARCHIVE_DIR" \
+      2>/dev/null || true
+  fi
+  log "Archived cycle $cycle review to $REVIEW_ARCHIVE_DIR/${stamp}-cycle${cycle}-*.md"
+}
+
 phase_review() {
   banner "PHASE 4/5 — REVIEW"
   set_phase review
@@ -471,27 +624,45 @@ phase_review() {
       return 1
     fi
 
-    local findings crits blocked repeats
+    local findings crits blocked repeats blocked_crits repeat_crits
     findings=$(count_findings)
     crits=$(count_crits)
     blocked=$(count_design_blocked)
     repeats=$(count_repeats)
+    blocked_crits=$(count_design_blocked_crits)
+    repeat_crits=$(count_repeat_crits)
     echo "$crits" >> "$RALPH_DIR/review_history"
     log "Findings: $findings total, $crits CRIT ($blocked design-blocked, $repeats repeat)"
+    log "Of the CRITs: $blocked_crits design-blocked, $repeat_crits repeat"
+    archive_review "$cycle"
 
     # ── Guardrails: stop rather than spin ────────────────────────────────────
     # Each of these means another cycle cannot help. Escalating beats burning the cap.
+    #
+    # All of them are scoped to CRITs. A design-blocked or repeating WARN is real
+    # information for the human, but it is not a reason to stop with a fixable CRIT
+    # on the floor — which is what the whole-file counts did, twice.
 
-    if [ "$blocked" -gt 0 ] && [ "$blocked" -eq "$crits" ]; then
+    if [ "$blocked_crits" -gt 0 ] && [ "$blocked_crits" -eq "$crits" ]; then
       log "All $crits CRIT finding(s) need a design decision this loop cannot make."
       write_escalation "every CRIT is blocked on a design decision" "$cycle"
       push_changes; unset RALPH_REVIEW_CYCLE; return 5
     fi
 
-    if [ "$repeats" -gt 0 ]; then
-      log "$repeats finding(s) survived a previous fix — the approach is not working."
-      write_escalation "$repeats finding(s) repeat after a failed fix" "$cycle"
+    if [ "$repeat_crits" -gt 0 ]; then
+      log "$repeat_crits CRIT finding(s) survived a previous fix — the approach is not working."
+      write_escalation "$repeat_crits CRIT finding(s) repeat after a failed fix" "$cycle"
       push_changes; unset RALPH_REVIEW_CYCLE; return 5
+    fi
+
+    # Non-CRIT versions of the two conditions above: worth saying out loud every
+    # cycle, not worth stopping for. They reach the human in REVIEW_FINDINGS.md,
+    # which is archived under docs/review/ whether or not an escalation is written.
+    if [ "$((blocked - blocked_crits))" -gt 0 ]; then
+      log "Note: $((blocked - blocked_crits)) non-CRIT finding(s) need a design decision — see REVIEW_FINDINGS.md."
+    fi
+    if [ "$((repeats - repeat_crits))" -gt 0 ]; then
+      log "Note: $((repeats - repeat_crits)) non-CRIT finding(s) repeat after a previous fix."
     fi
 
     # No progress: this cycle found at least as many CRITs as the last one. Fixing is
@@ -514,8 +685,8 @@ phase_review() {
       return 0
     fi
 
-    local fixable=$((crits - blocked))
-    log "Planning fixes for $fixable of $crits CRIT finding(s) ($blocked need a design decision)..."
+    local fixable=$((crits - blocked_crits))
+    log "Planning fixes for $fixable of $crits CRIT finding(s) ($blocked_crits need a design decision)..."
     run_claude "$RALPH_DIR/PROMPT_review_plan.md" "review_plan" || log "Review-plan had errors (continuing)"
     push_changes
 
@@ -528,16 +699,57 @@ phase_review() {
       push_changes; unset RALPH_REVIEW_CYCLE; return 5
     fi
 
-    run_iterations 0 "$RALPH_DIR/PROMPT_build.md" "review_fix" 3 all_tasks_done
-    local rc=$?
+    # Bound the fix round to the tasks this cycle created. A fix task may need a second
+    # iteration, so allow two apiece rather than exactly one.
+    local open_fixes rc
+    open_fixes=$(count_open_fix_tasks)
+    if [ "$open_fixes" -gt 0 ]; then
+      log "Fixing $open_fixes task(s) from cycle $cycle."
+      run_iterations "$((open_fixes * 2))" "$RALPH_DIR/PROMPT_build.md" "review_fix" 3 fix_tasks_done
+      rc=$?
+    else
+      # No task carries kind:"fix" — a tasks.json written before this field existed, or a
+      # planner that dropped it. Falling back to the whole backlog keeps the fixes from
+      # being skipped; it costs the checkpoint rhythm, which is the old behaviour anyway.
+      log "No kind:\"fix\" tasks present — falling back to the full backlog for this round."
+      run_iterations 0 "$RALPH_DIR/PROMPT_build.md" "review_fix" 3 all_tasks_done
+      rc=$?
+    fi
     [ "$rc" -eq 4 ] && return 4
     push_changes
     sleep 5
   done
 }
 
+# Between the last fix and the pull request: the branch is made true. Tests earn
+# their place, the shipped documents describe the binary that exists, and
+# CLAUDE.md describes this code rather than code that was deleted. Every later
+# iteration starts by reading those files, so a stale line in one is a wrong
+# instruction delivered with authority to everyone who comes after — CLAUDE.md
+# went 93 to 663 lines across one phase because every iteration added and none
+# removed. Behaviour changes are out of scope here and get reported, not made.
+phase_consolidate() {
+  banner "PHASE 5/6 — CONSOLIDATE"
+  set_phase consolidate
+  tracker_phase consolidate
+
+  local before after
+  before=$(head_sha)
+  run_claude "$RALPH_DIR/PROMPT_consolidate.md" "consolidate" || log "Consolidate had errors (continuing)"
+  after=$(head_sha)
+
+  if [ "$before" != "$after" ] && ! verify_head; then
+    log "Rolling back $after — the consolidation commit does not pass the stack commands."
+    git reset --hard "$before" >>"$LOG" 2>&1 || true
+    return 0   # a failed tidy-up must not block the PR the built work earned
+  fi
+
+  push_changes
+  return 0
+}
+
 phase_pr() {
-  banner "PHASE 5/5 — PULL REQUEST"
+  banner "PHASE 6/6 — PULL REQUEST"
   set_phase pr
   tracker_phase pr
 
@@ -567,7 +779,7 @@ phase_pr() {
 
 # ── Orchestration ────────────────────────────────────────────────────────────
 
-PHASES=(stack plan build review pr)
+PHASES=(stack plan build review consolidate pr)
 
 start_phase="stack"
 if [ -n "$FORCE_PHASE" ]; then

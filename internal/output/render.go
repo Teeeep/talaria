@@ -115,7 +115,7 @@ type prettyRenderer struct{ w io.Writer }
 // shape to print, so it falls back to JSON rather than emitting nothing.
 func (r prettyRenderer) Render(p Payload) error {
 	if p.Table.Empty() {
-		return jsonRenderer{w: r.w}.Render(p)
+		return jsonRenderer(r).Render(p)
 	}
 
 	tw := tabwriter.NewWriter(r.w, 0, 0, 2, ' ', 0)

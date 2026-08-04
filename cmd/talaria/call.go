@@ -374,20 +374,6 @@ func validateResponse(
 	return reportValidation(stderr, result, err)
 }
 
-// validateWith is validateResponse against a validator that is already built.
-// `run` makes one per suite rather than one per response, because building it
-// compiles every schema in the document.
-func validateWith(
-	stderr io.Writer,
-	validator *validate.Validator,
-	req *request.Request,
-	view *responseView,
-) *validate.Result {
-	result, err := validator.Response(validationInput(req, view))
-
-	return reportValidation(stderr, result, err)
-}
-
 // validationInput is the one conversion from a request and a redacted response
 // into what the validator reads, so `call` and `run` cannot check different
 // things.
