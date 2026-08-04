@@ -171,10 +171,17 @@ only `BodyArgv` as `--data-raw`; the other two become `--data-binary @path` / `-
 because a body a human or a CI job wrote is not a body the agent reading stdout already has
 (§3 principle 0). `--data-binary`, not `--data`: `--data` strips newlines out of a file, and
 `TestThePreviewedCommandSendsWhatTheCallSends` fails on a pretty-printed body file if you change
-it. And `callPayload` passes `view.Request.Body` through `redactors.Response.Body` — the same
-list history uses — because the body is raw `[]byte` and never becomes a `request.Value`, so it
-is the one display field no `Value` method protects. Never assign `string(req.Body.Data)` to a
-field a caller reads.
+it. And `callPayload` builds *every* display field from `displayRequest(req, red)` — a copy of
+the request whose `Body.Data` has been through `redactors.Response.Body`, the same list history
+uses — because the body is raw `[]byte` and never becomes a `request.Value`, so it is the one
+display field no `Value` method protects. One copy rather than a redaction per field, because
+the body feeds two surfaces — `request.body` and the `--data-raw` of `request.curl` — and
+redacting at each separately is how they drifted: the JSON field printed `<redacted>` while the
+curl line beside it carried the live token, in the field §5a promises is *"useless to
+exfiltrate"*. It is a copy, not a mutation, because `req` is what the executor sends and what
+`recordCall` stores. `assertCurlInlinesTheShownBody` (`cmd/talaria/call_redact_test.go`) is the
+agreement between the two. Never assign `string(req.Body.Data)` to a field a caller reads, and
+never hand `curl.Render` the unredacted `req`.
 
 **A table cell is escaped by the renderer, not by the command that builds it.** Every cell in
 `output.Table` is untrusted — a spec summary or description routinely contains real newlines,
@@ -196,7 +203,7 @@ the line the budget was meant to bound.
 exactly once, in the command's `RunE`, and the `corpus.Redactors` it returns is threaded from
 there into all three surfaces that redact: the binder (`buildRequest`/`buildReplay` take it as
 `red` and pass `red.Request` to `request.Inputs.Redactor`), the view (`callPayload`'s
-`red.Body`), and the store (`recordCall`). Both commands used to build it twice — once for the
+`displayRequest`), and the store (`recordCall`). Both commands used to build it twice — once for the
 binder, once for history — so a change making one surface's list configurable would have applied
 to only one of them, silently. Never call `newRedactors` below `RunE`; pass the value down.
 

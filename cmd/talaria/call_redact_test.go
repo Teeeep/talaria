@@ -161,6 +161,179 @@ func TestCallRedactsASecretInARequestBodyReadFromAFile(t *testing.T) {
 	}
 }
 
+// typedBodyCanary is a credential the caller typed into --body. Being typed
+// makes the *bytes* the caller's own — which is why the reproduction inlines
+// them — but a credential-shaped field inside them is still a credential, and
+// §5a promises the emitted curl is "useless to exfiltrate".
+const typedBodyCanary = "typed-refresh-CANARY-9f22c1"
+
+func TestCallRedactsASecretInABodyTheCallerTyped(t *testing.T) {
+	sent := `{"refresh_token":"` + typedBodyCanary + `"}`
+
+	srv := newCallServer(t, jsonPet)
+
+	code, stdout, stderr := runCall(t,
+		"testdata/call.yaml", "createPet", "--allow-mutations", "--body", sent,
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
+	if code != 0 {
+		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	// The server received the real bytes. Redaction answers what talaria prints,
+	// never what it sends.
+	if got := srv.received().Body; got != sent {
+		t.Errorf("the server received %q, want the typed bytes %q", got, sent)
+	}
+
+	if strings.Contains(stdout, typedBodyCanary) {
+		t.Fatalf("call printed a secret out of the typed request body:\n%s", stdout)
+	}
+
+	got := decodeCall(t, stdout)
+	var body struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal([]byte(got.Request.Body), &body); err != nil {
+		t.Fatalf("request.body is not JSON: %v", err)
+	}
+	if body.RefreshToken != "<redacted>" {
+		t.Errorf("request.body.refresh_token = %q, want <redacted>", body.RefreshToken)
+	}
+	assertCurlInlinesTheShownBody(t, got)
+}
+
+// TestCallRedactsAConfiguredBodyPathInTheEmittedCurl is the configurable half:
+// redact.body-paths is one list, so a path it names is hidden on every surface
+// or the setting is a half-measure.
+func TestCallRedactsAConfiguredBodyPathInTheEmittedCurl(t *testing.T) {
+	writeRedactConfig(t, "redact:\n  body-paths:\n    - data.token\n")
+
+	code, stdout, stderr := runCall(t,
+		"testdata/call.yaml", "createPet", "--allow-mutations",
+		"--body", `{"data":{"token":"`+typedBodyCanary+`"}}`,
+		"--dry-run", "--output", "json")
+	if code != 0 {
+		t.Fatalf("call --dry-run = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	if strings.Contains(stdout, typedBodyCanary) {
+		t.Fatalf("call printed a configured secret body path:\n%s", stdout)
+	}
+
+	got := decodeCall(t, stdout)
+	assertCurlInlinesTheShownBody(t, got)
+
+	var body struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(got.Request.Body), &body); err != nil {
+		t.Fatalf("request.body is not JSON: %v", err)
+	}
+	if body.Data.Token != "<redacted>" {
+		t.Errorf("request.body.data.token = %q, want <redacted>", body.Data.Token)
+	}
+}
+
+// assertCurlInlinesTheShownBody is the agreement the drift was: request.curl
+// must carry exactly the bytes request.body shows, quoted for a shell. Two
+// fields redacted at two call sites is how one of them kept printing the live
+// value.
+func assertCurlInlinesTheShownBody(t *testing.T, got callExecJSON) {
+	t.Helper()
+
+	want := `--data-raw '` + strings.ReplaceAll(got.Request.Body, "'", `'\''`) + `'`
+	if !strings.Contains(got.Request.Curl, want) {
+		t.Errorf("request.curl = %s\nwant it to inline %s", got.Request.Curl, want)
+	}
+}
+
+// TestCallRedactsANestedArrayElementInTheEmittedCurl: a path naming a field of
+// every element of an array is the shape a token list takes, and the curl
+// surface has to honour it element by element rather than only at the root.
+func TestCallRedactsANestedArrayElementInTheEmittedCurl(t *testing.T) {
+	writeRedactConfig(t, "redact:\n  body-paths:\n    - items.access_token\n")
+
+	code, stdout, stderr := runCall(t,
+		"testdata/call.yaml", "createPet", "--allow-mutations",
+		"--body", `{"items":[{"access_token":"`+typedBodyCanary+`"},{"access_token":"`+typedBodyCanary+`"}]}`,
+		"--dry-run", "--output", "json")
+	if code != 0 {
+		t.Fatalf("call --dry-run = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	if strings.Contains(stdout, typedBodyCanary) {
+		t.Fatalf("call printed a secret nested in a body array:\n%s", stdout)
+	}
+
+	got := decodeCall(t, stdout)
+	assertCurlInlinesTheShownBody(t, got)
+
+	var body struct {
+		Items []struct {
+			AccessToken string `json:"access_token"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(got.Request.Body), &body); err != nil {
+		t.Fatalf("request.body is not JSON: %v", err)
+	}
+	if len(body.Items) != 2 {
+		t.Fatalf("request.body.items has %d elements, want 2", len(body.Items))
+	}
+	for i, item := range body.Items {
+		if item.AccessToken != "<redacted>" {
+			t.Errorf("request.body.items[%d].access_token = %q, want <redacted>", i, item.AccessToken)
+		}
+	}
+}
+
+// TestCallInlinesABodyTheRedactorCannotRewriteUnchanged covers the inputs that
+// have no JSON document to rewrite. The redactor returns those verbatim, so the
+// emitted command must still carry them byte for byte, correctly quoted — a
+// reproduction that mangles the body sends something else than the call did.
+func TestCallInlinesABodyTheRedactorCannotRewriteUnchanged(t *testing.T) {
+	// A configured path none of these bodies has: the redactor runs and finds
+	// nothing to rewrite, which is the pass-through the cases are about.
+	writeRedactConfig(t, "redact:\n  body-paths:\n    - data.token\n")
+
+	cases := []struct {
+		name string
+		body string
+		// want is the whole quoted --data-raw word, so the assertion covers the
+		// shell escaping as well as the bytes.
+		want string
+	}{
+		{"not JSON at all", "plain text, not JSON", `'plain text, not JSON'`},
+		{"a bare null", "null", `'null'`},
+		{"an empty body", "", `''`},
+		{
+			"a single quote, which is also what Render quotes with",
+			`{"note":"it's here"}`,
+			`'{"note":"it'\''s here"}'`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, stdout, stderr := runCall(t,
+				"testdata/call.yaml", "createPet", "--allow-mutations",
+				"--body", tc.body, "--dry-run", "--output", "json")
+			if code != 0 {
+				t.Fatalf("call --dry-run = %d, want 0; stderr: %s", code, stderr)
+			}
+
+			got := decodeCall(t, stdout)
+			if got.Request.Body != tc.body {
+				t.Errorf("request.body = %q, want the body unchanged %q", got.Request.Body, tc.body)
+			}
+			if want := "--data-raw " + tc.want; !strings.Contains(got.Request.Curl, want) {
+				t.Errorf("request.curl = %s\nwant it to inline %s", got.Request.Curl, want)
+			}
+		})
+	}
+}
+
 // TestCallStillShowsABodyTheCallerTyped is the other half: --body given as a
 // literal is already in the agent's hands, so the reproduction inlines it
 // (DESIGN.md §3.4). Only the redaction of a credential-shaped field applies.

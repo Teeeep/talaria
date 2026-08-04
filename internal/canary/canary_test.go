@@ -1225,6 +1225,37 @@ func TestABodyFileSecretReachesNoOutputSurface(t *testing.T) {
 	assertNoLeak(t, value, append(res.surfaces(), h.written()...))
 }
 
+// TestALiteralBodySecretReachesNoOutputSurface is the counterpart the file case
+// above could not cover: `--body @file` takes bodyDirective's *referenced*
+// branch, so the emitted curl names the path and never inlines a byte. A body
+// typed on the command line takes the inlining branch, which is the one that
+// printed a live credential into the field §5a promises is "useless to
+// exfiltrate".
+//
+// The bytes stay the caller's own — the reproduction still inlines a body — but
+// a credential-shaped field inside them is redacted on the way out.
+func TestALiteralBodySecretReachesNoOutputSurface(t *testing.T) {
+	t.Parallel()
+
+	value := canary.Value("literalbody")
+	h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": canary.Value("literalbearer")})
+	srv := newServer(t, `{"ok":true}`)
+
+	sent := `{"refresh_token":"` + value + `"}`
+
+	res := h.runOK("call", specPath, "createThing",
+		"--base-url", srv.URL, "--allow-host", "127.0.0.1",
+		"--allow-mutations", "--body", sent, "--output", "json")
+
+	// The body reached the server. Without this the leak assertions below would
+	// pass for a talaria that sent no body at all.
+	if got := srv.received().Body; got != sent {
+		t.Fatalf("the server received %q, want the typed bytes", got)
+	}
+
+	assertNoLeak(t, value, append(res.surfaces(), h.written()...))
+}
+
 // TestAProfileReplayResolvesFromTheCurrentProfile holds the rule Task 3 made
 // structural when it deleted replayableEnv: a stored entry names a credential,
 // it does not carry one, so a replay resolves against the profile in force

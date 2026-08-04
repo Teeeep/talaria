@@ -96,3 +96,10 @@ that pass — and task 6's before it — deliberately did not do, and why.
   seam is `build_test.go` — parameter binding, path templating, method, credentials/withholding —
   leaving the helpers and the Request/Value/render cases in `request_test.go`. Task 25 added
   ~110 lines to it and had nowhere else to put them.
+
+- `cmd/talaria/call_redact_test.go` (469 lines) — two concerns in one file: what `call` redacts
+  out of the *response* it received (Set-Cookie, configured body paths) and what it redacts out
+  of the *request* it is about to send (the body, on both the `request.body` and `request.curl`
+  surfaces). Task 26 added ~150 lines to the second half and `writeRedactConfig` is the only
+  shared helper. The seam is `call_body_redact_test.go` for the request-body cases, leaving the
+  response cases and the helper where they are.

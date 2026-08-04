@@ -420,18 +420,19 @@ func callPayload(
 	result *validate.Result,
 	red *secret.ResponseRedactor,
 ) output.Payload {
+	shown := displayRequest(req, red)
 	view := callView{
 		DryRun: resp == nil,
 		Request: requestView{
-			Curl:    curl.Render(req),
-			Method:  req.Method,
-			URL:     curl.URL(req),
-			Headers: pairMap(req.Headers),
-			Cookies: pairMap(req.Cookies),
+			Curl:    curl.Render(shown),
+			Method:  shown.Method,
+			URL:     curl.URL(shown),
+			Headers: pairMap(shown.Headers),
+			Cookies: pairMap(shown.Cookies),
 		},
 	}
-	if req.Body != nil {
-		view.Request.Body = string(red.Body(req.Body.Data))
+	if shown.Body != nil {
+		view.Request.Body = string(shown.Body.Data)
 	}
 	view.CredentialsWithheld = req.Withheld
 
@@ -458,6 +459,32 @@ func callPayload(
 	}
 
 	return output.Payload{Data: view, Table: output.Table{Rows: rows}}
+}
+
+// displayRequest returns the one request every display field is built from: req
+// with its body replaced by the redacted copy.
+//
+// The body is the only field that needs it — a request.Value renders itself
+// symbolically or redacted and never yields a resolved credential — but it
+// feeds two surfaces, `request.body` and the `--data-raw` of `request.curl`,
+// and redacting at each of them separately is how they came to disagree: the
+// JSON field printed <redacted> while the curl line beside it carried the live
+// token, in the field §5a promises is "useless to exfiltrate".
+//
+// A copy, not a mutation: req is what the executor sends, and what recordCall
+// hands the store, both of which need the bytes the caller actually meant.
+func displayRequest(req *request.Request, red *secret.ResponseRedactor) *request.Request {
+	if req.Body == nil {
+		return req
+	}
+
+	body := *req.Body
+	body.Data = red.Body(req.Body.Data)
+
+	shown := *req
+	shown.Body = &body
+
+	return &shown
 }
 
 // statusLine is the pretty renderer's one-line summary of a response.
