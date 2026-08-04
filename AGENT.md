@@ -203,12 +203,23 @@ That command is runnable in a shell where the variable is set and useless to any
 it freely in reports. The leading `-q` is the one talaria itself passes: it stops curl reading
 `~/.curlrc`, whose directives would otherwise apply to the request carrying the credential.
 
+It is not always a byte-for-byte reproduction of the call. Redaction applies to the request body
+too, so if the body you sent carried one of the JSON paths being redacted — the built-in
+`access_token`, `refresh_token`, `id_token`, or anything the user added under `redact.body-paths` —
+the `--data-raw` in that command shows `<redacted>` where the call sent the real value. The wire
+was unaffected; only the display is. The `request.body` field of the envelope shows the same
+redacted body, so the two never disagree: if you need to reason about what was sent, read either,
+and do not assume you can re-run the command to reproduce the result exactly. A body you passed
+with `--body @file` or `--body -` is referenced rather than inlined (`--data-binary @path`), so
+there the command still reads the real bytes.
+
 One thing redaction cannot fix: an API key that belongs in the *query string* travels in the URL
 and lands in server access logs. talaria warns once on stderr. Report the warning; it is a
 property of the API, not a bug you can work around.
 
 Response bodies are redacted only at the OAuth2 token fields and whatever JSON paths the user
-configured. A login or token-issuing endpoint is for a human to run, not for you.
+configured — and the same paths are applied to the request body, wherever it is shown and in
+history. A login or token-issuing endpoint is for a human to run, not for you.
 
 ## Output
 

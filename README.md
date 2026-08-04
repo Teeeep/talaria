@@ -257,13 +257,27 @@ the built-in list is, to query parameters and cookies, which are credential loca
 another name. They hide the value everywhere it is displayed: `request.headers`, the emitted
 curl, `--dry-run`, pretty output and history. They go on top
 of the built-in list (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`,
-`*api*key*`, `*token*`, `*secret*`). `body-paths` are dotted JSON paths into a *response* body,
-on top of the built-in `access_token`, `refresh_token` and `id_token`. A path is rooted at the
+`*api*key*`, `*token*`, `*secret*`). `body-paths` are dotted JSON paths into a body, on top of the
+built-in `access_token`, `refresh_token` and `id_token`. A path is rooted at the
 top of the body, but arrays along the way cost it nothing: `data.token` reaches the token of every
 element of `data` when `data` is a list, and a top-level `access_token` reaches every element of a
 top-level array. `call` reads this file
 whether or not you passed `--profile`, because a security setting that only takes effect when
 you happen to be using a profile is one that silently does not.
+
+They apply to the **request** body as well as the response body — a token-refresh call carries an
+`access_token` in exactly the field the built-in list names, and it is as much a credential going
+out as coming back. Two consequences worth knowing before you configure a path:
+
+- The request body is redacted everywhere it is *displayed* and everywhere it is *stored*: the
+  `request.body` field of the envelope, the `--data-raw` of the emitted curl, `--dry-run`, pretty
+  output and `history.jsonl`. Nothing changes on the wire — the bytes you passed to `--body` are
+  the bytes the server receives.
+- So the emitted curl is no longer a byte-for-byte reproduction of the call when a configured (or
+  built-in) path matches the body you sent. It reproduces the *redacted* body, which is the same
+  body the `request.body` field beside it shows — the two always agree with each other. A body
+  read from a file or stdin is referenced rather than inlined (`--data-binary @path`,
+  `--data-binary @-`), so there the command still reads the real bytes when you re-run it.
 
 ## Checking credentials without seeing them
 

@@ -253,6 +253,14 @@ exfiltrate"*. It is a copy, not a mutation, because `req` is what the executor s
 agreement between the two. Never assign `string(req.Body.Data)` to a field a caller reads, and
 never hand `curl.Render` the unredacted `req`.
 
+The user-visible half of that is a *documented* one: `redact.body-paths` reaches the request body
+and not only the response body (`Redactors.requestBody`, `internal/corpus/entry.go`), and a
+matching path makes the emitted curl stop reproducing the call byte for byte. Both facts live
+where the option is documented — README's `redact` section and AGENT.md's emitted-curl section —
+because an agent that assumes the command it was handed is the call it can re-run draws the wrong
+conclusion from a diff. Any further narrowing of what a body field shows updates the same two
+places in the same commit.
+
 **A table cell is escaped by the renderer, not by the command that builds it.** Every cell in
 `output.Table` is untrusted — a spec summary or description routinely contains real newlines,
 and a `history show` cell is a recorded response body, which is raw bytes. `escapeCell`
