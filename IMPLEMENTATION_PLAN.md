@@ -19,6 +19,14 @@ an acceptance signal. Each task is done only when a test exists that **fails bef
 and passes after it**. If a test you write passes before you touch the implementation, it is
 testing the wrong thing — rewrite it.
 
+**Some assertions under *Red* are regression guards and are labelled `(guard)`.** They pass before
+the change; their job is to pin behaviour a fix could break. They do not satisfy the paragraph
+above. **Every task must land at least one assertion that genuinely fails first**, and the
+unlabelled assertions are the ones verified to do so. Two tasks have no genuinely-red assertion
+at all — Task 10 and Task 18 — and each says so in its own body with what to do instead. If you
+find an unlabelled assertion passing before your change, that is a defect in this plan: fix the
+assertion, and say so in the commit message.
+
 **Two findings are already settled and must not be re-litigated:**
 
 - **Finding 18** (replay's resolvable env-var set) was `Blocked-by: design`. DESIGN.md v0.5 §5a
@@ -37,17 +45,29 @@ any of these six.
 code 6, uid separation (phase 2b); packaging, release binaries, the Claude Code skill (phase 2c);
 anything under `internal/twin`; reintroducing `talaria run`, `internal/gen` or JUnit output.
 
-**Two `//nolint:noctx // phase-2a task 1` waivers are tracked debt**, at
-`internal/spec/source.go:122` and `internal/curl/version.go:45`. **Both are about *context and
-cancellation*, not size** — bounding a read does not license removing either. Only the spec one's
-comment says to remove it in the commit that fixes it. Task 16 removes the spec waiver (it threads
-the context), Task 13 the curl one. A waiver left behind after its fix lands is a lint failure
-waiting to happen; a waiver removed before its fix lands is a lint failure now.
+**Three `phase-2a task 1` debt markers are tracked, not two.** All three are about *context and
+cancellation*, not size — bounding a read does not license removing any of them.
 
-**Every file:line in this plan was verified against the tree on 2026-08-04.** Symbols were checked
-to exist (or, for `(create)`, to not exist). Where the finding's own line numbers are stale, this
-plan carries the current one. Still locate by symbol — a task ahead of you in the queue may have
-moved a line.
+| Marker | Where | Removed by |
+|---|---|---|
+| `//nolint:noctx` | `internal/spec/source.go:122` (its `TRACKED DEBT` comment at `:117-121` says to remove it in the fixing commit) | Task 16 — it threads the context through `Load` |
+| `//nolint:noctx` | `internal/curl/version.go:45` (`TRACKED DEBT` comment at `:42-44`; it does **not** carry the remove-it sentence) | Task 13 |
+| a `contextcheck` **exclusion block** in `.golangci.yml:70-76`, path `cmd/talaria/root\.go` | *"the call command does not thread `cmd.Context()` into the binder … this exclusion is deleted in that commit"* | Task 16, **after** Task 14 — see below |
+
+The third one is not a `//nolint` directive, so a grep for `nolint` misses it entirely. It cannot
+be deleted until **both** Task 14 (context into `request.Inputs`/`Build`, i.e. the binder) and
+Task 16 (context into `spec.Load`) have landed — which is why Task 16 depends on Task 14. Deleting
+it earlier turns `contextcheck` back on against code that still has the gap.
+
+A waiver left behind after its fix lands is a lint failure waiting to happen; a waiver removed
+before its fix lands is a lint failure now.
+
+**Every file:line in this plan was verified against the tree on 2026-08-04, twice.** Symbols were
+checked to exist (or, for `(create)`, to not exist). Where the finding's own line numbers are
+stale, this plan carries the current one. The second pass corrected every `internal/corpus/store.go`
+citation in Tasks 7, 14, 15 and 19 — that file is 391 lines and the plan had been citing a longer
+version of it, ~45–75 lines out. Still locate by symbol: a task ahead of you in the queue may have
+moved a line, and the store.go case shows what stale numbers cost.
 
 ## Commands
 
@@ -117,7 +137,8 @@ string spliced into a URL, so it is an authority-rewriting primitive. Write thes
    without unbounded growth; bound the substituted length and omit a server that exceeds it.
 4. **Empty and nil** — no `servers[]`, a server with an empty URL, a nil `Variables` map.
    `Servers` returns an empty slice; `firstServer` returns `""` and `Build` still reports the
-   existing "no base URL" usage error.
+   existing "no base URL" usage error **(guard** — that error already fires today at
+   `internal/request/build.go:167`; it pins that `Servers` did not change the empty case**)**.
 
 **Green — minimal implementation:**
 1. Add `internal/spec/servers.go` with `Servers(doc *Document) []string`. Iterate
@@ -131,8 +152,10 @@ string spliced into a URL, so it is an authority-rewriting primitive. Write thes
    `Servers[0] == nil`) — move them into `Servers` rather than dropping them.
 3. Do **not** add a host set or an allowlist here. Task 2 owns that.
 
-`internal/spec` exports only `Resolve`, `EnvSpec`, `Document` and the loaders today; `Servers` is
-a new exported symbol and `firstServer` is currently the only server reader in the tree.
+`internal/spec` exports `Resolve`, `EnvSpec`, `Document`, and the loaders — `Load` (`source.go:62`),
+`LoadBytes`/`LoadFile` (`load.go:40`/`:48`) and the `Loader` type (`source.go:50`) with its `Load`
+method (`:68`). `Servers` is a new exported symbol, and `firstServer` is currently the only server
+reader in the tree (`doc.Model.Servers` appears only there and in tests).
 
 **Verify:** `go test ./...`
 
@@ -188,13 +211,15 @@ It is the largest task in this phase. Work it in the order given below.
    `"credentials_withheld":[{"scheme":"bearerAuth","reason":"…","host":"127.0.0.1:PORT"}]`, and
    one line naming the withheld scheme and the offending host goes to stderr.
 3. The call still **runs** and exits 0 — withholding, not refusing. Pointing at a local twin is
-   the common case and must not need a flag (DESIGN.md §5a).
+   the common case and must not need a flag (DESIGN.md §5a). **(guard** on its own — nothing
+   refuses an off-spec `--base-url` today, so exit 0 is already true. It is red only asserted
+   together with 1 and 2: runs *and* exits 0 *and* the credential did not go.**)**
 4. `--allow-host` naming that host puts the credential back on the wire.
 5. A profile carrying `allow_hosts: [...]` does the same, and a profile file containing
    `allow_hosts:` **parses** — `Config` decodes with `KnownFields(true)`, so without the struct
    field every such profile is a hard parse error.
-6. A `--base-url` inside the spec's `servers[]` attaches credentials as it does today (the
-   no-regression case).
+6. **(guard)** A `--base-url` inside the spec's `servers[]` attaches credentials as it does today
+   (the no-regression case).
 
 *Replay re-derivation (findings 2, 3, 22):*
 7. A `history.jsonl` line hand-edited to `"url":"http://127.0.0.1:PORT/steal"` replays to the
@@ -254,7 +279,8 @@ the agent, and the history file is *"data, never instruction"* (DESIGN.md §5a).
 
    **`replayRequest` (`history.go:554`) is the function this task exists to delete.** It is where
    the host comes from the stored entry — `BaseURL: parsed.Scheme + "://" + parsed.Host` at
-   `:578`, body from `entry.Request.Body` at `:603-611`. The five helpers below are its callees;
+   `:578`, body from `entry.Request.Body` at `:595-606` (`if body := entry.Request.Body; body !=
+   nil` at `:595`, `req.Body = &request.Body{…}` at `:605`). The five helpers below are its callees;
    deleting them without replacing `replayRequest` fixes nothing. Delete `replayValue` (`:681`),
    `replayableEnv` (`:721`), `encodingPrefix` (`:739`), and the ref-parsing halves of
    `replayPairs` (`:651`) and `replayQuery` (`:615`). Delete the comment at `history.go:230-231`
@@ -268,14 +294,20 @@ the agent, and the history file is *"data, never instruction"* (DESIGN.md §5a).
 
    **`cmd/talaria/agentdoc_test.go` is stricter than "documentation consistency" suggests — read
    it before writing prose.** It (a) cross-checks AGENT.md's exit-code table against the
-   `clierr.Code` constants by parsing the AST, both directions; (b) requires every runnable
-   command path to appear literally in AGENT.md and every `` `talaria …` `` span in AGENT.md to
-   resolve to a real command; (c) **executes every fenced line starting `talaria `** with
-   `TALARIA_SPEC=testdata/call.yaml`, auto-appending `--dry-run`, and fails if it exits 2 — so a
-   `--allow-host` example must really work, or be listed in `notRunnable` (`:163`) keyed by the
-   exact line; and (d) requires every `TALARIA_[A-Z0-9_]*` token in AGENT.md to be in a hardcoded
-   allowlist at `:75-80`. This task adds no new env var, but (c) and (d) are how doc edits break
-   the suite.
+   `clierr.Code` constants by parsing the AST, both directions (`:33-49`); (b) requires every
+   runnable command path to appear literally in AGENT.md and every `` `talaria …` `` span in
+   AGENT.md to resolve to a real command (`:51`, `:61`); (c) **executes every fenced line starting
+   `talaria `** with `TALARIA_SPEC=testdata/call.yaml` (`:104`) and fails if it exits 2 (`:126-128`)
+   — so a `--allow-host` example must really work, or be listed in `notRunnable` (`:163`) keyed by
+   the exact line; and (d) requires every `TALARIA_[A-Z0-9_]*` token in AGENT.md to be in the
+   allowlist map at `:74-79`. This task adds no new env var, but (c) and (d) are how doc edits
+   break the suite.
+
+   Two details of that test the plan previously stated too strongly, both of which change what you
+   can rely on: `--dry-run` is **not** appended unconditionally — `:121` appends it only when the
+   resolved command actually has the flag (`hasDryRun`, `:197-202`), so a `history replay` example
+   is executed for real unless you list it in `notRunnable`. And the env allowlist is not purely
+   hardcoded: `:83` additionally accepts any name carrying the `config.EnvAPIKeyPrefix` prefix.
 
 **Verify:** `go test ./...`
 
@@ -307,7 +339,9 @@ README contradicts the code)
 **Red — write failing tests:**
 1. On a spec whose only scheme is `oauth2`, with nothing exported, `auth check` reports
    `{"scheme":"oauth2","supported":false,"present":false}` and exits **5**. It reports
-   `{"schemes":[]}` and exits 0 today, because `Schemes` filters on `schemeReason` != "".
+   `{"schemes":[]}` and exits 0 today, because `Schemes` (`internal/config/auth.go:184`) keeps only
+   schemes for which `schemeReason(name, scheme) == ""`. (The empty list marshals as `[]`, not
+   `null` — `cmd/talaria/auth.go:92` preallocates.)
 2. The same spec with `TALARIA_AUTH_BEARER` set: the scheme is **satisfied by that token** —
    `auth check` exits 0 and `call` puts the token on the wire. This is DESIGN.md §5's
    bring-your-own-token clause; `TALARIA_AUTH_BEARER` is inert today.
@@ -316,7 +350,9 @@ README contradicts the code)
 4. `auth check` and `Resolve` agree on every arrangement the test covers — the non-negotiable
    clause of §5. Extend `TestResolveAgreesWithTheCoverageAuthCheckReports` rather than writing a
    parallel assertion; that test is the guard against the two drifting again.
-5. A supported scheme's report is unchanged (`supported:true`), so the field is additive.
+5. **(guard)** A supported scheme's report is unchanged (`supported:true`), so the field is
+   additive. This is the guard named in the interaction note below — it is what proves you did not
+   move the supported path while changing what `byName` contains.
 6. `openIdConnect` and `mutualTLS` behave as `oauth2` does; an `apiKey` in an unsupported `in`
    does too.
 
@@ -347,7 +383,7 @@ scheme's report is unchanged) as the guard that you did not move the supported p
 
 **Green — minimal implementation:**
 1. Add `Supported bool` to `config.Credential` (fields today: `Scheme, Kind, In, Name, Ref` at
-   `internal/config/auth.go:53-64`) and `Supported bool \`json:"supported"\`` to
+   `internal/config/auth.go:53-63`) and `Supported bool \`json:"supported"\`` to
    `cmd/talaria.authScheme` (fields today: `Scheme, Source, Present` at `cmd/talaria/auth.go:24-28`).
 2. `Schemes`: stop dropping schemes `schemeReason` rejects. Emit them with `Supported: false` and
    no ref, so `Present()` is false. `credentialFor` (`auth.go:288`) is currently unreachable for
@@ -393,8 +429,9 @@ agents branch on is wrong for the one case it exists to serve.
 `req.Body.ContentType` straight from the stored entry (`cmd/talaria/history.go:610`) and never
 goes through `internal/request` at all, so a bind-time check alone leaves the whole replay path
 open. Conversely a user-supplied `--header Content-Type=…` has already passed
-`binder.pairs` → `SplitsRequest` (`internal/request/build.go:394`) — the unchecked sources are the
-spec's `content:` map key and the history file.
+`binder.pairs` (`internal/request/build.go:380`) → `SplitsRequest` (defined at `:451`, called from
+`:294`, `:336` and `:394`) — the unchecked sources are the spec's `content:` map key and the
+history file.
 
 **Red — write failing tests:**
 1. A spec whose `content:` map key is `"application/json\r\nX-Injected: pwned"` is rejected at
@@ -402,10 +439,13 @@ spec's `content:` map key and the history file.
 2. `BuildConfig` on a hand-built `Request` whose `Body.ContentType` carries `\r\n` returns an
    error rather than a config document — the last gate, matching how every other header pair is
    treated by `checkSplit`.
-3. A well-formed media type (`application/json`, `application/vnd.api+json;charset=utf-8`) is
-   unaffected: it still produces the `Content-Type` directive.
+3. **(guard)** A well-formed media type (`application/json`,
+   `application/vnd.api+json;charset=utf-8`) is unaffected: it still produces the `Content-Type`
+   directive. This is today's unconditional behaviour at `internal/curl/config.go:289-290` — it
+   pins the fix against over-rejection, it does not fail first.
 4. `curl.Render` on the same hostile request does not emit a raw newline inside a single-quoted
-   argument.
+   argument. This one is genuinely red: `word.String()` (`internal/curl/render.go:246-256`)
+   single-quotes escaping only `'`, so CRLF is emitted as raw bytes at `:130`.
 
 **Adversarial — what does hostile or malformed input do here?**
 The media type comes from a key in the spec's `content:` map, which is untrusted by the product's
@@ -459,10 +499,11 @@ records this exact vector: *"a media type became a header-injection vector exact
 1. `call … --body '{"refresh_token":"CANARY"}'` prints `{"refresh_token":"<redacted>"}` in
    `request.body` on stdout. Today stdout carries the canary while history redacts it — the
    firewall backwards, and `buildRequest`'s own comment states the rule it violates.
-2. `--body @file` renders `--data @<path>` in the emitted curl; `--body -` renders `--data @-`;
-   an argv `--body '…'` is still inlined. This is DESIGN.md §3.4, settled: a body read from a
-   file or stdin may carry a credential the agent never saw; an argv body is already in the
-   agent's hands.
+2. `--body @file` renders `--data @<path>` in the emitted curl; `--body -` renders `--data @-`.
+   The third clause — an argv `--body '…'` is still inlined — is a **(guard)**: that is today's
+   unconditional behaviour (`internal/curl/render.go:133`). This is DESIGN.md §3.4, settled: a
+   body read from a file or stdin may carry a credential the agent never saw; an argv body is
+   already in the agent's hands.
 3. The canary suite gains a case injecting the canary through `--body @file` and scanning every
    surface — stdout, stderr, history store, cache.
 
@@ -494,16 +535,20 @@ The body crosses a trust boundary in the direction the rest of the tool does not
    `.ralph/refactor-backlog.md` for Task 6. The history path already redacts here
    (`internal/corpus/entry.go:166`), which is the asymmetry the finding names.
 2. Add a source discriminator to `request.Body` (argv / file / stdin, with the path for file).
-   `bodyKind` in `internal/request/body.go` already computes this string — promote it onto the
-   type rather than re-deriving it.
+   `bodyKind` (`internal/request/body.go:83-92`) already computes the distinction, but read it
+   before reusing it: it returns `"stdin"` / `"@file"` / `"literal"` — not the names above — and
+   its **only** caller (`body.go:60`) uses it for an error message and discards the value. Nothing
+   stores it on `Body` today. Promote the discrimination onto the type; do not assume the strings
+   are already the ones you want.
 3. In `curl.Render` (`internal/curl/render.go:133`, today an unconditional
    `append(args, "--data-raw", …)`), switch on that source: `--data @path`, `--data @-`, or the
    current inline form.
 
 **A divergence that already exists here — do not mistake it for one you caused.** The *executed*
-request does not always inline either: `internal/curl/config.go:305-318` falls back to a 0600 temp
-file plus `data-binary @path` when `inlinable` is false (body over `maxInlineBody`, invalid UTF-8,
-or containing NUL). So the emitted curl and the sent request already disagree for large and binary
+request does not always inline either: `internal/curl/config.go:302-309` falls back to a temp file
+(`d.tempFile` at `:302`, `data-binary "@"+path` at `:309`, the 0600 chmod inside `tempFile` at
+`:326-340`) when `inlinable` (`:318-324`) is false — body over `maxInlineBody`, invalid UTF-8, or
+containing NUL (`:319-323`). So the emitted curl and the sent request already disagree for large and binary
 bodies, independently of this task's provenance work. The e2e dry-run/real-call equivalence test
 constrains the bodies it uses accordingly. If your change widens that gap, record it in
 `.ralph/refactor-backlog.md`; do not "fix" it here.
@@ -569,20 +614,36 @@ clean, and report the net line delta in the commit message.
   can replace)
 - `internal/spec/load.go` (modify) — the local-spec read at `:49`, the same unbounded shape
 - `internal/corpus/store.go` (modify) — **three** unbounded `os.ReadFile` on the same file, not
-  one: `Read` (`:187`), `storedIDs` (`:161`/`:208`) and `trim` (`:248`/`:295`). Bounding only
-  `Read` leaves every *append* reading the whole file unbounded twice.
+  one, at `:161` (`storedIDs`), `:187` (`Read`) and `:248` (`trim`). Two of the three run on
+  **every append** (`Append` at `:99` → `uniqueID` `:115` → `storedIDs`; then `trim` at `:126`),
+  so bounding only `Read` leaves the append path reading the whole file unbounded twice.
 - `internal/corpus/entry.go` (modify) — `Body.Bytes` (`:124` base64 path, and `:120-122`, the
   no-encoding path, also unbounded)
 
 **Red — write failing tests:**
+**Two of these are trivially faked green — read the warnings.** This task is where a careless red
+test is likeliest, because failure and refusal already look alike on the unhappy path.
+
 1. An httptest server streaming past the cap makes `Load` return a `clierr.SpecLoad` error
    (exit 3), and **nothing is written to the cache**. Today `io.ReadAll` is unbounded on a URL
    the product's premise treats as untrusted, and `client.Get` follows redirects.
-2. A `history.jsonl` whose total size exceeds the file cap fails as a bounded read, not an
-   unbounded `os.ReadFile`.
+   **The oversized body must be a *valid* OpenAPI document, or this test passes before your
+   change.** `loadURL` caches only after a successful parse (`source.go:99-106`) and `loadBytes`
+   already returns `clierr.SpecLoad` on unparseable bytes (`internal/spec/load.go:73`) — so
+   "oversized garbage → SpecLoad, nothing cached" is today's behaviour, reached for the wrong
+   reason. Serve a valid spec padded past the cap (a huge `description`, say) and the only thing
+   that can produce the error is the cap.
+2. A `history.jsonl` whose total size exceeds the file cap is refused as a bounded read rather
+   than slurped by an unbounded `os.ReadFile`. **Decide what "refused" means and make red-test 3
+   agree with it** — see the note under Green, which settles it: the *file* cap truncates the read
+   at a boundary and reports how many entries were reachable; it does not fail the command.
 3. A single line over the entry cap is skipped as a **malformed entry** — the other entries in
    the file still load, and `history` still lists them. DESIGN.md §5a: *"A corrupt or hostile
    entry fails that entry, never the process."*
+   **The over-cap line must be *valid JSON*, or this test passes before your change.** `Read`
+   already `continue`s past any line that fails `json.Unmarshal` (`store.go:202-204`) while
+   keeping the rest, so an over-cap line of garbage is "skipped as malformed" today. Make it a
+   well-formed entry that is merely enormous.
 4. `Body.Bytes()` on a base64 payload whose decoded length exceeds `MaxBody` returns an error
    rather than allocating. `MaxBody` is enforced only at write today (`newBody`).
 
@@ -594,8 +655,10 @@ this process.
 2. **A redirect chain** to a large body, and a redirect from `https` to `http`. `client.Get`
    (`source.go:122`) sets no `CheckRedirect` anywhere in the repo, so Go's default 10-hop follow
    applies. Assert the cap still applies after the redirect. Decide, and say in a comment, whether
-   the policy is forced on a caller-injected `Loader.Client` (`source.go:60`) or only on the
-   default one — tests inject that client, so the choice is observable.
+   the policy is forced on a caller-injected `Loader.Client` (`source.go:58`) or only on the
+   default one. **Note the existing suite does not answer this for you** — all six loader
+   constructions set `CacheDir` only (`internal/spec/source_test.go:112,135,156,192,205,228`) and
+   none injects a client, so whichever you choose you are writing the first test that observes it.
 3. **A base64 zip bomb** — a small `data` field whose decoded length is enormous. Check the
    decoded length *before* decoding (base64 length is computable from the encoded length), so the
    allocation never happens.
@@ -608,8 +671,18 @@ this process.
 1. `internal/spec/source.go`: wrap `resp.Body` in `io.LimitReader` with an explicit exported cap —
    a few tens of MB, enough for the 2 MB `swagger.json` the design cites — and return
    `clierr.SpecLoad` when the limit is reached. Do not cache a truncated body.
-2. `internal/corpus/store.go`: bound the file read and the per-line length; treat an over-cap line
-   the way an unparseable line is already treated at `Read` (skip it).
+2. `internal/corpus/store.go`: bound the file read and the per-line length at all **three** call
+   sites (`:161`, `:187`, `:248`), and treat an over-cap line the way an unparseable line is
+   already treated at `Read` (skip it).
+
+   **The two caps are not the same kind of refusal, and red tests 2 and 3 must not be written as
+   if they were.** The per-*entry* cap skips that entry and keeps the rest — that is DESIGN.md
+   §5a's *"fails that entry, never the process"*. The per-*file* cap cannot skip anything, because
+   whatever is past it was never read; make it a bounded read that stops at a line boundary and
+   surfaces the truncation (a warning naming how many entries were reachable), **not** a hard
+   failure of `history` or of the `Append` it sits inside. A file cap that errors the command
+   turns one oversized history file into a tool that refuses to run at all — the process-level
+   failure the rule exists to prevent.
 3. `internal/corpus/entry.go`: reject an over-`MaxBody` decoded body in `Body.Bytes()` as a
    `clierr.Usage` (exit 2), matching the existing undecodable-base64 (`:126`) and unknown-encoding
    (`:131`) refusals. `MaxBody` (`:34`) is referenced today only at `:258-260` inside `newBody` —
@@ -620,8 +693,8 @@ this process.
 debt is context and cancellation; a size bound does not discharge it. Task 16 removes it.
 
 **Note for the malformed-line assertion.** An unparseable line survives every `Read` invisibly
-(`store.go:196-206` `continue`s) and is only destroyed when `trim` rewrites the file
-(`store.go:279-284` drops unreadable lines). So an over-cap line "skipped as malformed" is skipped
+(`store.go:202-204` `continue`s) and is only destroyed when `trim` rewrites the file
+(`store.go:257-263` drops lines `lineHead` cannot read). So an over-cap line "skipped as malformed" is skipped
 on read but silently deleted on the next trim. Assert whichever you intend; do not assume it
 persists.
 
@@ -645,10 +718,11 @@ input the tool does not control.
   buffer the document actually built into.
 
 **Implementation files:**
-- `internal/curl/config.go` (modify) — `document.b` (`:128-131`), `BuildConfigWith` (`:114-124`),
-  `cleanupWith` (`:380-389`), `discard` (`:368-370`), **and `cookies()` (`:243`)**, which builds a
-  *second* `strings.Builder` holding every resolved cookie value and is never reset or zeroed at
-  all. Same bug class, not mentioned in the finding.
+- `internal/curl/config.go` (modify) — `document.b` (`:128-131`), `BuildConfigWith` (declared at
+  `:98`; the build-and-copy block this finding is about is `:114-124`), `cleanupWith` (`:380-389`),
+  `discard` (`:368-370`), **and `cookies()` (`:243`)**, which builds a *second* `strings.Builder`
+  holding every resolved cookie value, copies it out at `:260` and never resets or zeroes it.
+  Same bug class, not mentioned in the finding.
 
 **There is no seam to assert on yet.** `doc` is a local inside `BuildConfigWith`, so the existing
 test can only see the returned copy. Creating that seam — a `[]byte` field the test can reach,
@@ -660,7 +734,9 @@ test is already in `package curl`, so an unexported seam is enough.
    credential. Today `config = []byte(doc.b.String())` copies and `doc.b.Reset()` sets
    `b.buf = nil` without zeroing, so `cleanupWith` zeroes the copy while the original heap buffer
    — holding the bearer token or `user:password` — stays readable until the GC reuses it.
-2. The existing behaviour that the returned `config` slice is zeroed is preserved.
+2. **(guard)** The existing behaviour that the returned `config` slice is zeroed is preserved —
+   that is what `TestBuildConfigCleanupZeroesTheDocument` (`internal/curl/config_test.go:376`)
+   already asserts, at `:386`, on the copy.
 3. `discard()` zeroes as well — it is the error path, and error paths are where redaction bugs
    live (DESIGN.md §5a). It is reachable with a credential already in the buffer: `build` writes
    the resolved URL at `config.go:138` before the first error return at `:143`.
@@ -759,7 +835,17 @@ typo cannot silently disable a rule.
 **Implementation files:** none. This task is entirely test-side — it is the gate that should have
 caught several of the other findings.
 
-**Red — write failing tests:**
+**This task has no genuinely-red assertion, and that is correct — do not manufacture one.** Both
+cases below will pass the first time you run them, because the machinery they exercise already
+works: exit 4 on a schema-violating 200 is already proven end to end (`internal/e2e/e2e_test.go:
+742-746`), and the canary lives in an env var that no validation-error surface currently echoes.
+Findings 19 and 20 are **coverage** defects — the gate has no case for a path the design names —
+not behaviour defects. The deliverable is the missing cases plus the deletion of the stale waiver
+that explained their absence. If one of them *does* fail on first run, you have found a live leak:
+stop, and fix that before adding the case. Everything below is written as an assertion to add, not
+as a failure to reproduce.
+
+**Cases to add:**
 1. A stage calling an operation whose response violates its schema, with a credential set and
    `--fail-on-error`, exits **4**, and neither the `validation.errors[]` messages on stdout nor
    the failure text on stderr contains the canary. The `stages` table (`canary_test.go:388-438`,
@@ -858,18 +944,24 @@ replace several others. Green before and after; net-negative diff.
    `"line one\nline two\twith tab"` turns two operations into three rows with differing column
    counts, so `cut -f3` silently returns garbage with no way for the caller to detect it.
 2. The pretty renderer's tabwriter alignment survives the same cells.
-3. A cell with no special characters is byte-identical to today's output — this must not churn
-   every existing tsv assertion.
+3. **(guard)** A cell with no special characters is byte-identical to today's output — this must
+   not churn every existing tsv assertion.
 
 **Adversarial — what does hostile or malformed input do here?**
 Every cell that matters is spec-derived free text or recorded data, and the spec is untrusted
-input. There are **seven** producers, not the three the finding names — enumerate them before you
-choose an escaping scheme:
-`list.go:104` (`op.Summary`), `search.go:66` (`r.Summary`/`r.Name`/`r.Where`),
-`history.go:288-296` (recorded path and operation id), `history.go:331-346` (`history show`
-headers and `bodyLine`, which returns `body.Data` **verbatim** at `:356-358` — the largest
-unconstrained cell), `call.go:456-458` (the rendered curl command), `auth.go:104`, `uses.go:56`.
-Plus `describe.go:192` (`describeRows`), which is a special case — see below.
+input. There are **eight** producers, not the three the finding names — the full set of
+`output.Table{…Rows}` construction sites, all in `cmd/talaria`, is:
+`list.go:115` (cells from `op.Summary`, `:103`), `search.go:71` (`:66` —
+`r.Summary`/`r.Name`/`r.Where`), `uses.go:61` (`:56`), `auth.go:105` (`:102`),
+`history.go:302` (`:288-296` — recorded path and operation id), `history.go:347` (`:329-343` —
+`history show` headers and `bodyLine`, which returns `body.Data` **verbatim** at `:356-358` — the
+largest unconstrained cell), `call.go:476` (`:456-458` — the rendered curl command), and
+`version.go:31`. Plus `describe.go:138` (`describeRows` at `:192`), a special case — see below.
+
+**`version.go:31` is the one the finding and the previous plan both missed**, and it is the one
+that decides your design: it is a single-cell row (`[][]string{{"talaria " + version}}`), so a
+blanket per-cell escaper touches it exactly as it touches `describeRows`. Whatever you decide
+about single-cell rows below applies to it too — check its test either way.
 1. `\r` alone, `\r\n`, and a lone `\n` — all three must be neutralised, not just `\n`.
 2. A cell that is **only** a tab, and an empty cell — the field count must stay right.
 3. A cell containing the escape sequence you chose (e.g. a literal `\t` two-character sequence) —
@@ -889,8 +981,9 @@ Plus `describe.go:192` (`describeRows`), which is a special case — see below.
    passes a single-cell row through untouched"* — a blanket per-cell escaper changes `describe`
    output. Decide deliberately: exempt single-cell rows, or accept the change and update that
    comment and its tests (leaving the comment while breaking it violates `CLAUDE.md`).
-   `fitSummaries` (`list.go:118+`, pretty only, `list.go:107`) computes column widths on
-   *unescaped* cells, so escaping must run before it or the width budget drifts.
+   `fitSummaries` (declared `list.go:124`, its doc comment from `:118`; pretty only, called at
+   `list.go:107`) computes column widths on *unescaped* cells, so escaping must run before it or
+   the width budget drifts.
 
 **Verify:** `go test ./...`
 
@@ -921,17 +1014,21 @@ is no way for that consumer to detect it.
    a terminal the call blocks on an interactive prompt: 32 s wall clock, then a misleading
    *"curl outlived its 30s timeout"* that sends an agent looking for a slow API. DESIGN.md §3.1:
    *"Never prompt. Never page. No interactivity, ever."*
-2. `user:` with an empty password (`user:`) is **accepted** — that is a valid credential and a
-   different case from no colon at all.
+2. **(guard)** `user:` with an empty password (`user:`) is **accepted** — that is a valid
+   credential and a different case from no colon at all. `document.auth` validates nothing today,
+   so every basic value passes; this assertion only earns its keep once step 1's check exists, as
+   the guard against rejecting too much.
 3. `preflight` accepts a `context.Context` and honours it: with an already-cancelled context it
    returns promptly rather than running the subprocess. Every other curl in the tool is bounded by
    `execCtx` + `WaitDelay` + `Setpgid`; this one takes no context at all.
 4. The `//nolint:noctx // phase-2a task 1` waiver is **removed** in this commit. It is at
-   `internal/curl/version.go:45` (on the `exec.Command(path, "--version").Output()` line); `:42`
-   is where its `TRACKED DEBT` comment begins. That comment does **not** contain the "remove this
-   waiver in the commit that fixes it" sentence — that is the *spec* waiver at
-   `internal/spec/source.go:121`, which Task 16 owns. Remove this one anyway: `golangci-lint` is
-   the checker and an unused `nolint` is itself a finding.
+   `internal/curl/version.go:45` (on the `exec.Command(path, "--version").Output()` line); `:42-44`
+   is its `TRACKED DEBT` comment. That comment does **not** contain the "remove this waiver in the
+   commit that fixes it" sentence — that is the *spec* waiver, whose directive is at
+   `internal/spec/source.go:122` and whose comment carries the sentence at `:121`. Task 16 owns
+   that one. Remove this one anyway: `golangci-lint` is the checker and an unused `nolint` is
+   itself a finding. Leave the `.golangci.yml` `contextcheck` exclusion alone — it is Task 16's,
+   and it needs Task 14 as well.
 
 **Adversarial — what does hostile or malformed input do here?**
 `TALARIA_AUTH_BASIC` is human-supplied and `curl` on `PATH` is attacker-influenceable.
@@ -945,11 +1042,12 @@ is no way for that consumer to detect it.
    deliberate and tested.
 
 **Green — minimal implementation:**
-1. In `document.auth` (`internal/curl/config.go:225-228`), reject a resolved basic credential
-   containing no `:` before writing the `user` directive, matching the existing "its value is not
-   echoed" convention. The only gate ahead of it today is `checkSplit` (`:221`), which checks CR/LF
-   only; `internal/config/auth.go:35-36` merely *documents* the `user:password` shape and
-   `resolve` (`config.go:394-409`) returns `Prefix() + value` unvalidated.
+1. In `document.auth` (declared `internal/curl/config.go:214`; the basic/`user` branch is
+   `:225-228`), reject a resolved basic credential containing no `:` before writing the `user`
+   directive, matching the existing "its value is not echoed" convention. The only gate ahead of
+   it today is `checkSplit` (`:221`), which checks CR/LF only; `internal/config/auth.go:35-36`
+   merely *documents* the `user:password` shape, and `resolve` — **in `internal/curl/config.go`
+   at `:395-409`, not `internal/config`** — returns `Prefix() + value` unvalidated.
 2. Change `preflight(path)` (`internal/curl/version.go:40`) to `preflight(ctx, path)` and use
    `exec.CommandContext` with a short independent deadline. `ExecuteWith` already holds one — it
    is called at `internal/curl/exec.go:62`, before the `execCtx`/`WaitDelay`/`Setpgid` machinery at
@@ -981,7 +1079,8 @@ that is a lie. Both violate the "never interactive" principle an agent depends o
   `Inputs` (`build.go:32-62`) has no context field and `Build(in Inputs)` (`:69`) takes none, so
   this is a signature change, not a plumbing tweak.
 - `internal/corpus/lock_unix.go`, `internal/corpus/store.go` (modify) — bounded lock wait.
-  `Store.Append` (`store.go:146`) and `lock` (`lock_unix.go:23`) take no context today.
+  `Store.Append` (`store.go:99`) and `lock` (`lock_unix.go:23`) take no context today; the
+  `syscall.Flock(…, LOCK_EX)` itself is `lock_unix.go:36`.
 - `cmd/talaria/call.go`, `cmd/talaria/history.go` (modify) — **threading a context into `Append`
   reaches both writers**: `recordCall` (`call.go:251`) and its call sites `call.go:177` and
   `history.go:225`. Budget for this; it is why the task looks smaller than it is.
@@ -998,9 +1097,10 @@ that is a lie. Both violate the "never interactive" principle an agent depends o
    history file"* error after a bounded wait, rather than blocking forever. `flock(2)` with
    `LOCK_EX` and no `LOCK_NB` is not interruptible by a signal either, because Go installs
    handlers with `SA_RESTART`.
-4. A bounded lock wait costs a **warning line, not a silent loss**: `recordCall` already
-   downgrades an `Append` failure to a stderr warning. Assert the warning appears and the call's
-   own result is unaffected.
+4. **(guard)** A bounded lock wait costs a **warning line, not a silent loss**: `recordCall`
+   already downgrades an `Append` failure to a stderr warning (`cmd/talaria/call.go:263`), so this
+   passes today for any injectable `Append` failure. It is red only for the *new* error path —
+   assert it against a lock actually held past the deadline, not against an arbitrary failure.
 
 **Adversarial — what does hostile or malformed input do here?**
 The stalled peer is the hostile input here: another process, or a filesystem, that never
@@ -1022,9 +1122,11 @@ progresses.
    the command; thread the context through `Inputs`).
 3. `internal/corpus/lock_unix.go`: loop on `LOCK_EX|LOCK_NB` with a short sleep against a bounded
    deadline and the caller's context, then return the existing error. Thread a context into
-   `Store.Append`. Replace the comment at the top of `lock` justifying the unbounded wait — it
-   argues a bounded wait *"would drop history the caller was told had been recorded"*, which is
-   not true given `recordCall`'s warning.
+   `Store.Append`. Replace the comment justifying the unbounded wait — it argues a bounded wait
+   *"would drop history the caller was told had been recorded"*, which is not true given
+   `recordCall`'s warning. **It is an inline comment at `lock_unix.go:32-34`, above the
+   `syscall.Flock` call — not the function's doc comment at `:12-22`, which is about the sibling
+   lock file and the rename and stays.**
 
 **Verify:** `go test ./...`
 
@@ -1053,25 +1155,31 @@ review's suggested repros were checked against the code and defeated by it. Each
 carries the repro that actually works. If yours goes green before your change, it is one of the
 three below, not a sign the bug is absent.
 
+**Every `store.go` line number below was re-verified on 2026-08-04.** The file is 391 lines; an
+earlier draft of this plan cited a longer version of it and every citation in this task was ~45–75
+lines too high. Locate by symbol if anything still disagrees.
+
 1. When `trim` fails **after** the line is durably on disk, `Append` does not report failure for
-   an entry that was written. Today `write` succeeds (`store.go:169`) and `return trim(path)`
-   (`:173`) propagates the trim error, so `recordCall` prints *"warning: the call was not recorded
-   in history"* — the opposite of what happened. An operator acting on that warning re-runs a
-   mutating call.
+   an entry that was written. Today `write` succeeds (called at `store.go:122`, defined `:213`)
+   and `return trim(path)` (`:126`, defined `:247`) propagates the trim error, so `recordCall`
+   prints *"warning: the call was not recorded in history"* — the opposite of what happened. An
+   operator acting on that warning re-runs a mutating call.
    **Repro, corrected:** a read-only directory does **not** work — `write` unconditionally
-   `os.Chmod(dir, dirMode)`s it back to 0700 for the owner (`store.go:268`) before writing. And
-   `trim` only reaches `replace` when one source exceeds `maxPerSource = 1000` (`store.go:78`,
-   `:313-320`), so a small-store test never enters the failing path. You need **>1000 entries of
-   one source** plus a failure injected inside `replace` (`store.go:345`) — which most likely
-   means introducing a seam. That seam is legitimate work for this task.
+   `os.Chmod(dir, dirMode)`s it back to 0700 for the owner (`store.go:221`) before writing. And
+   `trim` only reaches `replace` when one source exceeds `maxPerSource = 1000` (`store.go:31`;
+   over-cap detection at `:267-268`, the `return replace(path, kept.Bytes())` at `:293`), so a
+   small-store test never enters the failing path. You need **>1000 entries of one source** plus a
+   failure injected inside `replace` (`:298`) — which most likely means introducing a seam. That
+   seam is legitimate work for this task.
 2. A genuine read failure in `storedIDs` — not `fs.ErrNotExist` — **aborts the append** rather
-   than treating the store as empty. Today all errors collapse to `return nil` (`store.go:207-211`),
-   every candidate id looks free, `uniqueID` returns an id an entry already holds, and `write`
-   appends the duplicate. `Read` (`store.go:234-240`) already distinguishes `fs.ErrNotExist`
-   properly — that is the precedent to copy.
+   than treating the store as empty. Today all errors collapse to `return nil` (`storedIDs` at
+   `store.go:160`, its `os.ReadFile` at `:161`, the collapse at `:163`), every candidate id looks
+   free, `uniqueID` (`:138`) returns an id an entry already holds, and `write` appends the
+   duplicate. `Read` (`:181`) already distinguishes `fs.ErrNotExist` at `:188` — that is the
+   precedent to copy.
    **Repro, corrected:** mode 0400 does **not** work — the owner can still read, so `os.ReadFile`
    succeeds and the failure never happens. Mode 0000 (as non-root) or a directory in place of the
-   file fails the read, but then `write`'s `os.OpenFile` (`store.go:272`) fails too and `Append`
+   file fails the read, but then `write`'s `os.OpenFile` (`store.go:225`) fails too and `Append`
    errors for a different reason. The duplicate-id outcome needs a *transient* read failure, so
    inject it at a seam rather than through the filesystem.
    **And do not assert the overstated impact.** `history show` and `history replay` both resolve
@@ -1088,7 +1196,9 @@ three below, not a sign the bug is absent.
    longer exists** (`run` is gone). The live precedent is the test-side struct at
    `cmd/talaria/call_test.go:38-40`, whose own comment says *"A pointer so an absent timing_ms is
    distinguishable…"*. Converge all three views deliberately, or say in the commit why not.
-4. An entry with no response still omits `timing_ms` entirely.
+4. **(guard)** An entry with no response still omits `timing_ms` entirely — true today, since
+   `omitempty` drops the zero value and `TimingMS` is set only inside `if entry.Response != nil`.
+   It is the guard that the `*int64` change does not start emitting `"timing_ms":null`.
 
 **Adversarial — what does hostile or malformed input do here?**
 The history file is edited outside this process, and the filesystem is the other unreliable input.
@@ -1108,8 +1218,9 @@ The history file is edited outside this process, and the filesystem is the other
    return nil once the line is on disk. The caller's warning must say what actually happened.
 2. In `storedIDs`, distinguish `fs.ErrNotExist` from other errors and abort the append on a
    genuine read failure.
-3. Make `historyEntryView.TimingMS` a `*int64` set only when `entry.Response != nil`, and fix the
-   comment at `cmd/talaria/history.go:46-48` claiming it is *"omitted along with Status"*. The
+3. Make `historyEntryView.TimingMS` (the field is `cmd/talaria/history.go:48`) a `*int64` set only
+   when `entry.Response != nil`, and fix the comment at `:46-47` claiming it is *"omitted along
+   with Status"*. The
    false part is "along with": `Status` also carries `omitempty` but a real status is never 0
    (`internal/curl/exec.go:154` rejects `http_code == 0`), so only `TimingMS` can be wrongly
    dropped.
@@ -1124,7 +1235,9 @@ the one shown.
 
 ### Task 16: Give the spec cache a TTL, a conditional revalidation and a bypass
 
-**Depends on:** none
+**Depends on:** Task 14 — **ordering only, for the `.golangci.yml` exclusion in red-test 7.** The
+cache work itself depends on nothing. If Task 14 has not landed, do this task anyway and leave
+that one exclusion for Task 17; say so in the commit.
 
 **Fixes finding:** 25
 
@@ -1138,8 +1251,11 @@ the one shown.
 - `cmd/talaria/root.go`, `cmd/talaria/list.go` (modify) — the `--refresh` flag, `loadSpec`
 
 **Red — write failing tests:**
-1. Inside 24 hours a URL-sourced spec is served from cache with **no network call** (assert the
-   test server's request count).
+1. **(guard)** Inside 24 hours a URL-sourced spec is served from cache with **no network call**
+   (assert the test server's request count). This passes today for the wrong reason — `loadURL`
+   (`source.go:86-90`) serves any existing cache file unconditionally and forever, so a
+   request-count of 0 is already green. It is the guard that adding a TTL does not start
+   refetching inside the window. **Assertion 2 is the one that fails first**; write it first.
 2. Past 24 hours it is revalidated with a conditional GET carrying `If-None-Match` /
    `If-Modified-Since`; a **304** refreshes the timestamp without re-downloading, and the cached
    bytes are still what loads.
@@ -1150,9 +1266,16 @@ the one shown.
    downstream stage works against a possibly-stale contract, most damagingly `validate`, where a
    schema violation the server never committed is indistinguishable from a real failure.
 6. The `//nolint:noctx // phase-2a task 1` waiver at `internal/spec/source.go:122` is **removed**
-   in this commit — threading a context through `Load` is what its comment says the fix requires.
-   All six call sites already hold a `*cobra.Command`, so `cmd.Context()` is in scope; the change
-   is confined to `loadSpec`/`loadIndex` in `cmd/talaria/list.go` and this package.
+   in this commit — threading a context through `Load` is what its comment (`:117-121`) says the
+   fix requires. The six `RunE` call sites already hold a `*cobra.Command`, so `cmd.Context()` is
+   in scope; the change is confined to `loadSpec`/`loadIndex` in `cmd/talaria/list.go` and this
+   package.
+7. **The `contextcheck` exclusion in `.golangci.yml:70-76` is also removed in this commit** — its
+   own comment says it *"is deleted in that commit"*, alongside the two `noctx` waivers. It is not
+   a `//nolint` directive, so nothing greps it up; it is why this task depends on Task 14. Removing
+   it turns `contextcheck` back on for `cmd/talaria/root.go`, which only passes once **both** the
+   binder (Task 14) and `spec.Load` (this task) take a context. If Task 14 has not landed, do not
+   remove it — say so in the commit and leave it for Task 17.
 
 **Adversarial — what does hostile or malformed input do here?**
 The cache directory is on disk and the server is remote; both are outside this process.
@@ -1173,8 +1296,10 @@ The cache directory is on disk and the server is remote; both are outside this p
 1. Store the `ETag`/`Last-Modified`/fetch-time beside the cached bytes (a sidecar file or a small
    header prefix — pick one and say why in a comment). Today the cache is
    `os.UserCacheDir()/talaria/specs/<sha256-hex-of-url>` holding the **raw bytes only** — no
-   metadata, no extension, no index — dir 0700, file 0600, written `CreateTemp`+`Chmod`+`Rename`
-   (`internal/spec/source.go:143-156`, `:170-190`). Whatever you add keeps those modes.
+   metadata, no extension, no index — dir 0700, file 0600 (`cacheDirMode`/`cacheFileMode` at
+   `internal/spec/source.go:29-30`), path computed by `cachePath` (`:143-156`, specifically
+   `:146-155`) and written by `writeCache` (`:161`, body `:170-190`) via
+   `CreateTemp`+`Chmod`+`Rename` (`:170`, `:190`). Whatever you add keeps those modes.
 2. Serve from cache inside 24h; past that issue a conditional GET; treat 304 as a timestamp
    refresh. Implement DESIGN.md §4's policy **as written** — it is settled, do not invent another.
 3. **Add the read-side guard the adversarial section calls for — it is not free today.** `loadURL`
@@ -1184,10 +1309,15 @@ The cache directory is on disk and the server is remote; both are outside this p
    equivalent. On a cache parse failure, discard the entry and refetch.
 4. Add `--refresh` and thread `context.Context` through `Load` (`source.go:62`), `Loader.Load`
    (`:68`), `loadURL` (`:82`), `fetch` (`:111`) and `LoadFile` (`load.go:48`), using
-   `http.NewRequestWithContext`. The six `loadSpec`/`loadIndex` call sites (`list.go:60`,
-   `uses.go:36`, `describe.go:73`, `search.go:47`, `auth.go:59`, `call.go:120`) are all inside a
-   `RunE`, so `cmd.Context()` is in scope, and `loadSpec`/`loadIndex` (`list.go:170`/`:161`)
-   already take `cmd`. Remove the waiver at `source.go:122`.
+   `http.NewRequestWithContext`. Six call sites are inside a `RunE` (`list.go:60`, `uses.go:36`,
+   `describe.go:73`, `search.go:47`, `auth.go:59`, `call.go:120`), so `cmd.Context()` is in scope,
+   and `loadSpec`/`loadIndex` (`list.go:170`/`:161`) already take `cmd`.
+
+   **There is a seventh call site, and it is not in a `RunE`:** `loadSpec(cmd, args)` at
+   `cmd/talaria/list.go:162`, inside `loadIndex`. The context has to reach it too — count it, or
+   you will thread six of seven and wonder why `contextcheck` still fires.
+
+   Remove the waiver at `source.go:122` and the `.golangci.yml` exclusion per red-test 7.
 
 **Verify:** `go test ./internal/spec/...` then `go test ./...`
 
@@ -1210,6 +1340,8 @@ replace several others. Green before and after; net-negative diff.
 3. Consolidate: tasks 13, 14 and 16 all threaded a `context.Context` through a package that did
    not take one — check the signatures converged on one shape rather than three. Tasks 7 and 16
    both bound a read of a remote body; one cap, one place.
+   **If Task 16 left the `.golangci.yml:70-76` `contextcheck` exclusion in place** because Task 14
+   had not landed yet, remove it here and confirm lint is clean — by this point both halves exist.
 4. Move logic out of `cmd/talaria` and measure the non-comment line count before and after.
    Tasks 14 and 16 both added flags and plumbing there.
 5. Delete superseded helpers and every comment asserting a property no test enforces — including
@@ -1240,14 +1372,23 @@ no line number to anchor on.
 **Steps:**
 1. Grep non-test Go files for comments asserting a guarantee: *never*, *always*, *cannot*,
    *is zeroed*, *must hold*, *guaranteed*, *validated upstream*, *callers must*, *by
-   construction*, *so a … cannot*. About 147 comment lines match the broad pattern; the strongest
-   candidates cluster in `internal/curl/exec.go` (capture-file mode and lifetime; the WaitDelay
-   and PATH claims), `internal/corpus/entry.go` and `store.go` (the discarded `req.URL` error, the
-   lock-discipline precondition, the atomic-replace claim), `internal/secret/redact.go` (the
-   glob-cannot-fail and nil-receiver claims), `internal/curl/render.go` (the structural claim that
-   nothing outside the package can reach `Resolve` — which `boundary_test.go` does **not**
-   enforce), `internal/spec/source.go` (the concurrent-reader claim), and
-   `internal/clierr/clierr.go` (marshalling cannot fail).
+   construction*, *so a … cannot*. **133** comment lines under `cmd/` and `internal/` match that
+   broad pattern as of 2026-08-04 (an earlier draft said 147). Use the count as a scope estimate,
+   not a target. The strongest candidates, located:
+
+   | Claim | Where |
+   |---|---|
+   | PATH resolution | `internal/curl/exec.go:86` |
+   | `Wait`/pipe ordering | `internal/curl/exec.go:90` |
+   | capture file never world-readable, never outlives exec | `internal/curl/exec.go:168-169` |
+   | *"`request.Redacted` cannot fail"*, justifying `entry.URL, _ = req.URL(request.Redacted)` at `:162` | `internal/corpus/entry.go:160` |
+   | lock-discipline precondition | `internal/corpus/store.go:129-130` |
+   | atomic replace | `internal/corpus/store.go:296-297` |
+   | glob cannot fail / no regexp injection | `internal/secret/redact.go:121-123` |
+   | nil `Redactor` → built-in list | `internal/secret/redact.go:102-103` |
+   | *"nothing outside this package can reach it"* (`Resolve`) — `boundary_test.go` does **not** enforce this | `internal/curl/render.go:6-9` |
+   | concurrent reader | `internal/spec/source.go:167` |
+   | marshalling cannot fail | `internal/clierr/clierr.go:129` |
 2. For each, decide: **write the test, or delete the claim.** Both are correct outcomes; leaving
    it is not. A structural claim (X cannot import Y, only Z can call W) belongs in
    `internal/e2e/boundary_test.go`, not in prose.
@@ -1260,11 +1401,23 @@ no line number to anchor on.
 **Adversarial — what does hostile or malformed input do here?**
 Where a comment claims a *defence* — "this cannot be a regexp injection", "a symlink is never
 followed", "a value cannot carry CRLF because the layer below re-checks it" — the test you write
-must be the hostile one. Two of the claims found are mutually referential: `build.go` says CRLF
-is rejected because `internal/curl` re-checks every pair as the last gate, and `internal/curl`
-says the same in reverse. Assert **both** layers independently, by calling each directly with a
-CRLF-bearing value; a defence that exists only in two comments pointing at each other is the
-shape Task 4's finding took.
+must be the hostile one.
+
+**The CRLF pair is not one of them — an earlier draft of this plan was wrong about it, and chasing
+it wastes the task.** The claim was that `build.go` and `internal/curl` point at each other with no
+test underneath. Checked: `internal/request/build.go:448-450` does defer to curl as the last gate,
+but `internal/curl/config.go:265-272` says the **opposite** of the mirror image — it states
+`checkSplit` "is the last gate … and it is *not* redundant with the binder's", justified
+independently by `history replay` bypassing `request.Build` entirely. And both layers are already
+asserted directly, at `internal/request/request_test.go:344`
+(`TestBuildRejectsCRLFInAValue`) and `internal/curl/config_test.go:448`
+(`TestBuildConfigRejectsCRLFThatWouldSplitTheRequest`). This defence is tested at both layers;
+leave it alone and spend the budget on the eleven claims tabled above.
+
+The shape to hunt is the one Task 4's finding actually took: a claim with **no** test under it at
+either layer. `internal/curl/render.go:6-9` is the clearest live example — a structural claim that
+nothing outside the package can reach `Resolve`, which `boundary_test.go` does not enforce and no
+test asserts. That one belongs in `internal/e2e/boundary_test.go`, not in prose.
 
 **Verify:** `go test ./...` and lint clean. Report the count of claims tested vs. claims deleted
 in the commit message.
@@ -1298,12 +1451,16 @@ what they left; do not restore what they removed.
 
 **Red — write failing tests:**
 1. Appending to a store already holding many entries parses the file **once**, not twice. Confirmed
-   current behaviour, all inside the one `flock(LOCK_EX)` taken at `store.go:156` and held to the
-   end: `uniqueID` (`:162`) → `storedIDs` (`:191`) → `os.ReadFile` (`:208`) + per-line `lineHead`
-   (`:214-218`); then `write` (`:169`); then `trim` (`:173`) → `os.ReadFile` again (`:295`) +
-   per-line `lineHead` (`:304-310`), **unconditionally** — `trim` returns early at `:318-320` only
-   *after* the full parse. Two reads, two parses. Assert this at the observable level (a counter on
-   a seam you introduce, or a bounded number of reads), not by timing.
+   current behaviour, all inside the one exclusive lock taken by `lock(path)` at `store.go:109`
+   (`defer unlock()` at `:113`; the `syscall.Flock(…, LOCK_EX)` itself is in
+   `internal/corpus/lock_unix.go:36`, not in `store.go`) and held to the end:
+   `uniqueID` (called `:115`, defined `:138`) → `storedIDs` (`:160`) → `os.ReadFile` (`:161`) +
+   per-line `lineHead` (`:167-171`, `lineHead` defined `:340`); then `write` (`:122`); then `trim`
+   (`:126`, defined `:247`) → `os.ReadFile` again (`:248`) + per-line `lineHead` (`:257-263`),
+   **unconditionally** — `trim` returns early at `:271-273` only *after* the full parse. Two reads,
+   two parses. (`Read` at `:181` has a third `os.ReadFile` at `:187`, but it is not on the append
+   path.) Assert this at the observable level (a counter on a seam you introduce, or a bounded
+   number of reads), not by timing.
 2. `trim` runs only when the file could be over cap. Assert an append to a small store performs
    no trim scan.
 3. The per-source cap still holds exactly: `TestAppendCapsEachSourceSeparately` and
@@ -1389,12 +1546,20 @@ time.
 2. Read every file touched in the phase. `git diff main...HEAD --stat` is the work list.
 3. Consolidate across the whole phase, not just the last three tasks. The duplication that
    survives compaction is the duplication no single earlier compaction could see.
-4. Measure `cmd/talaria`: it was 1,589 of 5,511 non-comment production lines (28%) at the start of
-   the phase. Report the number now. If it grew, move logic down until it did not.
+4. Measure `cmd/talaria`. **Baseline, measured on this branch on 2026-08-04 before any task
+   landed: 1,580 of 5,495 non-comment, non-blank production lines (28.8%)**, counting `cmd/` and
+   `internal/` and excluding `_test.go`. (`CLAUDE.md` quotes 1,589 / 5,511 from before the
+   `run`/`gen` removal — compare against 1,580 / 5,495, and update `CLAUDE.md` to whatever the
+   phase ends at.) Report the number now. If it grew, move logic down until it did not.
 5. Delete every comment asserting a property no test enforces that Task 18 did not reach.
-6. Confirm the phase's own hygiene: no `//nolint` waiver tagged `phase-2a task 1` survives; no
-   `REVIEW_FINDINGS.md`-shaped file was created at the repo root; `internal/ci/workflow_test.go`
-   still passes, meaning `.ralph/stack.json` and `.github/workflows/ci.yml` still agree.
+6. Confirm the phase's own hygiene: **no `phase-2a task 1` marker survives anywhere** — grep the
+   string itself, not `nolint`, because one of the three is a `contextcheck` exclusion block in
+   `.golangci.yml:70-76` and two more are `TRACKED DEBT` prose comments at
+   `internal/spec/source.go:117` and `internal/curl/version.go:42`. A grep for `//nolint` finds
+   two of five. Also: no `REVIEW_FINDINGS.md`-shaped file was created at the repo root;
+   `internal/ci/workflow_test.go` still passes, meaning `.ralph/stack.json` and
+   `.github/workflows/ci.yml` still agree (it reads them at `:23-24`, plus the race workflow at
+   `:232-233`).
 7. Update `CLAUDE.md` with every pattern this phase established, and update the scope note if
    anything moved.
 
