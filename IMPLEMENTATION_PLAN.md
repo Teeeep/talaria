@@ -2132,3 +2132,274 @@ been OOM-killed twice this phase.
 
 **Why:** House rule: a green suite is not evidence. A test that sleeps is asserting about the
 scheduler, not about the code.
+
+---
+
+# Review cycle 2 fixes (2026-08-04)
+
+Ten findings over tasks 17, 25–29, archived under `docs/review/`. The shape of this cycle differs
+from cycle 1's: nothing here is an old defect resurfacing except finding 2. Most are **new hazards
+the cycle-1 fixes introduced** — a bound that stops a read but not the matching write, an escaper
+applied to a field that is not a table cell, a comment that outran its fix. That is the cost of a
+fast remediation, and it is why the checkpoint review exists.
+
+Same rule as cycle 1: **the regression test must fail against the code as it stands today.**
+
+---
+
+### Task 34: A line that cannot be read back is never reported as recorded — cycle-2 finding 1 (CRIT)
+
+**Depends on:** none
+
+**Test files:**
+- `internal/corpus/store_test.go` (modify) — `Append` returning nil means `Read` returns it
+
+**Implementation files:**
+- `internal/corpus/store.go` — `Append` (~:126) marshals, calls `write`, returns nil with no
+  bound on the line it produced
+- `internal/corpus/entry.go` — `EntryResponse.Headers` / `EntryRequest.Headers` are unbounded
+
+**Red — write failing tests:**
+1. A response body of `MaxBody` bytes of `0x01`. It is valid UTF-8, so it takes the non-base64
+   branch, and `encoding/json` expands each C0 byte six-fold as a `\u00NN` escape — a
+   393,693-byte line, past the 256 KiB `maxEntryBytes` that `lines()` drops. After `Append`
+   returns nil, `Store.Read` must return the entry. Assert **`Read` returns it or `Append`
+   returned an error, never both nil.**
+2. ~200 KB of ordinary response headers — curl's own ceiling is 300 KB, so this needs no hostile
+   peer. Today: `call` exits 0, stderr is empty, and `history` returns `{"entries":[]}`.
+3. Three `--query` values of 100 KB each — user input, no server involved.
+4. The entry survives a `trim`. Today `trim` rebuilds from `lines(data)`, which already dropped
+   the oversize line, so the next retention pass deletes it with no diagnostic.
+
+**Adversarial — what does hostile or malformed input do here?**
+1. A line one byte over `maxEntryBytes` after encoding, and exactly at it.
+2. A body that is valid UTF-8 control characters throughout — the six-fold expansion case.
+3. Two bodies at `MaxBody` base64'd, which spend ~175 KB of the 256 KB before any header.
+4. A header value that is itself megabytes.
+
+**Green — minimal implementation:**
+Bound the line where it is produced — in `Append`, after `json.Marshal`, before `write`. Prefer
+shrinking the entry until it fits: cut the bodies further, set the `Truncated` field that already
+exists to say so, and cap `EntryResponse.Headers` / `EntryRequest.Headers` the way `newBody` caps
+a body, so a verbose-but-legitimate server still gets its metadata recorded. Failing that, refuse
+the line and return an error so `recordCall`'s stderr warning fires. **Silent loss is the one
+outcome that must not survive.** The bound applies to the *encoded* line, not to `MaxBody` — the
+expansion happens in the JSON encoding.
+
+**Verify:** `go test ./internal/corpus/... ./cmd/...`
+
+**Why:** README.md:474 verbatim: *"an entry talaria reported as recorded is one you will find in
+the file."* It also contradicts `Append`'s own doc comment, in the file that wrote the
+no-unenforced-invariants rule down. The length filter in `lines()` is new on this branch — the
+identical entry reads back correctly on `main` — so task 9 made talaria write entries it will
+never read. It is the exact inverse of the hazard `8efc8dd` closed, and re-running a mutating call
+is the same consequence reached from the other side.
+
+---
+
+### Task 35: `document.auth` and `resolve` stop concatenating the credential — cycle-2 finding 2
+
+**Depends on:** none
+
+**Test files:**
+- `internal/curl/firewall_test.go` (modify) — hold `unsafe.StringData` of the concatenation across
+  the build and assert it is unreadable, the way
+  `TestBuildZeroesTheArrayItAbandonsWhenTheBufferGrows` does for the array
+
+**Implementation files:**
+- `internal/curl/config.go` — `document.auth` (~:253) and `resolve`
+
+**Red:** the resolved credential is readable in a Go string after `cleanup()` and `discard()` have
+run.
+
+**Green — minimal implementation:**
+Give `document` a `pair(name, sep, value string)`, or inline the `write` calls, so `auth` emits
+`header`, ` = "`, `escapeDirective(h.Name)`, `: `, `escapeDirective(value)`, `"` and the newline
+as separate pieces — exactly the shape `cookies` already uses. It needs no new machinery. For
+`resolve`, either return `(prefix, value)` and let the writer emit them separately, or state the
+residue explicitly.
+
+**If the complete claim is judged not worth it, narrow the comment and the CLAUDE.md rule
+instead.** This is the third cycle in which a zeroing claim has outrun what the code does, which
+is itself the finding: `071b26d` wrote *"Never introduce another accumulator for
+credential-bearing text without both properties"* into CLAUDE.md and left two in the same file.
+
+**Verify:** `go test ./internal/curl/...`
+
+---
+
+### Task 36: The emitted curl is a line, not a table cell — cycle-2 finding 3
+
+**Depends on:** none
+
+**Test files:**
+- `cmd/talaria/call_test.go` (modify) — the pretty `curl` line is byte-identical to the JSON
+  `curl` field
+
+**Implementation files:**
+- `internal/output/render.go` (~:133), `cmd/talaria/call.go` (~:443)
+
+**Red:** `call --dry-run --output pretty` with a body containing a backslash prints a curl command
+whose backslashes have been doubled by `escapeCell`. Pretty is the default when stdout is a
+terminal — the human about to paste it gets a command that is not the one talaria ran.
+
+**Green — minimal implementation:**
+Give `output.Payload` a way to carry a line that is a line rather than a one-column table
+(`Lines []string`, printed verbatim by both renderers); `callPayload` puts the request line and
+the curl line there. **Do not escape at the call site** — CLAUDE.md forbids it — and **do not
+exempt single-column rows generically**: `history show` has one-column cells that must stay
+escaped.
+
+**Verify:** `go test ./internal/output/... ./cmd/...`
+
+**Why:** Task 14 made every cell safe and swept in a field that was never tabular. The escaping
+rule is right; the curl line was never a cell.
+
+---
+
+### Task 37: A non-regular history file is refused, not waited on — cycle-2 finding 4
+
+**Depends on:** Task 17 (landed)
+
+**Test files:**
+- `internal/corpus/file_test.go` (modify) — a FIFO at the history path
+
+**Implementation files:**
+- `internal/corpus/file.go` — `readStore` (~:265) and `tail`
+
+**Red:** a FIFO at the history path blocks `os.Open` **with the append lock held**, so it hangs
+every other talaria process too. `readStore`'s own comment (`file.go:258-262`) says this cannot
+happen: *"a store that is a symlink to /dev/zero or a FIFO stats as empty and reads forever"* — it
+describes the bound on bytes read, which never runs, because the open never returns.
+
+**Green:** `os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)` in `readStore` and `tail`, and
+reject a non-regular store with an entry-level error naming the path, exactly as the over-bound
+case does. Add the FIFO to the hostile-input tests beside the `/dev/zero` one. If judged out of
+scope, narrow both comments and CLAUDE.md to what is enforced — but the lock makes this a
+process-wide hang, which §3.1 forbids.
+
+**Verify:** `go test ./internal/corpus/...`
+
+---
+
+### Task 38: The lock's abandon path has a second way out — cycle-2 finding 6
+
+**Depends on:** Task 17 (landed)
+
+**Implementation files:** `internal/corpus/lock_unix.go` (~:131)
+
+`waitForLock` gives up correctly — both `ctx` and `lockTimeout` verified with `-race -count=40` —
+and hands the descriptor to `abandon`, which is right. But `abandon`'s own wait has no bound, so a
+lock never granted retains a goroutine and a descriptor for the life of the process.
+
+**Green:** either give `abandon` a second bound (`select` on `taken` against a generous timer,
+accepting that a lock granted after it is held until exit — no worse than today), or state the
+limitation in the comment and **scope the CLAUDE.md rule to the CLI's process lifetime**, so the
+twin work does not inherit it as settled. A CLI exits; a server does not.
+
+**Verify:** `go test -race -count=20 ./internal/corpus/...`
+
+---
+
+### Task 39: An `apiKey` scheme's `name:` passes a CRLF gate — cycle-2 finding 7
+
+**Depends on:** none
+
+**Implementation files:** `internal/request/build.go` (~:442)
+
+**Pre-existing on `main`** — `binder.credentials` attached the pair with no name check there
+either — so it is not this branch's defect. It is recorded because it is the last instance of the
+class this branch closed everywhere else: a spec-derived string reaching the wire as a header name
+with no charset check. The media-type gate, the path-template gate and the server-variable gate
+all exist; this one does not.
+
+**Red:** an `apiKey` scheme whose `name:` carries CR, LF or a colon.
+
+**Green:** check the name with the existing wire-charset helpers before attaching the pair; exit 2.
+
+**Verify:** `go test ./internal/request/... ./internal/canary/...`
+
+---
+
+### Task 40: `auth check` and `call` agree on a hostile path key — cycle-2 finding 9
+
+**Depends on:** Task 25 (landed)
+
+**Implementation files:** `internal/request/server.go` (~:36), `cmd/talaria/auth.go`
+
+`b58b043` added both gates, but `Destination` deliberately does not apply `isPathTemplate`, so on
+the hostile spec `call` exits 2 and `auth check` exits 0. CLAUDE.md's rule is that the two may not
+disagree.
+
+**Green:** either have `destinationWithholds` report a spec whose path template `binder.path`
+would refuse, so `auth check` exits 2 too, or add a row to
+`TestAuthCheckAndCallAgreeOnUnsupportedSchemes` recording this cell as deliberate. **Whichever,
+say which in CLAUDE.md's agreement rule** — an undocumented deliberate disagreement is how the two
+drifted the first time.
+
+**Verify:** `go test ./cmd/... ./internal/request/...`
+
+---
+
+### Task 41: README describes what `redact.body-paths` actually does — cycle-2 finding 8
+
+**Depends on:** Task 26 (landed)
+
+**Implementation files:** `README.md` (~:260), `AGENT.md`
+
+`48c4bf3`'s `displayRequest` puts `req.Body.Data` through `redactors.Response.Body` before both
+`request.body` and `curl.Render`'s `--data-raw`. That is the right fix. README.md:260-261 still
+says body-paths are *"dotted JSON paths into a **response** body"*, and nothing says a configured
+path also rewrites what the emitted curl shows for a `--body` literal — i.e. that the command no
+longer reproduces the call byte for byte.
+
+**Green:** say both things where the option is documented, in README and AGENT.md.
+
+---
+
+### Task 42: `request.body` references a body the caller did not type — cycle-2 finding 5
+
+**Depends on:** Task 26 (landed)
+
+**Decided 2026-08-04 (human):** option Y1. DESIGN.md v0.6 §3.4 now binds the referenced-body rule
+to every stdout surface, not only the emitted curl. Implement it; do not re-open it.
+
+**Test files:**
+- `internal/canary/canary_test.go` (modify) — **repoint the canary**
+- `cmd/talaria/call_test.go` (modify) — the two body fields agree for all three origins
+
+**Implementation files:**
+- `cmd/talaria/call.go` (~:435) — `view.Request.Body = string(shown.Body.Data)` for every origin
+- `AGENT.md`, and DESIGN.md §4's payload sketch — the envelope contract changes
+
+**Red — write failing tests:**
+1. `--body @/tmp/secret-body.json` where the file holds `{"client_secret":"FILE-CANARY-42"}`:
+   `request.body` must not contain the canary. Today it prints verbatim while `request.curl`
+   beside it emits `--data-binary '@/tmp/secret-body.json'`.
+2. The same for `--body -` from stdin.
+3. An argv body still prints (redacted, per task 26) — this rule narrows what is shown for two
+   origins and must not touch the third.
+4. **Repoint the canary case.** `TestABodyFileSecretReachesNoOutputSurface` puts its canary under
+   `refresh_token`, which the built-in path list rewrites, so the gate cannot see this class at
+   all. Move it to `client_secret` — a field no built-in path covers — and the suite goes red
+   today. That repointing is the durable part of this task: the gate has been blind to every
+   non-`*_token` secret in a body since it was written.
+
+**Adversarial — what does hostile or malformed input do here?**
+1. A path that is itself secret-shaped (`--body @/home/u/.aws/credentials`) — the reference names
+   the path, so decide whether the path is safe to print. It is: the agent chose it or a human
+   wrote it into CI, and it is what the curl field already prints.
+2. A body file whose path contains a quote or a newline.
+3. `--body -` with an empty stdin.
+4. A file body on a `history replay`, which builds a `Request` with no binder.
+
+**Green — minimal implementation:**
+Gate on `shown.Body.Origin`: `request.BodyArgv` prints (through the redactor, as task 26 made it);
+`BodyFile` emits `"@" + Path`; `BodyStdin` emits `"@-"`. The origin field already exists and
+`curl.bodyDirective` already branches on it — this is the same branch, one surface over. Amend
+DESIGN.md §4's payload sketch and AGENT.md in the same commit, since an agent parses this field.
+
+**Verify:** `go test ./internal/canary/... ./cmd/...`
+
+**Why:** §3 principle 0 is the stated reason the curl rule exists, and it applies identically to
+the field beside it. `9e8e4e0` established the principle and `callPayload` never got it.

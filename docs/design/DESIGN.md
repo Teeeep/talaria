@@ -6,12 +6,13 @@
 > the agent is. This is what it wears to move fast. Fixes `cmd/talaria`, the binary on `$PATH`,
 > `TALARIA_AUTH_*` env vars, and the `"schema": "talaria/v1"` output field.
 
-**Changes in v0.6:** one rule §5a left unstated and the phase-2a review then found the code
-guessing at — a selected profile's own `base-url` host is in the allowed set (§5a, source 4),
-which makes the README's headline profile workflow send the credential the profile names. The
-review that forced the decision is
-[docs/review/20260803-230956-cycle1-findings.md](../review/20260803-230956-cycle1-findings.md),
-finding 7.
+**Changes in v0.6:** two rules the doc left unstated and the phase-2a reviews then found the code
+guessing at. A selected profile's own `base-url` host is in the allowed set (§5a, source 4), which
+makes the README's headline profile workflow send the credential the profile names — cycle-1
+finding 7. And the referenced-body rule binds every stdout surface, not just the emitted curl
+(§3.4, §4): `request.body` carries `"@/path"` / `"@-"` for a body the caller did not type, because
+an envelope that withholds a body from one field and prints it in the next has withheld nothing —
+cycle-2 finding 5. Reviews archived under [docs/review/](../review/).
 
 **Changes in v0.5:** `run` is cut (§4, §5, §7) — spec-driven smoke testing is well served
 elsewhere and was the largest, least differentiated part of the tool. Three rules the phase-2
@@ -167,11 +168,15 @@ Primary motivation remains: a tool for my own workflow. Open source is upside.
    docs, and scripts. **Emitted curl always references secrets symbolically** — e.g.
    `-H "Authorization: Bearer $TALARIA_AUTH_BEARER"` — runnable in a shell where the env var is
    set, useless to exfiltrate (§5a). **A request body is referenced, never inlined, unless the
-   caller typed it into argv:** `--body @file` emits `--data @file` and `--body -` emits
-   `--data @-`, because a body read from a file or stdin may carry a credential the agent never
-   saw. Only an argv-supplied body is inlined, since it is already in the agent's hands. This
-   keeps the emitted command both runnable and safe to print. **Check curl's version, not just
-   presence:**
+   caller typed it into argv:** `--body @file` emits `--data-binary @file` and `--body -` emits
+   `--data-binary @-`, because a body read from a file or stdin may carry a credential the agent
+   never saw. Only an argv-supplied body is inlined, since it is already in the agent's hands.
+   This keeps the emitted command both runnable and safe to print. **The rule is about the body,
+   not about the curl field:** it binds every stdout surface that would show the bytes, including
+   the envelope's own `request.body`, which carries `"@/path"` / `"@-"` for a referenced body
+   rather than its contents (§4). One envelope may not answer the same question two ways — a
+   `--body @secrets.json` that is withheld from `request.curl` and printed in `request.body` is
+   not withheld. **Check curl's version, not just presence:**
    `--write-out '%{json}'` requires curl ≥ 7.70 and is a hard floor.
 
 5. **Safe by default.** Read-only (GET/HEAD/OPTIONS) unless `--allow-mutations`. The sanctioned
