@@ -52,7 +52,7 @@ cancellation*, not size — bounding a read does not license removing any of the
 |---|---|---|
 | `//nolint:noctx` | `internal/spec/source.go:122` (its `TRACKED DEBT` comment at `:117-121` says to remove it in the fixing commit) | Task 16 — it threads the context through `Load` |
 | `//nolint:noctx` | `internal/curl/version.go:45` (`TRACKED DEBT` comment at `:42-44`; it does **not** carry the remove-it sentence) | Task 13 |
-| a `contextcheck` **exclusion block** in `.golangci.yml:70-76`, path `cmd/talaria/root\.go` | *"the call command does not thread `cmd.Context()` into the binder … this exclusion is deleted in that commit"* | Task 16, **after** Task 14 — see below |
+| a `contextcheck` **exclusion block** in `.golangci.yml:71-76`, path `cmd/talaria/root\.go` | *"the call command does not thread `cmd.Context()` into the binder … this exclusion is deleted in that commit"* | Task 16, **after** Task 14 — see below |
 
 The third one is not a `//nolint` directive, so a grep for `nolint` misses it entirely. It cannot
 be deleted until **both** Task 14 (context into `request.Inputs`/`Build`, i.e. the binder) and
@@ -62,12 +62,15 @@ it earlier turns `contextcheck` back on against code that still has the gap.
 A waiver left behind after its fix lands is a lint failure waiting to happen; a waiver removed
 before its fix lands is a lint failure now.
 
-**Every file:line in this plan was verified against the tree on 2026-08-04, twice.** Symbols were
-checked to exist (or, for `(create)`, to not exist). Where the finding's own line numbers are
+**Every file:line in this plan was verified against the tree on 2026-08-04, three times.** Symbols
+were checked to exist (or, for `(create)`, to not exist). Where the finding's own line numbers are
 stale, this plan carries the current one. The second pass corrected every `internal/corpus/store.go`
 citation in Tasks 7, 14, 15 and 19 — that file is 391 lines and the plan had been citing a longer
-version of it, ~45–75 lines out. Still locate by symbol: a task ahead of you in the queue may have
-moved a line, and the store.go case shows what stale numbers cost.
+version of it, ~45–75 lines out. The third pass corrected eleven more, and two of them were wrong
+*reasoning* rather than a wrong number: Task 8 named an error return that fires **before** the
+credential is written, and Task 9 named the boundary-test assertion that would **not** fail. Both
+would have sent a builder to write a test that proves nothing. Still locate by symbol: a task ahead
+of you in the queue may have moved a line, and the store.go case shows what stale numbers cost.
 
 ## Commands
 
@@ -426,7 +429,7 @@ agents branch on is wrong for the one case it exists to serve.
 - `internal/request/body.go` (modify) — `binder.contentType` (`:136-148`)
 
 **The `internal/curl` gate is mandatory, not belt-and-braces.** `history replay` sets
-`req.Body.ContentType` straight from the stored entry (`cmd/talaria/history.go:610`) and never
+`req.Body.ContentType` straight from the stored entry (`cmd/talaria/history.go:605`) and never
 goes through `internal/request` at all, so a bind-time check alone leaves the whole replay path
 open. Conversely a user-supplied `--header Content-Type=…` has already passed
 `binder.pairs` (`internal/request/build.go:380`) → `SplitsRequest` (defined at `:451`, called from
@@ -685,18 +688,23 @@ this process.
    failure the rule exists to prevent.
 3. `internal/corpus/entry.go`: reject an over-`MaxBody` decoded body in `Body.Bytes()` as a
    `clierr.Usage` (exit 2), matching the existing undecodable-base64 (`:126`) and unknown-encoding
-   (`:131`) refusals. `MaxBody` (`:34`) is referenced today only at `:258-260` inside `newBody` —
-   the write side. `Bytes()` is reached from `history show` (`cmd/talaria/history.go:361`) and
-   `history replay` (`:601`), i.e. from a hand-edited file.
+   (`:131`) refusals. `MaxBody` (`:34`) is *enforced* today only at `:258-260` inside `newBody` —
+   the write side. It is **referenced** in three more places, none of which bounds a decode, so do
+   not read a grep hit as existing coverage: `cmd/talaria/history.go:599` refuses to replay a body
+   already flagged `Truncated`, and `entry.go:107` and `:243` are comments. `Bytes()` is reached
+   from `history show` (`cmd/talaria/history.go:361`) and `history replay` (`:601`), i.e. from a
+   hand-edited file.
 
 **Do not remove the `//nolint:noctx` waiver at `internal/spec/source.go:122` in this task.** Its
 debt is context and cancellation; a size bound does not discharge it. Task 16 removes it.
 
 **Note for the malformed-line assertion.** An unparseable line survives every `Read` invisibly
 (`store.go:202-204` `continue`s) and is only destroyed when `trim` rewrites the file
-(`store.go:257-263` drops lines `lineHead` cannot read). So an over-cap line "skipped as malformed" is skipped
-on read but silently deleted on the next trim. Assert whichever you intend; do not assume it
-persists.
+(`trim`'s rewrite loop at `store.go:279-284` skips any line `lineHead` cannot read, via
+`if !readable[i] { continue }` at `:280`/`:283`; the earlier loop at `:257-263` only *classifies*
+lines into `sources`/`readable`/`counts` and drops nothing). So an over-cap line "skipped as
+malformed" is skipped on read but silently deleted on the next trim. Assert whichever you intend;
+do not assume it persists.
 
 **Verify:** `go test ./...`
 
@@ -738,8 +746,10 @@ test is already in `package curl`, so an unexported seam is enough.
    that is what `TestBuildConfigCleanupZeroesTheDocument` (`internal/curl/config_test.go:376`)
    already asserts, at `:386`, on the copy.
 3. `discard()` zeroes as well — it is the error path, and error paths are where redaction bugs
-   live (DESIGN.md §5a). It is reachable with a credential already in the buffer: `build` writes
-   the resolved URL at `config.go:138` before the first error return at `:143`.
+   live (DESIGN.md §5a). It is reachable with a credential already in the buffer: `build`
+   (`config.go:133`) writes the resolved URL at `:138`, and the first error return **after** that
+   is the invalid-method check at `:143`. Note `build`'s *first* error return is `:136`, on
+   `req.URL(resolve)` failing — that one precedes the write, so it is not the path to test.
 4. The cookie builder at `config.go:243` is zeroed too.
 
 **Adversarial — what does hostile or malformed input do here?**
@@ -793,7 +803,7 @@ a *guard* is whether it can pass vacuously, and the file is better than the find
 deliberate and documented** at `boundary_test.go:28-31` (*"the twin lands in Phase 6. It is named
 here anyway…"*) — do not "fix" it as an oversight.
 
-The real vacuity gap is the other list: `DESIGN.md:285-286` names `operation`, `validate` **and
+The real vacuity gap is the other list: `docs/design/DESIGN.md:285-286` names `operation`, `validate` **and
 `gen`** as shared, but `shared` (`:16-19`) holds only the first two. `gen` was deleted, so the
 forward-declaration discipline is applied to `forbidden` and not to `shared`. Make the *rule*
 carry that distinction explicitly — every package named in a rule either exists, or is marked
@@ -813,7 +823,10 @@ typo cannot silently disable a rule.
 2. Restructure `boundary_test.go`'s two flat slices into a table of (package, forbidden-imports)
    rules, keeping the existing two rules and adding `internal/corpus` → `internal/curl`,
    `internal/twin`. `internal/corpus` cannot simply join `shared`, because `corpus` is itself in
-   the current forbidden list and the self-check would fail.
+   the current `forbidden` list, so the forbidden loop at `boundary_test.go:63-69` would report
+   `corpus depends on corpus`. (Not the self-check at `:58-61` — that one would pass, since a
+   package is always in its own `go list -deps` closure. An earlier draft of this plan named the
+   wrong assertion.)
 
 **Verify:** `go test ./...`
 
@@ -883,7 +896,9 @@ This *is* the adversarial suite, so the question is whether it can pass vacuousl
 **Green — minimal implementation:**
 1. Add an operation to `testdata/canary.yaml` whose declared response schema the test server's
    body violates. **The fixture has no response schemas at all today** — all eight operations
-   declare only `responses: "200"/"201": description: OK`, with no `content:` and no `schema:`.
+   declare a bare `responses:` entry with a `description:` and nothing else (`"200": OK`, and
+   `createThing`'s `"201": Created` at `canary.yaml:106-108`): no `content:`, no response
+   `schema:` anywhere. The only `schema:` in the file is `getPet`'s path parameter at `:95`.
    Model the new one on `internal/e2e/testdata/e2e-api.yaml:90` (`getBroken`), which is the
    working example of exactly this. Note `canary.yaml:8` points the server at
    `https://api.invalid/v1` deliberately, so the new stage must pass `--base-url` at the local
@@ -981,7 +996,7 @@ about single-cell rows below applies to it too — check its test either way.
    passes a single-cell row through untouched"* — a blanket per-cell escaper changes `describe`
    output. Decide deliberately: exempt single-cell rows, or accept the change and update that
    comment and its tests (leaving the comment while breaking it violates `CLAUDE.md`).
-   `fitSummaries` (declared `list.go:124`, its doc comment from `:118`; pretty only, called at
+   `fitSummaries` (declared `list.go:124`, its doc comment from `:119`; pretty only, called at
    `list.go:107`) computes column widths on *unescaped* cells, so escaping must run before it or
    the width budget drifts.
 
@@ -1124,7 +1139,7 @@ progresses.
    deadline and the caller's context, then return the existing error. Thread a context into
    `Store.Append`. Replace the comment justifying the unbounded wait — it argues a bounded wait
    *"would drop history the caller was told had been recorded"*, which is not true given
-   `recordCall`'s warning. **It is an inline comment at `lock_unix.go:32-34`, above the
+   `recordCall`'s warning. **It is an inline comment at `lock_unix.go:33-35`, above the
    `syscall.Flock` call — not the function's doc comment at `:12-22`, which is about the sibling
    lock file and the rename and stays.**
 
@@ -1270,7 +1285,7 @@ that one exclusion for Task 17; say so in the commit.
    fix requires. The six `RunE` call sites already hold a `*cobra.Command`, so `cmd.Context()` is
    in scope; the change is confined to `loadSpec`/`loadIndex` in `cmd/talaria/list.go` and this
    package.
-7. **The `contextcheck` exclusion in `.golangci.yml:70-76` is also removed in this commit** — its
+7. **The `contextcheck` exclusion in `.golangci.yml:71-76` is also removed in this commit** — its
    own comment says it *"is deleted in that commit"*, alongside the two `noctx` waivers. It is not
    a `//nolint` directive, so nothing greps it up; it is why this task depends on Task 14. Removing
    it turns `contextcheck` back on for `cmd/talaria/root.go`, which only passes once **both** the
@@ -1340,7 +1355,7 @@ replace several others. Green before and after; net-negative diff.
 3. Consolidate: tasks 13, 14 and 16 all threaded a `context.Context` through a package that did
    not take one — check the signatures converged on one shape rather than three. Tasks 7 and 16
    both bound a read of a remote body; one cap, one place.
-   **If Task 16 left the `.golangci.yml:70-76` `contextcheck` exclusion in place** because Task 14
+   **If Task 16 left the `.golangci.yml:71-76` `contextcheck` exclusion in place** because Task 14
    had not landed yet, remove it here and confirm lint is clean — by this point both halves exist.
 4. Move logic out of `cmd/talaria` and measure the non-comment line count before and after.
    Tasks 14 and 16 both added flags and plumbing there.
@@ -1550,16 +1565,28 @@ time.
    landed: 1,580 of 5,495 non-comment, non-blank production lines (28.8%)**, counting `cmd/` and
    `internal/` and excluding `_test.go`. (`CLAUDE.md` quotes 1,589 / 5,511 from before the
    `run`/`gen` removal — compare against 1,580 / 5,495, and update `CLAUDE.md` to whatever the
-   phase ends at.) Report the number now. If it grew, move logic down until it did not.
+   phase ends at.) Measure it the same way the baseline was measured, or the comparison is
+   meaningless:
+   `find cmd internal -name '*.go' ! -name '*_test.go' -print0 | xargs -0 cat | grep -vE '^[[:space:]]*(//|$)' | wc -l`,
+   and the same over `cmd` alone. (There are no `/* */` block comments in production Go here, so
+   the line-prefix filter is exact; if this phase introduces one, the count drifts.) Report the
+   number now. If it grew, move logic down until it did not.
 5. Delete every comment asserting a property no test enforces that Task 18 did not reach.
-6. Confirm the phase's own hygiene: **no `phase-2a task 1` marker survives anywhere** — grep the
-   string itself, not `nolint`, because one of the three is a `contextcheck` exclusion block in
-   `.golangci.yml:70-76` and two more are `TRACKED DEBT` prose comments at
-   `internal/spec/source.go:117` and `internal/curl/version.go:42`. A grep for `//nolint` finds
-   two of five. Also: no `REVIEW_FINDINGS.md`-shaped file was created at the repo root;
+6. Confirm the phase's own hygiene: **no `phase-2a task 1` marker survives in code or config** —
+   grep the string itself, not `nolint`. The literal string has **five hits across three files,
+   at three marker sites**: `internal/spec/source.go:117` (prose) and `:122` (the `//nolint`),
+   `internal/curl/version.go:42` (prose) and `:45` (the `//nolint`), and the `contextcheck`
+   exclusion block at `.golangci.yml:71-76` (its comment carries the string at `:71`). So a grep
+   for `//nolint` finds two of the five, and none of the three sites is fully removed by deleting
+   a directive alone — the prose comment above it goes too.
+   **Exclude this plan from that grep.** `IMPLEMENTATION_PLAN.md` contains the literal string in
+   four places (it is how the markers are tracked), so a bare `grep -r 'phase-2a task 1' .` never
+   returns empty and will read as a failure. Grep `cmd internal .golangci.yml`, or `-r` with
+   `--exclude=IMPLEMENTATION_PLAN.md`.
+   Also: no `REVIEW_FINDINGS.md`-shaped file was created at the repo root;
    `internal/ci/workflow_test.go` still passes, meaning `.ralph/stack.json` and
-   `.github/workflows/ci.yml` still agree (it reads them at `:23-24`, plus the race workflow at
-   `:232-233`).
+   `.github/workflows/ci.yml` still agree (it reads them at `:23-24`, plus `racePath` for
+   `.github/workflows/race.yml` at `:235`).
 7. Update `CLAUDE.md` with every pattern this phase established, and update the scope note if
    anything moved.
 
