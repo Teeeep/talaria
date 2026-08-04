@@ -346,6 +346,12 @@ The spec declares security schemes; credentials come from outside and are named,
 - **`auth check` never reports a scheme satisfied when the call would refuse it.** The two agree
   by construction, or `auth check` is worthless to an agent. Implementing OAuth *flows* remains
   out of scope; Restish shows the cost of doing them properly.
+- **A spec `call` refuses for its own strings is exit 2 from `auth check` too**, with no report:
+  a `paths:` key that is not an absolute path, and an `apiKey` scheme whose `name:` cannot be
+  sent where the scheme puts it. Both are spec-controlled text that would reach the wire, both
+  are refused where they are read, and neither is a state of the environment a report could
+  describe — so the pre-flight answers what the call answers rather than exiting 0 on a document
+  no call can be made from.
 
 ## 5a. The credential firewall
 

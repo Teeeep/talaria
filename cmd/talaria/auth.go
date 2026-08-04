@@ -88,6 +88,16 @@ func newAuthCheckCmd() *cobra.Command {
 				return err
 			}
 
+			// Before the report, and before the verdict: a document whose own
+			// strings request.Build refuses is one no call can be made from, so
+			// there is no state of the environment for the report to describe.
+			// This is the half of the agreement config.Unsatisfied cannot see —
+			// the charset rules live in internal/request, which imports config
+			// and so cannot be imported by it.
+			if err := request.Refuses(index.Operations(), creds); err != nil {
+				return err
+			}
+
 			withheld, err := destinationWithholds(cmd, doc, index, prof)
 			if err != nil {
 				return err

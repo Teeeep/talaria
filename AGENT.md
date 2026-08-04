@@ -175,6 +175,12 @@ Do not try to run the OAuth flow yourself, and do not go looking for a token end
 spec. If the spec *requires* a scheme it never declares under `components.securitySchemes`, both
 commands exit 2 instead: that is a broken spec, and no variable will fix it.
 
+Two more shapes of broken spec exit 2 from `auth check` as well as from `call`: a `paths:` key
+that is not an absolute path (one that would move the request to another host), and an `apiKey`
+scheme whose `name:` cannot be sent where the scheme puts it — a header name carrying a colon,
+say. The error names the operation or the scheme. Report it and stop; exporting a variable and
+retrying cannot help, and no other spec on the machine is affected.
+
 **When a credential is missing** (exit 5, or `present: false`), the fix is one sentence to a
 human — name the variable and stop:
 

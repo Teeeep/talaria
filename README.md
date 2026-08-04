@@ -315,7 +315,11 @@ satisfied by any one of them. The report is printed either way — a code 5 with
 would say what failed but not what to do.
 
 `auth check` never reports a scheme satisfied when `call` would refuse it; the two derive the
-verdict from the same code, and the end-to-end suite asserts they agree.
+verdict from the same code, and the end-to-end suite asserts they agree. That extends to the
+document itself: a spec `call` refuses outright — a `paths:` key that is not an absolute path,
+an `apiKey` scheme whose `name:` cannot be sent where the scheme puts it, or a requirement
+naming a scheme `components.securitySchemes` never declares — is exit **2** from `auth check`
+too, with no report, because no credential could make such a spec callable.
 
 ## Making a call
 

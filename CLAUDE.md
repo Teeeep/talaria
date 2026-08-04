@@ -138,8 +138,10 @@ A destination computed without it names a host the call never reaches.
 set — rather than re-deriving anything, because the base URL is one string for the whole spec
 and the path is not. A pre-flight that names a different host than the call reaches is worse
 than no pre-flight. `TestDestinationAgreesWithTheBaseURLBuildChooses` compares `Destination`
-against `BaseURL + Path`, and `TestAuthCheckReportsACredentialWithheldByAHostilePathKey` is the
-two-command half.
+against `BaseURL + Path`, and `TestAuthCheckRefusesAHostilePathKeyAsCallDoes` is the two-command
+half — a hostile `paths:` key is now exit 2 from both commands rather than a withholding, and the
+host check behind `Destination` stays as the half that closes the class wherever a path comes
+from.
 
 **An operation's path is a template, and it is spec-controlled text on the wire.**
 `isPathTemplate` (`internal/request/wire.go`) requires a leading `/` and no space or control
@@ -228,8 +230,8 @@ rule is deliberately `binder.located`'s rather than a new one: only a header nam
 API is free to spell one `filter[key]`. It runs *before* the host set is consulted, so a hostile
 document is exit 2 wherever the call was pointed rather than exit 0 with a `credentials_withheld`
 entry. The check cannot live in `internal/config` — the charset rules are `internal/request`'s and
-`request` imports `config` — which is why `auth check` does not yet make it; task 40 owns that
-disagreement.
+`request` imports `config` — so `auth check` reaches it the other way, through
+`request.Refuses`; see the agreement rule below.
 
 **A request body is redacted where it is displayed, and referenced where it was not typed.**
 `request.Body` carries its origin — `BodyArgv` (the zero value), `BodyFile` with `Path`, or
@@ -294,6 +296,26 @@ the whole of `auth check`'s exit code — and `cmd/talaria/auth.go` only calls i
 to one side needs the matrix test in `cmd/talaria/auth_test.go`
 (`TestAuthCheckAndCallAgreeOnUnsupportedSchemes`) and the two-process one in `internal/e2e` to
 still pass — they compare the two commands' exit codes cell by cell.
+
+**The verdict has a second half, and it is `request.Refuses(ops, creds)`.** `config.Unsatisfied`
+answers "is a credential present"; it cannot answer "is this document sendable", because the
+charset rules are `internal/request`'s and `request` imports `config`. So the two commands
+disagreed on exactly the strings `request` refuses: on a hostile `paths:` key and on an `apiKey`
+scheme whose `name:` is not usable where the scheme sends it, `call` exited 2 and `auth check`
+exited 0 — the latter reporting `withheld: true`, which reads as "point it somewhere else" for a
+spec that is simply broken. `auth check` now asks `request` about the document's own strings
+exactly as it already asks it about the hosts, before rendering anything: a broken spec is exit 2
+with no report, the shape an undeclared scheme already had. `Refuses` answers about the
+*document*, never the invocation — a missing required `--param` is also exit 2 from `Build` and
+is deliberately not in it, or the pre-flight would call a sound spec broken. Its two gates are
+`badPathTemplate` and `credentialNameProblem` (`internal/request/refuse.go`), which are the same
+seams `binder.path` and `binder.credentialName` report, message included: a pre-flight whose
+wording differs from the failure it predicts reads as a second, unrelated problem. Every new gate
+on spec-controlled text that `Build` refuses for belongs there in the same commit, or the two
+commands drift again one string at a time.
+`TestRefusesAgreesWithBuildOnADocumentDefect` (`internal/request/refuse_test.go`) is the
+package half; `TestAuthCheckRefusesAHostilePathKeyAsCallDoes` and
+`TestAuthCheckRefusesAHostileAPIKeyNameAsCallDoes` are the two-command half.
 
 **`call` withholds and runs; `history replay` refuses.** Same host set, deliberately different
 outcomes (§5a). An off-set `--base-url` is a human pointing at a twin, so the call still exits 0

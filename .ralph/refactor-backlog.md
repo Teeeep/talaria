@@ -185,7 +185,8 @@ that pass — and task 6's before it — deliberately did not do, and why.
   shape of the document) already splits cleanly from `firewall_test.go` (the buffer) on the
   same line.
 
-- `internal/request/build.go:292`, `:336`, `:474` — third spelling of "is this name usable where
+- `internal/request/build.go:292`, `:336`, `internal/request/refuse.go:82`
+  (`credentialNameProblem`, moved out of `build.go` by task 40) — third spelling of "is this name usable where
   it is going": `located` checks a declared parameter's name (field name for a header, no CR/LF
   otherwise), `headers` checks a profile header's name, and task 39's `credentialName` checks a
   security scheme's. Rule of three. The seam is a predicate in `wire.go` —
@@ -199,3 +200,11 @@ that pass — and task 6's before it — deliberately did not do, and why.
   `credentials.go`, leaving parameter/path/header/query binding here. It is the same split
   `hosts.go` already made for "where may a credential go"; this is "what does a credential look
   like on the request". `request_test.go`'s recorded `build_test.go` seam splits on the same line.
+
+- `cmd/talaria/auth.go:65` — `auth check`'s RunE now runs two verdicts, not one:
+  `request.Refuses` (is this document sendable) before the render and `config.Unsatisfied` (is a
+  credential present) after it, with `destinationWithholds` between them. That ordering is a
+  decision — refuse before reporting, report before the credential verdict — and it lives in
+  cobra, where no test can reach it without a command tree. The seam is an `authReport(doc,
+  index, prof, hosts)` in a package that owns the sequence and hands the command a payload plus
+  a verdict; `hosts.go`'s `allowedHosts` is the precedent for lifting a step out of RunE.

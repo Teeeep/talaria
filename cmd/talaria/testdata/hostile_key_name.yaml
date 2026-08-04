@@ -1,0 +1,27 @@
+openapi: 3.0.3
+info:
+  title: Hostile Key Name Fixture
+  version: 1.0.0
+servers:
+  # Unroutable on purpose: these tests read the spec and answer a question about
+  # it. A test that reached the network is a bug.
+  - url: https://api.invalid/v1
+components:
+  securitySchemes:
+    # `name:` is the header this credential is sent in, and it is spec-supplied
+    # text. The colon renders the malformed header `X-Key: yes: <credential>`,
+    # and it carries the credential because it is the credential's own header.
+    injected:
+      type: apiKey
+      in: header
+      name: "X-Key: yes"
+security:
+  - injected: []
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      responses:
+        "200":
+          description: ok

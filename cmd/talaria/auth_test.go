@@ -307,24 +307,55 @@ func TestAuthCheckDoesNotWithholdFromTheProfilesOwnBaseURL(t *testing.T) {
 // The pre-flight has to see what the call sees. Where a call goes is the base
 // URL *joined to the operation's path*, and a `paths:` key beginning `@` turns
 // the spec's own server into userinfo — so a spec whose servers[] block looks
-// entirely ordinary still reaches a host nobody declared. An `auth check` that
-// only ever looked at the base URL reports the credential as sendable and is
-// wrong in the direction that matters.
-func TestAuthCheckReportsACredentialWithheldByAHostilePathKey(t *testing.T) {
+// entirely ordinary still reaches a host nobody declared. `call` refuses such a
+// document outright (binder.path, exit 2), so the pre-flight has to refuse it
+// too: an `auth check` that exits 0 on a spec every call rejects is the
+// disagreement DESIGN.md:329 forbids, and the one an agent trusts first.
+func TestAuthCheckRefusesAHostilePathKeyAsCallDoes(t *testing.T) {
 	isolateAuthEnv(t)
 	t.Setenv(config.EnvBearer, authCanary)
 
 	code, stdout, stderr := runAuth(t, "testdata/hostile_path.yaml", "--output", "json")
-	if code != 0 {
-		t.Fatalf("auth check = %d, want 0; stderr: %s", code, stderr)
+	if code != int(clierr.CodeUsage) {
+		t.Fatalf("auth check = %d, want 2; stdout: %s stderr: %s", code, stdout, stderr)
+	}
+	if err := decodeErr(t, stderr); !strings.Contains(err.Error.Message, "steal") {
+		t.Errorf("error = %q, want it to name the operation whose path it refused", err.Error.Message)
 	}
 
-	entry := decodeAuthEntries(t, stdout)["bearerAuth"]
-	if !entry.Present {
-		t.Error("bearerAuth reported absent, but its variable is set")
+	var out, errOut strings.Builder
+	callCode := run([]string{
+		"call", "testdata/hostile_path.yaml", "steal", "--dry-run", "--output", "json",
+	}, &out, &errOut)
+	if callCode != int(clierr.CodeUsage) {
+		t.Fatalf("call steal = %d, want 2; stderr: %s", callCode, errOut.String())
 	}
-	if !entry.Withheld {
-		t.Errorf("bearerAuth reported as sendable, but the operation's path moves the request off the spec's host:\n%s", stdout)
+}
+
+// The second cell of the same shape. An `apiKey` scheme's `name:` is the header
+// its credential is sent in, and binder.credentialName refuses one that is not
+// a header name — so `call` exits 2 on this document and `auth check`, whose
+// verdict is config.Unsatisfied alone, used to exit 0 on it. The charset rules
+// live in internal/request, which is why the pre-flight asks that package about
+// the scheme names exactly as it already asks it about the hosts.
+func TestAuthCheckRefusesAHostileAPIKeyNameAsCallDoes(t *testing.T) {
+	isolateAuthEnv(t)
+	t.Setenv("TALARIA_AUTH_APIKEY_INJECTED", authCanary)
+
+	code, stdout, stderr := runAuth(t, "testdata/hostile_key_name.yaml", "--output", "json")
+	if code != int(clierr.CodeUsage) {
+		t.Fatalf("auth check = %d, want 2; stdout: %s stderr: %s", code, stdout, stderr)
+	}
+	if err := decodeErr(t, stderr); !strings.Contains(err.Error.Message, "injected") {
+		t.Errorf("error = %q, want it to name the scheme it refused", err.Error.Message)
+	}
+
+	var out, errOut strings.Builder
+	callCode := run([]string{
+		"call", "testdata/hostile_key_name.yaml", "listPets", "--dry-run", "--output", "json",
+	}, &out, &errOut)
+	if callCode != int(clierr.CodeUsage) {
+		t.Fatalf("call listPets = %d, want 2; stderr: %s", callCode, errOut.String())
 	}
 }
 
