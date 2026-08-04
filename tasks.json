@@ -39,8 +39,8 @@
       "title": "Refuse a spec-supplied media type that would inject headers",
       "depends_on": [],
       "line_start": 486,
-      "line_end": 553,
-      "done": false
+      "line_end": 555,
+      "done": true
     },
     {
       "id": 5,

@@ -25,3 +25,7 @@ refactor pass drains them later.
   env-var/profile naming machinery (`envSuffix`, `envRef`, `profileRef`, `ReferencesEnv`,
   `checkEnvCollisions`). The naming machinery is the clean seam: it has no dependency on
   `operation` or `spec` and would test standalone as `internal/config/envnames.go`.
+- `internal/curl/config.go:1` — 431 lines after task 4 pushed it past 400. Seam: the `document`
+  type and its directive writers (`build`, `auth`, `cookies`, `body`, `directive`, `tempFile`,
+  `escapeDirective`) are a distinct concern from the `Options`/`Capture`/`BuildConfig` entry
+  points; they would move whole to `internal/curl/document.go`.

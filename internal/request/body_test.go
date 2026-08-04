@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -280,5 +281,104 @@ func TestBodyWithNoDeclaredMediaTypeHasNoContentType(t *testing.T) {
 
 	if got := buildBody(t, in).ContentType; got != "" {
 		t.Errorf("content type = %q, want empty when the operation declares no body", got)
+	}
+}
+
+// hostileMediaTypeSpec is a spec whose content: map key is the media type under
+// test. The key is where the value actually comes from — spec.LoadBytes carries
+// a CRLF in it through untouched, so nothing upstream of the binder is going to
+// catch this.
+func hostileMediaTypeSpec(t *testing.T, mediaType string) request.Inputs {
+	t.Helper()
+
+	var y strings.Builder
+	y.WriteString("openapi: 3.0.0\ninfo: {title: t, version: '1'}\n" +
+		"servers: [{url: 'https://api.example.com'}]\npaths:\n  /pets:\n    post:\n" +
+		"      operationId: createPet\n      requestBody:\n        content:\n          ")
+	y.WriteString(strconv.Quote(mediaType))
+	y.WriteString(":\n            schema: {type: object}\n      responses:\n        '201': {description: created}\n")
+
+	doc, err := spec.LoadBytes([]byte(y.String()))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+
+	ops := operation.Extract(doc)
+	if len(ops) != 1 {
+		t.Fatalf("fixture yielded %d operations, want 1", len(ops))
+	}
+	if got := ops[0].RequestBody.Content[0].ContentType; got != mediaType {
+		t.Fatalf("the loader changed the media type to %q; the fixture no longer tests what it claims", got)
+	}
+
+	return request.Inputs{Op: ops[0], Doc: doc, Body: []string{"{}"}}
+}
+
+// TestSpecDeclaredMediaTypeThatCannotBeAHeaderIsRefused covers the untrusted
+// source: an OpenAPI content: key becomes a Content-Type header verbatim, and it
+// is the one header value the binder's pair check never sees.
+func TestSpecDeclaredMediaTypeThatCannotBeAHeaderIsRefused(t *testing.T) {
+	tests := []struct {
+		name      string
+		mediaType string
+	}{
+		{"CRLF appending a header", "application/json\r\nX-Injected: pwned"},
+		{"double CRLF ending the header block", "application/json\r\n\r\nGET /admin HTTP/1.1"},
+		{"bare LF", "application/json\nX-Injected: pwned"},
+		{"bare CR", "application/json\rX-Injected: pwned"},
+		{"NUL byte", "application/json\x00"},
+		{"whitespace only", "   "},
+		{"control byte in a parameter", "application/json; charset=utf-8\x01"},
+		{"not a media type at all", "application json"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := bodyUsageErr(t, hostileMediaTypeSpec(t, tc.mediaType))
+
+			if !strings.Contains(msg, "createPet") {
+				t.Errorf("error = %q, want it to name the operation", msg)
+			}
+			// Never echoed: the message goes to stderr, and echoing it would put
+			// the CRLF — and the header it smuggles — on that surface instead.
+			if strings.ContainsAny(msg, "\r\n\x00") || strings.Contains(msg, "X-Injected") {
+				t.Errorf("error = %q, want the offending media type not echoed", msg)
+			}
+		})
+	}
+}
+
+// TestWellFormedMediaTypesAreUnaffected pins the refusal against over-rejection.
+// Length is not the threat — leaving the header field is — so a 64 KB media type
+// of legal token characters is passed through like any other.
+func TestWellFormedMediaTypesAreUnaffected(t *testing.T) {
+	for _, mediaType := range []string{
+		"application/json",
+		"application/vnd.api+json;charset=utf-8",
+		"text/plain; charset=utf-8",
+		"multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxk",
+		"*/*",
+		"application/" + strings.Repeat("a", 64<<10),
+	} {
+		t.Run(mediaType[:min(len(mediaType), 40)], func(t *testing.T) {
+			in := hostileMediaTypeSpec(t, mediaType)
+
+			if got := buildBody(t, in).ContentType; got != mediaType {
+				t.Fatalf("content type = %q, want the declared media type unchanged", got)
+			}
+
+			req, err := request.Build(in)
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			config, _, cleanup, err := curl.BuildConfig(req, curl.Capture{})
+			t.Cleanup(cleanup)
+			if err != nil {
+				t.Fatalf("BuildConfig: %v", err)
+			}
+			if !strings.Contains(string(config), `header = "Content-Type: `+mediaType+`"`) {
+				t.Errorf("config document has no Content-Type directive for %q", mediaType)
+			}
+		})
 	}
 }

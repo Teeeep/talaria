@@ -18,6 +18,10 @@ import (
 	"github.com/Teeeep/talaria/internal/request"
 )
 
+// contentTypeHeader is the header a body's media type travels in, on both the
+// emitted command and the config document.
+const contentTypeHeader = "Content-Type"
+
 // Render returns the curl command that reproduces req: a portable, symbolic
 // reproduction for bug reports, docs and scripts (§3.4).
 //
@@ -26,6 +30,17 @@ import (
 // flags.
 func Render(req *request.Request) string {
 	if req == nil {
+		return ""
+	}
+
+	// Of the two options — gate the one word, or emit nothing — this is the
+	// second. A request whose body carries a media type that would split the
+	// header block is one BuildConfig refuses (config.go's body), so there is no
+	// call for a command to reproduce; printing one with the Content-Type
+	// quietly dropped would hand the reader a runnable request nobody made.
+	// Render is reached without BuildConfig on the `--dry-run` paths, and
+	// `history replay --dry-run` takes that media type from the history file.
+	if req.Body != nil && request.SplitsRequest(contentTypeHeader, req.Body.ContentType) {
 		return ""
 	}
 
@@ -126,8 +141,8 @@ func bodyArgs(req *request.Request) []string {
 	}
 
 	var args []string
-	if req.Body.ContentType != "" && !hasHeader(req, "Content-Type") {
-		args = append(args, "-H", (&word{}).literal("Content-Type: "+req.Body.ContentType).String())
+	if req.Body.ContentType != "" && !hasHeader(req, contentTypeHeader) {
+		args = append(args, "-H", (&word{}).literal(contentTypeHeader+": "+req.Body.ContentType).String())
 	}
 
 	return append(args, "--data-raw", (&word{}).literal(string(req.Body.Data)).String())

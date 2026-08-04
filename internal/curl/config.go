@@ -286,8 +286,15 @@ func (d *document) body(req *request.Request) error {
 		return nil
 	}
 
-	if req.Body.ContentType != "" && !hasHeader(req, "Content-Type") {
-		d.directive("header", "Content-Type: "+req.Body.ContentType)
+	if req.Body.ContentType != "" && !hasHeader(req, contentTypeHeader) {
+		// The same last gate every other pair gets. It matters more here, not
+		// less: `history replay` sets Body.ContentType straight from the stored
+		// entry, so this is the only check that value meets.
+		if err := checkSplit("header", contentTypeHeader, req.Body.ContentType); err != nil {
+			return err
+		}
+
+		d.directive("header", contentTypeHeader+": "+req.Body.ContentType)
 	}
 
 	if inlinable(req.Body.Data) {

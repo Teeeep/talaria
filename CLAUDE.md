@@ -94,6 +94,15 @@ this process. Bound every read, size-check before allocating, and treat any spec
 that reaches the wire as hostile until checked — a media type became a header-injection vector
 exactly this way. Failures must be entry-level or request-level, never process-level.
 
+**A header value gets checked on every surface it can reach, not just the one you are editing.**
+The media type is the worked example: `isMediaType` (`internal/request/body.go`) validates the
+spec's `content:` key at bind time, `checkSplit` re-checks `Body.ContentType` in
+`internal/curl/config.go` because `history replay` sets that field from the stored entry and never
+goes through `request.Build`, and `curl.Render` returns `""` rather than emitting a command with
+the offending word quietly dropped — `--dry-run` reaches `Render` without ever building a config
+document. Three surfaces, one value. A new field that reaches the wire needs the same sweep: bind
+time, the config document, and the emitted curl.
+
 **`cmd/talaria` is wiring.** Parse flags, call a package, render the result. Decisions,
 transformations and multi-step workflows belong in a package that can be tested without cobra.
 The command layer holds 28% of production code (1,589 of 5,511 non-comment lines) and 12 view

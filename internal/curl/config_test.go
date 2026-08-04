@@ -494,6 +494,25 @@ func TestBuildConfigRejectsCRLFThatWouldSplitTheRequest(t *testing.T) {
 			req.Method = "GET\r\nX-Injected: 1"
 			return req
 		}},
+		// The body's media type is the one header value that never passes through
+		// the binder's check on the `history replay` path: cmd/talaria's replay
+		// sets Body.ContentType straight from the stored entry, and the entry's
+		// original source is a key in the spec's content: map.
+		{"body content type", func() *request.Request {
+			req := base()
+			req.Body = &request.Body{ContentType: "application/json\r\nX-Injected: 1", Data: []byte("{}")}
+			return req
+		}},
+		// A double CRLF ends the header block outright and smuggles a second
+		// request onto the connection.
+		{"body content type ending the header block", func() *request.Request {
+			req := base()
+			req.Body = &request.Body{
+				ContentType: "application/json\r\n\r\nGET /admin HTTP/1.1",
+				Data:        []byte("{}"),
+			}
+			return req
+		}},
 	}
 
 	for _, tc := range tests {

@@ -397,3 +397,36 @@ func TestRenderFallsBackToTheRedactedFormForANonEnvReference(t *testing.T) {
 		t.Errorf("Render() = %s\nwant it to contain %s", got, want)
 	}
 }
+
+// TestRenderRefusesAContentTypeThatWouldSplitTheRequest covers the surface
+// BuildConfig does not: `history replay --dry-run` renders a command without
+// ever building a config document, from a media type the history file supplied.
+// word.String single-quotes and escapes only the quote, so a CRLF would reach
+// the emitted command as two raw bytes — and an emitted command is one a caller
+// may well paste and run.
+func TestRenderRefusesAContentTypeThatWouldSplitTheRequest(t *testing.T) {
+	for _, injection := range []string{
+		"application/json\r\nX-Injected: 1",
+		"application/json\r\n\r\nGET /admin HTTP/1.1",
+		"application/json\nX-Injected: 1",
+		"application/json\rX-Injected: 1",
+	} {
+		t.Run(injection, func(t *testing.T) {
+			req := &request.Request{
+				Method:  "POST",
+				BaseURL: "https://api.example.com",
+				Path:    "/pets",
+				Body:    &request.Body{ContentType: injection, Data: []byte("{}")},
+			}
+
+			got := Render(req)
+
+			if strings.ContainsAny(got, "\r\n") {
+				t.Errorf("Render() = %q\nwant no raw CR or LF: the emitted command splits when pasted", got)
+			}
+			if strings.Contains(got, "X-Injected") || strings.Contains(got, "/admin") {
+				t.Errorf("Render() = %q\nwant the smuggled header gone, not merely quoted", got)
+			}
+		})
+	}
+}

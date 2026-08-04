@@ -16,6 +16,7 @@ import (
 	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/config"
 	"github.com/Teeeep/talaria/internal/corpus"
+	"github.com/Teeeep/talaria/internal/curl"
 	"github.com/Teeeep/talaria/internal/operation"
 	"github.com/Teeeep/talaria/internal/request"
 	"github.com/Teeeep/talaria/internal/secret"
@@ -1263,4 +1264,47 @@ func callHost(t *testing.T, srv *callServer) string {
 	}
 
 	return parsed.Host
+}
+
+// A stored content_type is the one field replay hands straight to the request
+// without the binder ever seeing it (replay.body), and its original source is a
+// key in the spec's content: map. Both surfaces it can reach are closed: the
+// config document curl reads, and the command --dry-run prints.
+func TestReplayCannotSmuggleAHeaderThroughAStoredContentType(t *testing.T) {
+	// Set so the document gets as far as the body. Unset, BuildConfig refuses
+	// with exit 5 for the missing credential and the content type is never
+	// reached — a refusal that would pass this test without testing anything.
+	t.Setenv("TALARIA_AUTH_BEARER", "token")
+	t.Setenv("TALARIA_AUTH_PETKEY", "key")
+
+	entry := storedEntry()
+	entry.OperationID, entry.Method = "createPet", "POST"
+	entry.URL = "https://api.invalid/v1/pets"
+	entry.Request.Body = &corpus.Body{
+		ContentType: "application/json\r\nX-Injected: pwned",
+		Data:        `{"name":"Rex"}`,
+	}
+
+	req, err := replayFor(t, entry).request()
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+
+	config, _, cleanup, err := curl.BuildConfig(req, curl.Capture{})
+	t.Cleanup(cleanup)
+	if err == nil {
+		t.Fatalf("BuildConfig succeeded, want a refusal; document:\n%s", config)
+	}
+	if code := clierr.From(err).Code; code != clierr.CodeUsage {
+		t.Errorf("exit code = %d, want %d", code, clierr.CodeUsage)
+	}
+	if config != nil {
+		t.Errorf("a document was built despite the refusal:\n%s", config)
+	}
+
+	// --dry-run never builds a document, so the refusal above would not be
+	// reached at all on that path.
+	if got := curl.Render(req); strings.Contains(got, "X-Injected") {
+		t.Errorf("Render() = %q, want no smuggled header in the emitted command", got)
+	}
 }

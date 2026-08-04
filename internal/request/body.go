@@ -145,5 +145,46 @@ func (b *binder) contentType(req *Request) string {
 		return ""
 	}
 
-	return rb.Content[0].ContentType
+	declared := rb.Content[0].ContentType
+	if !isMediaType(declared) {
+		// Named but never echoed, following the rule the rest of this file
+		// keeps: the text is attacker-supplied, and echoing it would put the
+		// CRLF — and the header it smuggles — onto stderr instead of the wire.
+		b.fail("the operation declares a media type that cannot be sent as a %s header "+
+			"(its text is not echoed)", contentTypeHeader)
+		return ""
+	}
+
+	return declared
 }
+
+// isMediaType reports whether s can be sent as a Content-Type header value: a
+// type/subtype pair of tokens (RFC 9110 §8.3.1), optionally followed by
+// parameters holding no control character.
+//
+// The user's own --header Content-Type is not checked against this, and does not
+// need to be: it has already been through pairs → SplitsRequest, and the spec
+// describes what the server accepts rather than what this call is sending. What
+// this guards is the other source — a key in the spec's content: map, which is
+// untrusted input that becomes a header verbatim, and is the one header value
+// the binder otherwise never inspects.
+//
+// The parameter section is checked for control characters rather than parsed.
+// What has to be stopped is a media type that leaves the field it sits in; a
+// parameter that is merely strange is the server's business.
+func isMediaType(s string) bool {
+	base, params, _ := strings.Cut(s, ";")
+
+	typ, sub, ok := strings.Cut(base, "/")
+	if !ok || !isFieldName(typ) || !isFieldName(sub) {
+		return false
+	}
+
+	return strings.IndexFunc(params, isControl) < 0
+}
+
+// isControl reports whether r is a character that cannot appear in a header
+// field value. HTAB is included: it is legal whitespace between parameters, but
+// nothing declares a media type with a tab in it, and refusing is the safer
+// direction for a value this file otherwise cannot vouch for.
+func isControl(r rune) bool { return r < ' ' || r == 0x7f }
