@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -75,18 +76,22 @@ type Loader struct {
 }
 
 // Load reads the spec named by ref, which is either a URL or a file path.
-func Load(ref string) (*Document, error) {
-	return (&Loader{}).Load(ref)
+func Load(ctx context.Context, ref string) (*Document, error) {
+	return (&Loader{}).Load(ctx, ref)
 }
 
 // Load reads the spec named by ref. A remote spec is served from the cache when
 // one is present, so a session that makes a dozen calls downloads it once.
-func (l *Loader) Load(ref string) (*Document, error) {
+//
+// ctx is the caller's cancellation, and it is not optional: a remote fetch is a
+// wait on something outside this process, so the command's signal context has to
+// reach it or Ctrl-C during one waits out fetchTimeout with nobody listening.
+func (l *Loader) Load(ctx context.Context, ref string) (*Document, error) {
 	if !isURL(ref) {
 		return LoadFile(ref)
 	}
 
-	return l.loadURL(ref)
+	return l.loadURL(ctx, ref)
 }
 
 // isURL classifies a spec reference. Anything that is not plainly http(s) is a
@@ -95,9 +100,13 @@ func isURL(ref string) bool {
 	return strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://")
 }
 
-func (l *Loader) loadURL(url string) (*Document, error) {
+func (l *Loader) loadURL(ctx context.Context, url string) (*Document, error) {
 	// A cache path that cannot be computed is not fatal: the fetch still works,
 	// it just will not be remembered.
+	//
+	// Deliberately not gated on ctx: reading the cache is not a wait, and the
+	// answer is already on disk. A context check here would turn a Ctrl-C that
+	// arrived a moment too early into a failure for work already done.
 	cachePath, _ := l.cachePath(url)
 	if cachePath != "" {
 		if data, err := os.ReadFile(cachePath); err == nil {
@@ -105,7 +114,7 @@ func (l *Loader) loadURL(url string) (*Document, error) {
 		}
 	}
 
-	data, err := l.fetch(url)
+	data, err := l.fetch(ctx, url)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +133,7 @@ func (l *Loader) loadURL(url string) (*Document, error) {
 	return doc, nil
 }
 
-func (l *Loader) fetch(url string) ([]byte, error) {
+func (l *Loader) fetch(ctx context.Context, url string) ([]byte, error) {
 	// A copy, never the caller's client: the redirect policy below belongs to
 	// this fetch, and writing it into a client the caller still holds would
 	// change how their other requests behave.
@@ -134,9 +143,17 @@ func (l *Loader) fetch(url string) ([]byte, error) {
 	}
 	client.CheckRedirect = checkRedirect
 
-	resp, err := client.Get(url)
+	// The context rides on the request rather than on the client, so it covers
+	// every hop of the redirect chain and the body read after it — each hop is a
+	// fresh request, and the read is where most of the waiting happens.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, clierr.SpecLoad("fetching spec %s: %w", url, err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fetchFailed(ctx, "fetching spec %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
@@ -148,13 +165,27 @@ func (l *Loader) fetch(url string) ([]byte, error) {
 	// anything larger is distinguishable from it without a second read.
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSpecBytes+1))
 	if err != nil {
-		return nil, clierr.SpecLoad("reading spec %s: %w", url, err)
+		return nil, fetchFailed(ctx, "reading spec %s: %w", url, err)
 	}
 	if len(data) > maxSpecBytes {
 		return nil, clierr.SpecLoad("reading spec %s: larger than the %d byte limit", url, maxSpecBytes)
 	}
 
 	return data, nil
+}
+
+// fetchFailed classifies a fetch that ended badly. The caller's own cancellation
+// is exit 1 — the same code curl.ExecuteWith gives an interrupted call, and what
+// AGENT.md promises a Ctrl-C produces — because the spec is not broken and an
+// agent reading exit 3 would stop retrying one that is fine. The discriminator
+// is ctx, not the error: fetchTimeout elapsing is also a deadline, and that one
+// really is a spec that could not be read.
+func fetchFailed(ctx context.Context, format string, a ...any) error {
+	if ctx.Err() != nil {
+		return clierr.RequestFailed(format, a...)
+	}
+
+	return clierr.SpecLoad(format, a...)
 }
 
 // checkRedirect bounds the hops a spec fetch follows and keeps every one of

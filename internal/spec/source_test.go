@@ -3,6 +3,7 @@ package spec
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Teeeep/talaria/internal/clierr"
 )
@@ -115,7 +117,7 @@ func TestLoaderFetchesSpecOverHTTP(t *testing.T) {
 	server, requests := specServer(t)
 	loader := &Loader{CacheDir: t.TempDir()}
 
-	doc, err := loader.Load(server.URL + "/openapi.yaml")
+	doc, err := loader.Load(context.Background(), server.URL+"/openapi.yaml")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -138,12 +140,12 @@ func TestLoaderServesSecondLoadFromCache(t *testing.T) {
 	url := server.URL + "/openapi.yaml"
 	loader := &Loader{CacheDir: t.TempDir()}
 
-	if _, err := loader.Load(url); err != nil {
+	if _, err := loader.Load(context.Background(), url); err != nil {
 		t.Fatalf("first Load: %v", err)
 	}
 	server.Close()
 
-	doc, err := loader.Load(url)
+	doc, err := loader.Load(context.Background(), url)
 	if err != nil {
 		t.Fatalf("second Load after the server went away: %v", err)
 	}
@@ -159,7 +161,7 @@ func TestLoaderWritesCacheFilesPrivately(t *testing.T) {
 	cacheDir := filepath.Join(t.TempDir(), "cache", "specs")
 	loader := &Loader{CacheDir: cacheDir}
 
-	if _, err := loader.Load(server.URL + "/openapi.yaml"); err != nil {
+	if _, err := loader.Load(context.Background(), server.URL+"/openapi.yaml"); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 
@@ -195,7 +197,7 @@ func TestLoaderReportsHTTPStatus(t *testing.T) {
 
 	loader := &Loader{CacheDir: t.TempDir()}
 
-	_, err := loader.Load(server.URL + "/missing.yaml")
+	_, err := loader.Load(context.Background(), server.URL+"/missing.yaml")
 	cerr := requireSpecLoad(t, err)
 
 	if !strings.Contains(cerr.Message, "404") {
@@ -213,7 +215,7 @@ func TestLoaderDoesNotCacheFailedFetches(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := loader.Load(server.URL + "/missing.yaml"); err == nil {
+	if _, err := loader.Load(context.Background(), server.URL+"/missing.yaml"); err == nil {
 		t.Fatal("want an error from a 404 spec, got nil")
 	}
 
@@ -270,7 +272,7 @@ func TestLoaderAcceptsARealisticallyLargeSpec(t *testing.T) {
 	server, _ := serveBytes(t, paddedSpec(t, 2<<20))
 	loader := &Loader{CacheDir: t.TempDir()}
 
-	if _, err := loader.Load(server.URL + "/openapi.yaml"); err != nil {
+	if _, err := loader.Load(context.Background(), server.URL+"/openapi.yaml"); err != nil {
 		t.Fatalf("Load of a 2 MB spec: %v", err)
 	}
 }
@@ -279,7 +281,7 @@ func TestLoaderAcceptsASpecAtTheReadBound(t *testing.T) {
 	server, _ := serveBytes(t, paddedSpec(t, maxSpecBytes))
 	loader := &Loader{CacheDir: t.TempDir()}
 
-	if _, err := loader.Load(server.URL + "/openapi.yaml"); err != nil {
+	if _, err := loader.Load(context.Background(), server.URL+"/openapi.yaml"); err != nil {
 		t.Fatalf("Load of a spec at exactly the bound: %v", err)
 	}
 }
@@ -302,7 +304,7 @@ func TestLoaderRefusesASpecOneBytePastTheReadBound(t *testing.T) {
 	server, _ := serveBytes(t, paddedSpec(t, maxSpecBytes+1))
 	loader := &Loader{CacheDir: t.TempDir()}
 
-	_, err := loader.Load(server.URL + "/openapi.yaml")
+	_, err := loader.Load(context.Background(), server.URL+"/openapi.yaml")
 
 	requireOverBound(t, err)
 }
@@ -314,7 +316,7 @@ func TestLoaderDoesNotCacheAnOversizedFetch(t *testing.T) {
 	cacheDir := t.TempDir()
 	loader := &Loader{CacheDir: cacheDir}
 
-	if _, err := loader.Load(server.URL + "/openapi.yaml"); err == nil {
+	if _, err := loader.Load(context.Background(), server.URL+"/openapi.yaml"); err == nil {
 		t.Fatal("want an error from an oversized spec, got nil")
 	}
 
@@ -343,7 +345,7 @@ func TestLoaderSurvivesAServerThatNeverStopsSending(t *testing.T) {
 
 	loader := &Loader{CacheDir: t.TempDir()}
 
-	_, err := loader.Load(server.URL + "/openapi.yaml")
+	_, err := loader.Load(context.Background(), server.URL+"/openapi.yaml")
 
 	requireOverBound(t, err)
 }
@@ -395,7 +397,7 @@ func TestLoaderDoesNotTrustContentLength(t *testing.T) {
 		Client:   &http.Client{Transport: lyingTransport{}},
 	}
 
-	_, err := loader.Load("http://example.invalid/openapi.yaml")
+	_, err := loader.Load(context.Background(), "http://example.invalid/openapi.yaml")
 
 	requireOverBound(t, err)
 }
@@ -424,7 +426,7 @@ func TestLoaderBoundsADecompressedSpec(t *testing.T) {
 
 	loader := &Loader{CacheDir: t.TempDir()}
 
-	_, err := loader.Load(server.URL + "/openapi.yaml")
+	_, err := loader.Load(context.Background(), server.URL+"/openapi.yaml")
 
 	requireOverBound(t, err)
 }
@@ -442,7 +444,7 @@ func TestLoaderBoundsTheRedirectChain(t *testing.T) {
 
 	loader := &Loader{CacheDir: t.TempDir()}
 
-	if _, err := loader.Load(server.URL + "/openapi.yaml"); err == nil {
+	if _, err := loader.Load(context.Background(), server.URL+"/openapi.yaml"); err == nil {
 		t.Fatal("Load followed an endless redirect chain, want a refusal")
 	}
 	if requests > maxSpecRedirects+1 {
@@ -458,7 +460,7 @@ func TestLoaderRefusesARedirectAwayFromHTTP(t *testing.T) {
 
 	loader := &Loader{CacheDir: t.TempDir()}
 
-	_, err := loader.Load(server.URL + "/openapi.yaml")
+	_, err := loader.Load(context.Background(), server.URL+"/openapi.yaml")
 	cerr := requireSpecLoad(t, err)
 
 	// The message, not just the failure: net/http's transport refuses an
@@ -477,7 +479,7 @@ func TestLoaderLeavesACallersRedirectPolicyAlone(t *testing.T) {
 	client := &http.Client{}
 	loader := &Loader{CacheDir: t.TempDir(), Client: client}
 
-	if _, err := loader.Load(server.URL + "/openapi.yaml"); err != nil {
+	if _, err := loader.Load(context.Background(), server.URL+"/openapi.yaml"); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if client.CheckRedirect != nil {
@@ -488,11 +490,188 @@ func TestLoaderLeavesACallersRedirectPolicyAlone(t *testing.T) {
 func TestLoaderReadsLocalPaths(t *testing.T) {
 	path := filepath.Join("testdata", "petstore-3.0.yaml")
 
-	doc, err := (&Loader{CacheDir: t.TempDir()}).Load(path)
+	doc, err := (&Loader{CacheDir: t.TempDir()}).Load(context.Background(), path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if doc.Source != path {
 		t.Errorf("Source = %q, want %q", doc.Source, path)
+	}
+}
+
+// cancelGrace bounds how long a cancelled fetch may take to come back. It is
+// short enough that fetchTimeout cannot satisfy it — a fetch that ignores the
+// context fails these tests by waiting out the full thirty seconds — and long
+// enough that a loaded machine does not fail them for being slow.
+const cancelGrace = 5 * time.Second
+
+// requireCancelled asserts that err is the caller's own cancellation, reported
+// the way an interrupted call is: exit 1, not the spec-load code. Ctrl-C during
+// a fetch does not mean the spec is broken, and an agent branching on 3 would
+// stop retrying a spec that is fine. The errors.Is is what distinguishes a real
+// cancellation from a fetch that failed for some other reason and happened to
+// be running under a cancelled context.
+func requireCancelled(t *testing.T, err error) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatal("want an error from a cancelled fetch, got nil")
+	}
+
+	var cerr *clierr.Error
+	if !errors.As(err, &cerr) {
+		t.Fatalf("error is not a *clierr.Error: %v", err)
+	}
+	if cerr.Code != clierr.CodeRequestFailed {
+		t.Errorf("Code = %d, want %d — an interruption, not a broken spec", cerr.Code, clierr.CodeRequestFailed)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want it to wrap context.Canceled", err)
+	}
+}
+
+// loadAsync runs Load in a goroutine and returns the channel its error arrives
+// on, so a test can assert on *when* it came back as well as on what it said.
+func loadAsync(l *Loader, ctx context.Context, ref string) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := l.Load(ctx, ref)
+		done <- err
+	}()
+
+	return done
+}
+
+// requirePromptly asserts the fetch came back inside cancelGrace, which only a
+// fetch the context reached can do.
+func requirePromptly(t *testing.T, done <-chan error) error {
+	t.Helper()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(cancelGrace):
+		t.Fatalf("Load did not return within %s of the cancellation; fetchTimeout is %s", cancelGrace, fetchTimeout)
+
+		return nil
+	}
+}
+
+// A server that accepts the connection and never answers. Without the context
+// reaching the fetch, Ctrl-C here waits out fetchTimeout's full thirty seconds
+// — the one case §3.1's "never page" rule exists for.
+func TestLoaderStopsAFetchTheContextCancels(t *testing.T) {
+	accepted := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(accepted)
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	loader := &Loader{CacheDir: t.TempDir()}
+	done := loadAsync(loader, ctx, server.URL+"/openapi.yaml")
+
+	<-accepted
+	cancel()
+
+	requireCancelled(t, requirePromptly(t, done))
+}
+
+// A context already cancelled on entry: the fetch must not be made at all.
+func TestLoaderRefusesAFetchUnderAnAlreadyCancelledContext(t *testing.T) {
+	server, requests := specServer(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	loader := &Loader{CacheDir: t.TempDir()}
+
+	_, err := loader.Load(ctx, server.URL+"/openapi.yaml")
+
+	requireCancelled(t, err)
+	if *requests != 0 {
+		t.Errorf("server saw %d requests under a cancelled context, want 0", *requests)
+	}
+}
+
+// Cancellation after the bound has started reading. The handler flushes a chunk
+// before signalling, so the response headers are on the wire and the read is
+// the wait the cancellation lands in — the size bound and the clock are
+// independent, and neither is what ends this fetch.
+func TestLoaderStopsAReadTheContextCancels(t *testing.T) {
+	flushed := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Write(bytes.Repeat([]byte("x"), 1<<16))
+		w.(http.Flusher).Flush()
+		close(flushed)
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	loader := &Loader{CacheDir: t.TempDir()}
+	done := loadAsync(loader, ctx, server.URL+"/openapi.yaml")
+
+	<-flushed
+	cancel()
+
+	requireCancelled(t, requirePromptly(t, done))
+}
+
+// Cancellation during the redirect chain. Each hop is a fresh request, so a
+// fetch that carries the context only into the first one would follow the rest
+// to maxSpecRedirects after the caller has already given up.
+func TestLoaderStopsFollowingRedirectsWhenTheContextIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	requests := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 2 {
+			cancel()
+		}
+		http.Redirect(w, r, server.URL+"/next"+strconv.Itoa(requests), http.StatusFound)
+	}))
+	defer server.Close()
+
+	loader := &Loader{CacheDir: t.TempDir()}
+
+	requireCancelled(t, requirePromptly(t, loadAsync(loader, ctx, server.URL+"/openapi.yaml")))
+
+	if requests > 3 {
+		t.Errorf("server saw %d requests after the cancellation on the second, want at most 3", requests)
+	}
+}
+
+// The cache is a read, not a wait, so a cancelled context does not stop it:
+// recordCall's ordering argument applies here too — the answer is already on
+// disk, and refusing to return it would turn a Ctrl-C at the wrong moment into
+// a failure for work that was already done.
+func TestLoaderServesTheCacheUnderACancelledContext(t *testing.T) {
+	server, _ := specServer(t)
+	url := server.URL + "/openapi.yaml"
+	loader := &Loader{CacheDir: t.TempDir()}
+
+	if _, err := loader.Load(context.Background(), url); err != nil {
+		t.Fatalf("first Load: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := loader.Load(ctx, url); err != nil {
+		t.Errorf("Load from cache under a cancelled context: %v", err)
 	}
 }

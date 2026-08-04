@@ -136,3 +136,10 @@ that pass — and task 6's before it — deliberately did not do, and why.
   plus the two helpers into `file_test.go`, leaving the Store API — what Append records, what
   Read gives back, ids, redaction, locking — in `store_test.go`. CLAUDE.md's "tests split the
   same way, with the same names" is only half true for this package now.
+
+- `internal/spec/source_test.go` (677 lines) — one file now holds the `Resolve` precedence tests,
+  the cache/permissions tests, the size-and-redirect bound tests with their fixture helpers
+  (`paddedSpec`, `serveBytes`, `endlessBody`, `lyingTransport`), and the cancellation tests task
+  31 added. The seam is the one `source.go` itself would split on: a `fetch_test.go` for
+  everything whose subject is the network read — bounds, redirects, Content-Length, cancellation
+  — leaving resolution, the cache and local paths in `source_test.go`.

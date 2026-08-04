@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"runtime"
@@ -239,6 +241,51 @@ func assertExitedWith(t *testing.T, err error, want int) {
 	}
 	if got := exit.ExitCode(); got != want {
 		t.Errorf("child exited %d, want %d", got, want)
+	}
+}
+
+// TestACancelledContextEndsASpecFetch is the wiring assertion for the loader's
+// half: a remote spec fetch is a wait on something outside this process, exactly
+// as the stdin read is, so the context every command runs under has to reach it.
+// It fails against a loadSpec that passes context.Background() — the fetch then
+// sits on its own thirty-second deadline with the caller already gone.
+//
+// In-process, driving runContext: the subject is which context loadSpec hands
+// the loader, not the signal disposition the child tests cover.
+func TestACancelledContextEndsASpecFetch(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	accepted := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(accepted)
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- runContext(ctx, []string{"list", "--spec", server.URL + "/openapi.yaml"}, &stdout, &stderr)
+	}()
+
+	<-accepted
+	cancel()
+
+	select {
+	case code := <-done:
+		// Exit 1, the same code an interrupted call gets: the caller stopped, the
+		// spec is not broken. Exit 3 would tell an agent to stop retrying it.
+		if want := int(clierr.CodeRequestFailed); code != want {
+			t.Errorf("exit = %d, want %d; stderr = %q", code, want, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the command outlived 10s after its context was cancelled: the spec fetch " +
+			"runs on its own deadline, which no signal reaches")
 	}
 }
 

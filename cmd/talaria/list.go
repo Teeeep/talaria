@@ -175,7 +175,7 @@ func loadSpec(cmd *cobra.Command, args []string) (*spec.Document, *operation.Ind
 		return nil, nil, err
 	}
 
-	doc, err := spec.Load(ref)
+	doc, err := spec.Load(cmd.Context(), ref)
 	if err != nil {
 		return nil, nil, err
 	}

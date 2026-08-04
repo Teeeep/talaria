@@ -377,7 +377,9 @@ curl's status 28 in the message rather than a process that hangs.
 Interrupting talaria — Ctrl-C, or a `kill` — stops the request rather than leaving it running.
 curl is killed along with talaria, the call exits 1 saying it was cancelled, the attempt is still
 recorded in history, and nothing of the response is left behind in your temp directory. A
-`--body -` that is still waiting on a stdin nobody is writing to is cancelled the same way.
+`--body -` that is still waiting on a stdin nobody is writing to is cancelled the same way, and so
+is a remote spec still downloading — that one exits 1 too, rather than the exit 3 of a spec that
+could not be read, because nothing is wrong with the spec.
 
 Press Ctrl-C twice and talaria dies on the spot, with none of that cleanup: the first signal is
 handled, and handling it is the last thing the handler does. A tool you cannot interrupt is

@@ -83,7 +83,8 @@ talaria call getPet --param petId=42 --query verbose=true --header X-Trace=abc
   message saying it was cancelled, not that it timed out. An interrupted mutation is one talaria
   stopped sending; the attempt is still in history, with no response block. A `--body -` still
   waiting on stdin is cancelled the same way, with the same exit 1 — a body nobody is writing
-  is not a bad command line.
+  is not a bad command line. So is a remote spec still downloading: exit 1, not the exit 3 a
+  spec that failed to load gets, because you interrupted it and the spec is fine to retry.
 - A second interrupt kills talaria outright, as an uncaught signal. The first one asks; if
   something is stuck where the cancellation does not reach it, the second one does not have to.
 

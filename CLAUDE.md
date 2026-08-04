@@ -268,6 +268,26 @@ missing-parameter complaints that are artefacts of the interruption. The tests a
 in `TestMain` before any fixture exists) because the assertion is that a signal kills the
 process, and this process is the suite.
 
+**A remote spec fetch is a wait, so `Load` takes the context.** `spec.Load(ctx, ref)` and
+`(*Loader).Load(ctx, ref)` require one — no `Load(ref)` wrapper, for the same reason
+`curl.Execute` and `corpus.lock` require one: a caller that has to write `context.Background()`
+has said so out loud. The context rides on the *request*
+(`http.NewRequestWithContext` in `internal/spec/source.go`), not on the `http.Client`, because
+each redirect hop is a fresh request and the body read after them is where most of the waiting
+happens — a client-level cancellation would cover neither. `cmd/talaria/list.go`'s `loadSpec` is
+the one place a command passes it, and it passes `cmd.Context()`; every spec-reading command goes
+through `loadSpec`, so there is nothing else to wire.
+
+The reading of the cache is deliberately *not* gated on `ctx` — the same argument as `lock`'s
+uncontended `LOCK_NB` attempt: the answer is already on disk, and a check there turns a Ctrl-C
+that arrived a moment early into a failure for work already done
+(`TestLoaderServesTheCacheUnderACancelledContext`). And a cancelled fetch is
+`clierr.RequestFailed` (exit 1), not `SpecLoad` (exit 3): the discriminator in `fetchFailed` is
+`ctx.Err()` rather than the error, because `fetchTimeout` elapsing is also a deadline and *that*
+one really is a spec that could not be read. An agent reading exit 3 stops retrying a spec that
+is fine. `cmd/talaria/root_test.go`'s `TestACancelledContextEndsASpecFetch` is the wiring half,
+driving `runContext` in-process.
+
 **The history lock is a wait, so it has both of them too.** `lock(ctx, path)`
 (`internal/corpus/lock_unix.go`) took `LOCK_EX` with no deadline and no way out: Go installs its
 handlers with `SA_RESTART`, so a `talaria call` waiting on a wedged writer could not be Ctrl-C'd
