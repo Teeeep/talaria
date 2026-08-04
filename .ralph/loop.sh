@@ -436,17 +436,20 @@ count_repeat_crits()         { count_crits_with "Repeat-of"  "cycle"; }
 # a fix creating a critical is what actually broke arm A, at one to two per cycle.
 # Introduced unless the value begins "none". Reviewers write it as a sha and a
 # task — "`d1548bf` (task 2)" — or as "none — reproduces on `main`", with the
-# reasoning inline. An exact-match on the word "task" read 0 against 18 findings
-# that carried a sha, which is why this matches the negative instead: the field
-# is prose with a fixed first token, so the first token is the only safe thing to
-# key on.
+# reasoning inline. Two matchers have already been wrong here in one day: an
+# exact-match on "task" read 0 against 18 findings carrying a sha, and keying on
+# a bare "none" read 6 self-inflicted CRITs where there was 1, because that cycle
+# wrote "`none`" in backticks and the previous one had not. The value is prose
+# whose only stable property is its first token, so the backticks and
+# punctuation come off before the comparison, and the test is against real
+# findings files from both cycles rather than against an imagined format.
 count_introduced_crits() {
   [ -f REVIEW_FINDINGS.md ] || { echo 0; return; }
   awk '
     function flush() { if (sev == "CRIT" && val != "" && val != "none") n++; sev = ""; val = "" }
     /^## Finding/                    { flush() }
     /^\- \*\*Severity:\*\*/        { sev = $3 }
-    /^\- \*\*Introduced-by:\*\*/   { val = $3; sub(/^none.*/, "none", val) }
+    /^\- \*\*Introduced-by:\*\*/   { val = $3; gsub(/[`",.;]/, "", val); sub(/^none.*/, "none", val) }
     END                              { flush(); print n+0 }
   ' REVIEW_FINDINGS.md
 }
