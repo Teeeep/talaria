@@ -307,6 +307,28 @@ count_repeats() {
   local c; c=$(grep -c '^\- \*\*Repeat-of:\*\* cycle' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
 }
 
+# The guardrails below are all about CRITs — their messages say so. Counting a
+# property across findings of *every* severity and comparing that total to the
+# CRIT count is an accident waiting for equal numbers, and it happened twice:
+# 2026-08-03 (2 design-blocked WARNs, 2 unrelated CRITs) and 2026-08-04 (1
+# design-blocked WARN, 1 unrelated CRIT). Both times the loop stopped with
+# "every CRIT is blocked on a design decision" over CRITs that were marked
+# `Blocked-by: none` and were fixable. These read the two fields per finding.
+count_crits_with() {
+  [ -f REVIEW_FINDINGS.md ] || { echo 0; return; }
+  awk -v field="$1" -v want="$2" '
+    # $3 is the value, not $NF: "Repeat-of" reads "cycle 1 findings 3 and 4
+    # (partial fix)", so the last field is a word from the prose.
+    function flush() { if (sev == "CRIT" && val == want) n++; sev = ""; val = "" }
+    /^## Finding/                 { flush() }
+    /^\- \*\*Severity:\*\*/       { sev = $3 }
+    $0 ~ "^\\- \\*\\*" field ":"  { val = $3 }
+    END                           { flush(); print n+0 }
+  ' REVIEW_FINDINGS.md
+}
+count_design_blocked_crits() { count_crits_with "Blocked-by" "design"; }
+count_repeat_crits()         { count_crits_with "Repeat-of"  "cycle"; }
+
 # Everything the loop could not resolve on its own, in one file for the human.
 write_escalation() {
   local reason="$1" cycle="$2"
@@ -517,28 +539,45 @@ phase_review() {
       return 1
     fi
 
-    local findings crits blocked repeats
+    local findings crits blocked repeats blocked_crits repeat_crits
     findings=$(count_findings)
     crits=$(count_crits)
     blocked=$(count_design_blocked)
     repeats=$(count_repeats)
+    blocked_crits=$(count_design_blocked_crits)
+    repeat_crits=$(count_repeat_crits)
     echo "$crits" >> "$RALPH_DIR/review_history"
     log "Findings: $findings total, $crits CRIT ($blocked design-blocked, $repeats repeat)"
+    log "Of the CRITs: $blocked_crits design-blocked, $repeat_crits repeat"
     archive_review "$cycle"
 
     # ── Guardrails: stop rather than spin ────────────────────────────────────
     # Each of these means another cycle cannot help. Escalating beats burning the cap.
+    #
+    # All of them are scoped to CRITs. A design-blocked or repeating WARN is real
+    # information for the human, but it is not a reason to stop with a fixable CRIT
+    # on the floor — which is what the whole-file counts did, twice.
 
-    if [ "$blocked" -gt 0 ] && [ "$blocked" -eq "$crits" ]; then
+    if [ "$blocked_crits" -gt 0 ] && [ "$blocked_crits" -eq "$crits" ]; then
       log "All $crits CRIT finding(s) need a design decision this loop cannot make."
       write_escalation "every CRIT is blocked on a design decision" "$cycle"
       push_changes; unset RALPH_REVIEW_CYCLE; return 5
     fi
 
-    if [ "$repeats" -gt 0 ]; then
-      log "$repeats finding(s) survived a previous fix — the approach is not working."
-      write_escalation "$repeats finding(s) repeat after a failed fix" "$cycle"
+    if [ "$repeat_crits" -gt 0 ]; then
+      log "$repeat_crits CRIT finding(s) survived a previous fix — the approach is not working."
+      write_escalation "$repeat_crits CRIT finding(s) repeat after a failed fix" "$cycle"
       push_changes; unset RALPH_REVIEW_CYCLE; return 5
+    fi
+
+    # Non-CRIT versions of the two conditions above: worth saying out loud every
+    # cycle, not worth stopping for. They reach the human in REVIEW_FINDINGS.md,
+    # which is archived under docs/review/ whether or not an escalation is written.
+    if [ "$((blocked - blocked_crits))" -gt 0 ]; then
+      log "Note: $((blocked - blocked_crits)) non-CRIT finding(s) need a design decision — see REVIEW_FINDINGS.md."
+    fi
+    if [ "$((repeats - repeat_crits))" -gt 0 ]; then
+      log "Note: $((repeats - repeat_crits)) non-CRIT finding(s) repeat after a previous fix."
     fi
 
     # No progress: this cycle found at least as many CRITs as the last one. Fixing is
@@ -561,8 +600,8 @@ phase_review() {
       return 0
     fi
 
-    local fixable=$((crits - blocked))
-    log "Planning fixes for $fixable of $crits CRIT finding(s) ($blocked need a design decision)..."
+    local fixable=$((crits - blocked_crits))
+    log "Planning fixes for $fixable of $crits CRIT finding(s) ($blocked_crits need a design decision)..."
     run_claude "$RALPH_DIR/PROMPT_review_plan.md" "review_plan" || log "Review-plan had errors (continuing)"
     push_changes
 
