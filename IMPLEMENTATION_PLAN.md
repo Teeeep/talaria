@@ -1731,3 +1731,376 @@ the last task in the phase, so it also leaves the tree in the state phase 2b sta
 
 **Verify:** `go test ./...` green, `go build ./...`, `test -z "$(gofmt -l .)" && go vet ./...`, and
 the net line delta plus the `cmd/talaria` measurement in the commit message.
+
+---
+
+# Review cycle 1 fixes (2026-08-04)
+
+Twelve findings from the four-reviewer pass over tasks 1–16, archived at
+`docs/review/20260803-230956-cycle1-findings.md`. Six of them are repeats — the phase-2a
+remediation for an original finding landed the machinery correctly and anchored it to the wrong
+thing. That is the pattern to break here: **for every task below, the regression test must fail
+against the code as it stands today.** Write it, watch it go red, then fix.
+
+Two policy questions the review could not answer were decided by the human on 2026-08-04 and
+are now in DESIGN.md v0.6 §5a (source 4) and in the tasks below. Do not re-litigate them.
+
+---
+
+### Task 25: The host check asks the URL the executor will use — finding 1 (CRIT)
+
+**Depends on:** none
+
+**Test files:**
+- `internal/request/build_test.go` (modify) — a spec whose `paths:` key does not begin with `/`
+- `internal/canary/threats_test.go` or `canary_test.go` (modify) — the wire assertion
+- `cmd/talaria/auth_test.go` (modify) — `auth check` agrees with `call` on the same spec
+
+**Implementation files:**
+- `internal/request/build.go` — `binder.credentials` (~:409) asks `b.in.Hosts.Allows(req.BaseURL)`;
+  `binder.path` (~:215) never constrains the operation's own path template
+- `internal/request/server.go` — `Destination`, and `authorityChars` (~:225), which already
+  spells the character class this needs
+- `cmd/talaria/auth.go` — `destinationWithholds` (~:121), same treatment in the same commit
+
+**Red — write failing tests:**
+1. A spec with `servers: [{url: http://127.0.0.1:18081}]`, a `bearerAuth` scheme and the path key
+   `"@127.0.0.1:18082/steal"`. With no `--base-url` and no `--allow-host`, `call` must withhold
+   the credential. Today it exits 0, sends `Authorization` to :18082, and prints no
+   `credentials_withheld` — wire-verified in the finding with two capture listeners.
+2. The same spec through `assertNoCanaryOnTheWire`: the canary must not reach the second listener.
+3. A path key beginning with `.` that extends the allowed host into an attacker domain.
+4. `auth check` on the same spec reports `withheld: true`, matching `call`. The matrix test
+   `TestAuthCheckAndCallAgreeOnUnsupportedSchemes` still passes.
+5. Ordinary specs are unaffected — every existing `cmd/talaria` golden test stays green.
+
+**Adversarial — what does hostile or malformed input do here?**
+The spec is untrusted by the project's own doctrine, and a `paths:` key is spec-controlled text
+that reaches the wire.
+1. Path keys beginning `@`, `.`, `//`, `\`, `?`, `#`, a control character, or a bare host.
+2. A key that is legal but whose *parameter value* re-introduces the problem after escaping —
+   confirm `binder.path`'s existing escaping still holds.
+3. A key beginning `/` followed by `..` segments.
+4. An empty path key, and a key that is exactly `@`.
+
+**Green — minimal implementation:**
+1. Ask `HostSet.Allows` the string the executor will use. `req.URL(request.Symbolic)` or the same
+   `BaseURL + Path` join `internal/request/request.go:320` performs — not `req.BaseURL`.
+2. Give `request.Destination` and `destinationWithholds` the same input, in this commit. A
+   pre-flight that names a different host than the call reaches is worse than no pre-flight, and
+   CLAUDE.md's rule about the two agreeing is load-bearing.
+3. In `binder.path`, refuse an operation path that does not begin with `/`, or that carries `@`,
+   `?`, `#` or a control character before the first `/`. Reuse `authorityChars`' reasoning; exit 2,
+   because a spec this shape is broken rather than unauthorised.
+
+Do both. The first closes the class wherever it appears; the second turns a hostile spec into an
+exit code at the point it is read.
+
+**Verify:** `go test ./internal/request/... ./internal/canary/... ./cmd/...`
+
+**Why:** DESIGN.md §5a verbatim: *"a resolved credential is transmitted only to a host the spec
+declares, or one a human has explicitly allowed."* This is the exfiltration the whole phase exists
+to close, reached through a door the fix did not cover. Note the branch already contains the
+correct form one file over — `history replay` asks `hosts.Allows(entry.URL)` against the whole URL
+and refuses the identical request `call` makes.
+
+---
+
+### Task 26: The emitted curl redacts the body it inlines — finding 2 (CRIT)
+
+**Depends on:** none
+
+**Test files:**
+- `internal/canary/canary_test.go` (modify) — a `--body '<literal>'` counterpart to
+  `TestABodyFileSecretReachesNoOutputSurface`
+- `cmd/talaria/call_test.go` (modify) — the two body views agree
+
+**Implementation files:**
+- `internal/curl/render.go` — `bodyDirective`'s `BodyArgv` branch (~:168) returns raw bytes
+- `cmd/talaria/call.go` — `callPayload` (~:427) sets `Curl:` and `view.Request.Body` from the
+  same `*Request` and redacts only the second
+
+**Red — write failing tests:**
+1. `call --dry-run --output json --body '{"access_token":"SUPERSECRET"}'`: `request.curl` and
+   `request.body` must not contradict each other. Today the first inlines the live token and the
+   second prints `<redacted>`.
+2. A `redact.body-paths:` entry the user configured is honoured on the curl surface too.
+3. The canary gate: a literal-body secret reaches no output surface. The existing test passes only
+   because `--body @file` takes the *referenced* branch; the literal counterpart turns it red today.
+4. `TestThePreviewedCommandSendsWhatTheCallSends` still passes — the body must still be present and
+   the command shape unchanged. Do not suppress the directive.
+
+**Adversarial — what does hostile or malformed input do here?**
+1. A body that is not JSON at all — the redactor must not corrupt it or panic.
+2. A body whose secret sits in a nested array element.
+3. A body containing a single quote, which is also what `Render` quotes with.
+4. An empty body, and a body that is exactly `null`.
+
+**Green — minimal implementation:**
+Render the curl from a `*Request` whose `Body.Data` has been through `red.Body`, or thread the
+`*secret.ResponseRedactor` into `curl.Render`. Prefer the first: `Render` currently takes only
+`*Request`, and CLAUDE.md's "one redaction firewall per invocation" rule already threads the
+redactor down from `RunE`, so the value is in scope. Whichever, the two fields must be produced
+from one redacted source rather than redacted twice — two call sites is how they drifted.
+
+**Verify:** `go test ./internal/curl/... ./internal/canary/... ./cmd/...`
+
+**Why:** DESIGN.md §5a's leak-channel table promises the emitted curl is *"always symbolic …
+useless to exfiltrate"*. A curl line carrying a live `access_token` is not safe to paste into a
+bug report, which is the field's entire purpose. History redacts it, so the most-guarded artefact
+is clean and stdout — which §3 principle 0 puts first — is not.
+
+---
+
+### Task 27: A profile's own base-url is in the allowed host set — finding 7
+
+**Depends on:** none
+
+**Decided 2026-08-04 (human):** option Y1. DESIGN.md v0.6 §5a now lists a fourth source — the
+active profile's own `base-url` host. The reasoning is written down there; implement it, do not
+re-open it.
+
+**Test files:**
+- `cmd/talaria/hosts_test.go` or `call_test.go` (modify) — a profile with `base-url` + `auth` and
+  no `allow_hosts`
+- `cmd/talaria/auth_test.go` (modify) — `auth check --profile` agrees
+
+**Implementation files:**
+- `cmd/talaria/hosts.go` — `allowedHosts(cmd, doc, prof)` (~:23), the one place the set is
+  assembled
+
+**Red — write failing tests:**
+1. README.md:205's example verbatim — profile with `base-url: https://staging.example.com` and
+   `auth: bearerAuth: ${STAGING_TOKEN}`, no `allow_hosts`. The credential must be sent. Today it
+   is resolved and then withheld from the host the same file names.
+2. `auth check --profile staging` reports `withheld: false`, agreeing with `call`.
+3. **The host set does not widen anywhere else.** A `--base-url` flag pointing off-set still
+   withholds, with the profile active and without. This is the test that keeps source 4 from
+   becoming a general escape hatch.
+4. No profile selected → the set is unchanged from today.
+
+**Adversarial — what does hostile or malformed input do here?**
+1. A profile whose `base-url` is malformed. A malformed *human* entry is exit 2 by the existing
+   rule — confirm that still holds and that it does not silently contribute nothing.
+2. A profile `base-url` with userinfo, a control character, or a non-http scheme.
+3. A profile that names `base-url` and is *not* selected — its host must not enter the set.
+4. Profile `base-url` plus `--base-url` on the command line: §4 precedence says the flag wins as
+   destination; assert the credential is then withheld unless some source names the flag's host.
+
+**Green — minimal implementation:**
+`allowedHosts` adds `prof.BaseURL`'s host when a profile is active, through the same
+`NewHostSet` argument path the other human-supplied sources use, so a malformed value is exit 2
+rather than a silent drop.
+
+**Verify:** `go test ./cmd/... ./internal/request/...`
+
+**Why:** The headline profile workflow is non-functional as documented. Following README.md
+produces a call with no credential and a warning telling the operator to repeat a host their
+config file already names.
+
+---
+
+### Task 28: Every accumulator holding a credential is one this package can zero — findings 3 and 4
+
+**Depends on:** none
+
+**Test files:**
+- `internal/curl/firewall_test.go` (modify) — `owned()` cannot see the defect; it needs a sibling
+  that holds a reference across the build
+
+**Implementation files:**
+- `internal/curl/config.go` — `directive`/`flag` (~:366) grow `d.b` with plain `append`;
+  `document.cookies` (~:266) accumulates into a `strings.Builder`
+- `internal/curl/firewall.go` — `discard()` (~:82) clears the *current* array only
+
+**Red — write failing tests:**
+1. Seed a `document` with a small backing array, run the real `build` path with a bearer
+   credential, and hold a reference to the pre-growth array. After `cleanup()` and `discard()`,
+   that array must not contain the credential. It does today — verified in the finding, which read
+   `Authorization: Bearer CANARY-…` back out of an abandoned array. Final geometry on a minimal
+   request is `len=284 cap=416`, at least five reallocations, each leaving one uncleared copy.
+2. The same for a cookie credential: a spec with `type: apiKey, in: cookie`. Extend
+   `TestBuildConfigCleanupZeroesTheDocument`, which exercises bearer only.
+
+**Adversarial — what does hostile or malformed input do here?**
+1. A credential long enough to force several reallocations in one directive.
+2. Several cookie credentials in one request.
+3. A build that fails partway — cleanup must still be idempotent and non-nil, as it is today.
+
+**Green — minimal implementation:**
+1. Give `document` an explicit `grow(n int)`: when `cap(d.b)-len(d.b) < n`, allocate, `copy`, then
+   `clear(old[:cap(old)])` before dropping the reference. Route `directive` and `flag` through it.
+2. Write the joined cookie value into `d.b` with the same discipline, not into a `strings.Builder`
+   — `Builder.String` aliases its array into an immutable string that can never be zeroed, which
+   is the exact property the finding-29 fix claimed to remove.
+3. If any part of the claim is judged not worth the change, **narrow the comment instead** —
+   `firewall.go:78` and CLAUDE.md both currently assert an invariant no test enforces, which the
+   house rules forbid. `os.Getenv`'s own string is unscrubbable regardless; say so.
+
+**Verify:** `go test ./internal/curl/...`
+
+**Why:** CLAUDE.md, written on this branch: *"Never introduce another accumulator for
+credential-bearing text without the same property."* `cookies` is one, in the file the fix
+rewrote. And the buffer the fix did rewrite leaks by reallocation instead of by aliasing — the
+same defect, a different mechanism, invisible to a test that can only reach the surviving array.
+
+---
+
+### Task 29: The retention cap and the read bound agree, and `Append` never lies — finding 6, and findings 23 and 24 from task 19
+
+**Depends on:** Task 9 (landed)
+
+**Test files:**
+- `internal/corpus/file_test.go` (create — the split the backlog already identified) — the bounds
+  relate; a store at the retention cap is still readable
+- `internal/corpus/store_test.go` (modify) — `Append` reports what it actually wrote
+
+**Implementation files:**
+- `internal/corpus/file.go` — `maxStoreBytes` (~:37) and `maxPerSource` (~:25), `trim`
+- `internal/corpus/store.go` — `Append` (~:110) writes before `trim`; `storedIDs` (~:148)
+  collapses every read error to `nil`
+
+**Red — write failing tests:**
+1. A store grown to the retention policy's own maximum is still readable. Today `maxPerSource`
+   (1000 entries × 2 sources) × `maxEntryBytes` (256 KiB) tops out near 350 MB against a 64 MiB
+   read bound — talaria writes itself into a store it will not read. **384 entries** reproduce it.
+2. Once over the bound, `trim` can still repair it. Today `trim` fails the same way `Read` does,
+   so the only thing that can shrink the file can never run, and only a manual `rm` gets out.
+3. `Append` does not report failure for a line it wrote. Verified against the shipped binary:
+   `file before=71610000 after=71610448`, and the operator is told *"the call was not recorded"*
+   for an entry that is on disk with its response. That is finding 23's exact failure — an
+   operator re-runs a mutating call believing nothing was recorded.
+4. `storedIDs` distinguishes `fs.ErrNotExist` from an unreadable file (finding 24). Today it
+   returns `nil` for both, so the taken-id set is empty and `uniqueID` loses its collision check.
+
+**Adversarial — what does hostile or malformed input do here?**
+1. A store one byte over the bound, and exactly at it.
+2. A store that is unreadable for a reason that is not size — permissions, a symlink, a FIFO.
+3. Concurrent `Append` while the file is over the bound.
+
+**Green — minimal implementation:**
+Make the two numbers relate, in one place, with the relationship written down beside them: either
+derive `maxStoreBytes` from `maxPerSource × maxEntryBytes × len(sources)`, or give `trim` a
+streaming tail rewrite that does not need the whole file. Then `Append` reports on what it wrote,
+and `storedIDs` branches on the error.
+
+**Verify:** `go test ./internal/corpus/... ./cmd/...`
+
+**Why:** The task-9 bound made the finding-23 failure routine and its state absorbing. Task 19
+keeps finding 31 only; 23 and 24 land here because they are the same code path as the bound that
+triggers them.
+
+---
+
+### Task 30: The boundary guard says what the rule actually is — finding 5
+
+**Depends on:** none
+
+**Decided 2026-08-04 (human):** narrow the rule to a *direct* import ban now; breaking the
+transitive edge belongs to phase 2b, the boundary phase. Do not attempt the package split here.
+
+**Test files:**
+- `internal/e2e/boundary_test.go` (modify) — a `corpus` entry that bans the direct import
+
+**Implementation files:**
+- `internal/e2e/boundary_test.go` — the `boundaries` table (~:56), which reads dependencies
+  transitively by design
+- `CLAUDE.md` and `internal/corpus/entry.go:13` — both currently claim more than is true
+
+**Red — write failing tests:**
+1. A `corpus` entry forbidding a **direct** import of `internal/config`, which passes today and
+   fails the moment someone adds the import. The guard is transitive by design, so this needs a
+   direct-only mode — add it as an explicit field on the table entry, not as a special case.
+2. The existing transitive entries keep working unchanged.
+
+**Adversarial:**
+1. A package that imports `config` through a new intermediate — the direct ban must not claim to
+   catch it, and the comment must not imply it does.
+
+**Green — minimal implementation:**
+Add the direct-only entry, then rewrite both claims to match. CLAUDE.md currently says *"`internal/corpus`
+may not import `internal/config`"* and `entry.go:13` says *"The package deliberately does not
+import internal/config"* — both are false as written: `corpus → request → config` exists today
+(`go list -deps ./internal/corpus`). State the direct ban, state that the transitive edge exists,
+and say why it is tolerated until phase 2b: `request` needs `config.Credential`, `Kind`, `Profile`
+and `Resolve`, so removing it is a package split, not an import edit. Record the deferral in
+`docs/plans/2026-08-03-phase-2b-boundary.md` so it is picked up there.
+
+**Verify:** `go test ./internal/e2e/...`
+
+**Why:** The rule this branch wrote down was already false when it was written. A guard that
+does not check the rule, beside a comment asserting an invariant nothing enforces, is two house
+rules broken at once.
+
+---
+
+### Task 31: The remote spec fetch is cancellable — finding 8
+
+**Depends on:** Task 10 (landed), Task 15 (landed)
+
+**Test files:**
+- `internal/spec/source_test.go` (modify) — a cancelled context ends the fetch promptly
+
+**Implementation files:**
+- `internal/spec/source.go` — `fetch`/`Load`/`loadURL` take a context; `http.NewRequestWithContext`
+
+**Red — write failing tests:**
+1. A server that accepts the connection and never answers: with the context cancelled, `Load`
+   returns promptly rather than at `fetchTimeout`. Today the signal context does not reach it, so
+   Ctrl-C during a spec fetch waits out the full 30 seconds.
+2. The existing bound tests still pass — the cap and the clock stay independent.
+
+**Adversarial:**
+1. A context already cancelled on entry.
+2. Cancellation during the redirect chain.
+3. Cancellation mid-body, after the bound has started reading.
+
+**Green — minimal implementation:**
+Thread `ctx` from the command's `signalContext()` through `Load`, and build the request with
+`http.NewRequestWithContext`. Keep `Load(ref)` as a thin wrapper for callers that have no context
+if that avoids churn, but every command path must pass one.
+
+**Verify:** `go test ./internal/spec/... ./cmd/...`
+
+**Why:** §3.1's *"Never prompt. Never page."* and the second-Ctrl-C rule task 15 established. A
+wait the signal context cannot reach is the one case that rule exists for.
+
+---
+
+### Task 32: The shipped documents describe what the binary does — findings 9 and 10
+
+**Depends on:** Tasks 25 and 27 (both change what is true about withholding)
+
+**Test files:** none — this is a read, plus one output-contract assertion if a cheap one exists.
+
+**Implementation files:**
+- `AGENT.md`, `README.md` — `auth check`'s `withheld` field appears in the output contract and in
+  no shipped document
+- `docs/design/DESIGN.md` §3.4 — still specifies `--data @file`; the code emits `--data-binary`,
+  deliberately, and the design doc is the thing that is wrong
+
+**Green:**
+1. Document `withheld` where `auth check`'s output is described, including what an agent should do
+   about it. Do this *after* tasks 25 and 27, or it will be documented wrong.
+2. Amend §3.4 to `--data-binary` and say why: `--data` strips newlines out of a file, and
+   `TestThePreviewedCommandSendsWhatTheCallSends` fails on a pretty-printed body file.
+
+**Why:** Finding 21 exists because a shipped document described behaviour the code no longer had.
+
+---
+
+### Task 33: The SIGINT test does not order itself with a sleep — finding 11
+
+**Depends on:** none
+
+**Test files:**
+- `cmd/talaria/signal_test.go` (or wherever `TestSIGINTEndsACallWaitingOnStdin` lives)
+
+**Green:**
+Replace the sleep with a real synchronisation point — the child announcing readiness on a pipe,
+or a poll on the state the signal is meant to interrupt. A timing-ordered test either flakes in CI
+or passes for the wrong reason on a loaded machine, and this suite runs on a 4-vCPU box that has
+been OOM-killed twice this phase.
+
+**Why:** House rule: a green suite is not evidence. A test that sleeps is asserting about the
+scheduler, not about the code.

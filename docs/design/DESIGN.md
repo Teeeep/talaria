@@ -1,10 +1,17 @@
 # talaria — Design Document
 
-*Status: draft v0.5 · amended 2026-08-03 · Phases 1–3 built and merged; phase 2a remediation next*
+*Status: draft v0.6 · amended 2026-08-04 · Phases 1–3 built and merged; phase 2a remediation in flight*
 
 > **Name resolved: `talaria`** — the winged sandals of Hermes. The tool is not the messenger;
 > the agent is. This is what it wears to move fast. Fixes `cmd/talaria`, the binary on `$PATH`,
 > `TALARIA_AUTH_*` env vars, and the `"schema": "talaria/v1"` output field.
+
+**Changes in v0.6:** one rule §5a left unstated and the phase-2a review then found the code
+guessing at — a selected profile's own `base-url` host is in the allowed set (§5a, source 4),
+which makes the README's headline profile workflow send the credential the profile names. The
+review that forced the decision is
+[docs/review/20260803-230956-cycle1-findings.md](../review/20260803-230956-cycle1-findings.md),
+finding 7.
 
 **Changes in v0.5:** `run` is cut (§4, §5, §7) — spec-driven smoke testing is well served
 elsewhere and was the largest, least differentiated part of the tool. Three rules the phase-2
@@ -369,7 +376,19 @@ The allowed host set for a call is:
 
 1. every host in the spec's `servers[]`, after server-variable substitution; plus
 2. every host passed as `--allow-host HOST` (repeatable); plus
-3. every host in `allow_hosts:` in the active profile.
+3. every host in `allow_hosts:` in the active profile; plus
+4. the host of the active profile's own `base-url`, when a profile was selected.
+
+(4) is the same category as (2), not a weakening of it. A profile is a human-authored file at
+mode 0600 that names a base URL and a credential together, and it applies only when the caller
+selects it by name — that is a human explicitly allowing a host, spelled once instead of twice.
+Without it the headline profile workflow resolves a credential and then withholds it from the
+destination the same file names, which reads as a bug and is fixed by copying the host into
+`allow_hosts:` — a step that teaches operators to keep a redundant list in sync and buys no
+safety, since anyone who can write `base-url` can write `allow_hosts` in the same file. Note
+what (4) does **not** cover: `--base-url` on the command line is still outside the set unless
+some other source names it, because a flag is a per-invocation redirection and the twin case
+above is exactly why withholding there is right.
 
 When `--base-url` points outside that set the request still runs, but **every credential is
 withheld**, and the omission is reported both ways — a one-line stderr warning naming the

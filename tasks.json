@@ -1,8 +1,8 @@
 {
   "plan_file": "IMPLEMENTATION_PLAN.md",
   "spec_file": "docs/plans/2026-08-03-phase-2a-remediation.md",
-  "generated_at": "2026-08-03T13:05:00Z",
-  "total_tasks": 24,
+  "generated_at": "2026-08-04T00:00:00Z",
+  "total_tasks": 33,
   "tasks": [
     {
       "id": 1,
@@ -151,7 +151,7 @@
     {
       "id": 19,
       "section": "19",
-      "title": "History never lies about what it recorded \u2014 findings 23, 24 and 31",
+      "title": "History never lies about what it recorded \u2014 finding 31 (23 and 24 move to task 29)",
       "line_start": 1318,
       "line_end": 1387,
       "done": false
@@ -194,6 +194,87 @@
       "title": "Refactor pass \u2014 tasks 19-23, end of phase",
       "line_start": 1667,
       "line_end": 1706,
+      "done": false
+    },
+    {
+      "id": 25,
+      "section": "25",
+      "title": "The host check asks the URL the executor will use \u2014 finding 1 (CRIT)",
+      "line_start": 1750,
+      "line_end": 1806,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 26,
+      "section": "26",
+      "title": "The emitted curl redacts the body it inlines \u2014 finding 2 (CRIT)",
+      "line_start": 1809,
+      "line_end": 1852,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 27,
+      "section": "27",
+      "title": "A profile's own base-url is in the allowed host set \u2014 finding 7",
+      "line_start": 1855,
+      "line_end": 1900,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 28,
+      "section": "28",
+      "title": "Every accumulator holding a credential is one this package can zero \u2014 findings 3 and 4",
+      "line_start": 1903,
+      "line_end": 1946,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 29,
+      "section": "29",
+      "title": "The retention cap and the read bound agree, and `Append` never lies \u2014 finding 6, and findings 23 and 24 from task 19",
+      "line_start": 1949,
+      "line_end": 1992,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 30,
+      "section": "30",
+      "title": "The boundary guard says what the rule actually is \u2014 finding 5",
+      "line_start": 1995,
+      "line_end": 2034,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 31,
+      "section": "31",
+      "title": "The remote spec fetch is cancellable \u2014 finding 8",
+      "line_start": 2037,
+      "line_end": 2067,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 32,
+      "section": "32",
+      "title": "The shipped documents describe what the binary does \u2014 findings 9 and 10",
+      "line_start": 2070,
+      "line_end": 2089,
+      "kind": "fix",
+      "done": false
+    },
+    {
+      "id": 33,
+      "section": "33",
+      "title": "The SIGINT test does not order itself with a sleep \u2014 finding 11",
+      "line_start": 2092,
+      "line_end": 2106,
+      "kind": "fix",
       "done": false
     }
   ]
