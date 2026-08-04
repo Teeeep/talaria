@@ -80,6 +80,8 @@ func Build(in Inputs) (*request.Request, error) {
 		return nil, err
 	}
 
+	declaredHeaders, headerFlags := in.headers(op)
+
 	creds, err := config.Resolve(op, in.Doc, in.Profile)
 	if err != nil {
 		return nil, err
@@ -92,9 +94,9 @@ func Build(in Inputs) (*request.Request, error) {
 		Creds:      creds,
 		BaseURL:    target,
 		AllowHosts: in.AllowHosts,
-		Params:     append(params, query...),
+		Params:     append(append(params, query...), declaredHeaders...),
 		Query:      extra,
-		Headers:    in.headers(op),
+		Headers:    headerFlags,
 		Redactor:   in.Redactor,
 	})
 	if err != nil {
@@ -232,6 +234,7 @@ func (in Inputs) body() (*request.Body, error) {
 // position, and config.Resolve is what puts a credential back.
 func (in Inputs) query(op operation.Operation, raw string) (declared, extra []string, err error) {
 	locations := declaredParams(op)
+	seen := map[string]bool{}
 
 	// Walked rather than url.ParseQuery'd because a map would lose the order,
 	// and a replay that reorders the query string is not the same request.
@@ -255,8 +258,16 @@ func (in Inputs) query(op operation.Operation, raw string) (declared, extra []st
 			continue
 		}
 
-		if locations[name] == "query" {
+		// The first occurrence binds as the declared parameter; later ones go to
+		// the raw query, which appends. binder.params is a map[string]string, so
+		// routing every occurrence through it collapsed ?tag=a&tag=b — the
+		// default array encoding, and what `call` emits from repeated --query —
+		// to ?tag=b, at exit 0 with nothing on stderr. Order is preserved, so the
+		// bytes on the wire are the bytes that were recorded.
+		if locations[name] == "query" && !seen[name] {
+			seen[name] = true
 			declared = append(declared, name+"="+value)
+
 			continue
 		}
 		extra = append(extra, name+"="+value)
@@ -273,10 +284,10 @@ func (in Inputs) query(op operation.Operation, raw string) (declared, extra []st
 // back through config.Resolve or not at all. Passing it through as a literal
 // would put that text on the wire, and resolving it would make talaria a "read
 // $ANY_VAR and send it" primitive driven by a file.
-func (in Inputs) headers(op operation.Operation) []string {
+func (in Inputs) headers(op operation.Operation) (declared, flags []string) {
 	locations := declaredParams(op)
 
-	out := make([]string, 0, len(in.Entry.Request.Headers))
+	flags = make([]string, 0, len(in.Entry.Request.Headers))
 	for _, name := range slices.Sorted(maps.Keys(in.Entry.Request.Headers)) {
 		value := in.Entry.Request.Headers[name]
 		if isRedacted(value) {
@@ -284,19 +295,33 @@ func (in Inputs) headers(op operation.Operation) []string {
 			continue
 		}
 
-		out = append(out, name+"="+value)
-	}
-
-	// Cookies have no flag to come back through, so a recorded one is only
-	// replayable when the operation declares it as a parameter — and that is
-	// bound below by name, alongside the path and query parameters.
-	for _, name := range slices.Sorted(maps.Keys(in.Entry.Request.Cookies)) {
-		if locations[name] != "cookie" || isRedacted(in.Entry.Request.Cookies[name]) {
-			warnUnreplayable(in.Stderr, "cookie", name)
+		// By declaration, not by transport. A header the operation declares as a
+		// parameter has to bind as one: routed to --header instead, the binder
+		// still reports it missing, and an entry talaria had just written came
+		// back "--param X-Tenant is required" with no flag able to satisfy it.
+		if locations[name] == "header" {
+			declared = append(declared, name+"="+value)
+			continue
 		}
+
+		flags = append(flags, name+"="+value)
 	}
 
-	return out
+	// A cookie has no flag of its own, so a recorded one is replayable only as a
+	// declared parameter. This used to warn and then send nothing at all: the
+	// replay exited 0 and the wire carried no Cookie header, a different request
+	// from the one `history show` displays.
+	for _, name := range slices.Sorted(maps.Keys(in.Entry.Request.Cookies)) {
+		value := in.Entry.Request.Cookies[name]
+		if locations[name] != "cookie" || isRedacted(value) {
+			warnUnreplayable(in.Stderr, "cookie", name)
+			continue
+		}
+
+		declared = append(declared, name+"="+value)
+	}
+
+	return declared, flags
 }
 
 // pathParams recovers the operation's path parameters by matching the stored

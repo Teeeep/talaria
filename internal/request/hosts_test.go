@@ -194,3 +194,38 @@ func TestAllowedHostsReadsTheSpecThroughServers(t *testing.T) {
 		t.Error("Allows(https://api.invalid) = true, want false")
 	}
 }
+
+// A malformed --base-url is a failure, not an absence. Target used to swallow
+// every ResolveBaseURL error, so `auth check` blessed input `call` refuses with
+// exit 2 — the pre-flight and the call disagreeing, which DESIGN.md §5 forbids.
+func TestTargetReportsAMalformedBaseURLRatherThanNoTarget(t *testing.T) {
+	_, doc := fixture(t, "getPet")
+
+	for _, tc := range []struct{ name, flag string }{
+		{"non-http scheme", "ftp://evil.example.com"},
+		{"userinfo", "http://u:p@evil.example.com"},
+		{"no host", "http:///nowhere"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Target(tc.flag, nil, doc)
+			if err == nil {
+				t.Fatalf("Target(%q) = %q with no error; want the refusal call makes", tc.flag, got)
+			}
+			if got != "" {
+				t.Errorf("Target(%q) = %q, want empty beside the error", tc.flag, got)
+			}
+		})
+	}
+}
+
+// The absence stays an absence: no server and no flag is something auth check
+// reports on, not something it fails over.
+func TestTargetTreatsNoBaseURLAsAnAnswer(t *testing.T) {
+	got, err := Target("", nil, nil)
+	if err != nil {
+		t.Fatalf("Target with nothing to resolve: %v", err)
+	}
+	if got != "" {
+		t.Errorf("Target = %q, want empty", got)
+	}
+}

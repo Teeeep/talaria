@@ -115,7 +115,10 @@ func credentialsWithheld(inv *invocation, doc *spec.Document) (bool, error) {
 		return false, err
 	}
 
-	target := request.Target(inv.BaseURL, inv.Profile, doc)
+	target, err := request.Target(inv.BaseURL, inv.Profile, doc)
+	if err != nil {
+		return false, err
+	}
 
 	return target != "" && !allowed.Allows(target), nil
 }

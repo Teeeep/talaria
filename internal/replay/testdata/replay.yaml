@@ -1,0 +1,12 @@
+openapi: 3.0.0
+info: {title: replay fixture, version: "1.0"}
+servers: [{url: "https://api.example.com"}]
+paths:
+  /things:
+    get:
+      operationId: getThings
+      parameters:
+        - {name: tag, in: query, schema: {type: array, items: {type: string}}}
+        - {name: X-Tenant, in: header, required: true, schema: {type: string}}
+        - {name: sess, in: cookie, schema: {type: string}}
+      responses: {"200": {description: ok}}

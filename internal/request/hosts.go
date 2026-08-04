@@ -1,6 +1,7 @@
 package request
 
 import (
+	"errors"
 	"net"
 	"net/url"
 	"sort"
@@ -98,20 +99,28 @@ func (s HostSet) Hosts() []string {
 	return out
 }
 
-// Target is where a call under these settings would go, or "" when nothing
-// resolves one.
+// Target is where a call under these settings would go: the URL, or "" with no
+// error when nothing named one.
 //
 // It is ResolveBaseURL for the caller that treats "no base URL" as an answer
 // rather than a failure: `auth check` reports on the environment, and a spec
 // with no servers[] and an invocation with no --base-url leave it with no host
 // to report against — which is not the same as leaving it unable to report.
-func Target(flag string, prof *config.Profile, doc *spec.Document) string {
+//
+// Only that case. It used to swallow every error, so `auth check` reported a
+// scheme satisfied for `--base-url ftp://evil.example.com` while `call` exited 2
+// on the same string — the pre-flight and the call disagreeing, which DESIGN.md
+// §5 forbids and which CLAUDE.md names this package as the mechanism against.
+func Target(flag string, prof *config.Profile, doc *spec.Document) (string, error) {
 	url, err := ResolveBaseURL(flag, prof, doc)
-	if err != nil {
-		return ""
+	switch {
+	case errors.Is(err, ErrNoBaseURL):
+		return "", nil
+	case err != nil:
+		return "", err
 	}
 
-	return url
+	return url, nil
 }
 
 // Host is rawURL's authority in the canonical form this package compares, for a

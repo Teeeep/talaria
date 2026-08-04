@@ -183,9 +183,16 @@ func ResolveBaseURL(flag string, prof *config.Profile, doc *spec.Document) (stri
 		return strings.TrimSuffix(c.raw, "/"), nil
 	}
 
-	return "", clierr.Usage(
-		"no base URL: the spec declares no server, so pass --base-url or set one in a profile")
+	return "", fmt.Errorf("%w: %s", ErrNoBaseURL, "the spec declares no server, so pass --base-url or set one in a profile")
 }
+
+// ErrNoBaseURL marks the one ResolveBaseURL failure that is an absence rather
+// than a fault: nothing named a base URL. Target reports that as "no target",
+// and every other error — a userinfo credential, a non-http scheme, an
+// unparseable URL — as the refusal it is, so `auth check` cannot bless input
+// `call` exits 2 on.
+var ErrNoBaseURL = clierr.Usage(
+	"no base URL: the spec declares no server, so pass --base-url or set one in a profile")
 
 // firstServer returns the document's first usable server URL, or "" when it has
 // none. spec.Servers substitutes server variables and drops the servers it
