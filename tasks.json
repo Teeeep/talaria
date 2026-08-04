@@ -1,56 +1,197 @@
 {
   "plan_file": "IMPLEMENTATION_PLAN.md",
-  "spec_file": "docs/design/DESIGN.md",
-  "generated_at": "2026-08-03T06:20:00+00:00",
-  "total_tasks": 6,
+  "spec_file": "docs/plans/2026-08-03-phase-2a-remediation.md",
+  "generated_at": "2026-08-04T15:10:00+00:00",
+  "total_tasks": 21,
   "tasks": [
     {
       "id": 1,
       "section": "1",
-      "title": "Reject CR/LF in header, cookie and method values before they reach the wire",
-      "line_start": 22,
-      "line_end": 58,
-      "done": true
+      "title": "Substitute server variables and expose the spec's server URLs",
+      "depends_on": [],
+      "line_start": 60,
+      "line_end": 125,
+      "done": false
     },
     {
       "id": 2,
       "section": "2",
-      "title": "Emit `-X GET` in the rendered curl when the request carries a body",
-      "line_start": 61,
-      "line_end": 91,
-      "done": true
+      "title": "Bind credentials to hosts, and re-derive `history replay` through the spec",
+      "depends_on": [1],
+      "line_start": 126,
+      "line_end": 248,
+      "done": false
     },
     {
       "id": 3,
       "section": "3",
-      "title": "Make `auth check` and `call`/`run` agree on which requirement is chosen",
-      "line_start": 94,
-      "line_end": 124,
-      "done": true
+      "title": "Report unsupported security schemes instead of hiding them",
+      "depends_on": [],
+      "line_start": 249,
+      "line_end": 317,
+      "done": false
     },
     {
       "id": 4,
       "section": "4",
-      "title": "Stop `run` from fabricating failures and history when cancelled",
-      "line_start": 127,
-      "line_end": 156,
-      "done": true
+      "title": "Refuse a spec-supplied media type that would inject headers",
+      "depends_on": [],
+      "line_start": 318,
+      "line_end": 371,
+      "done": false
     },
     {
       "id": 5,
       "section": "5",
-      "title": "Scrub sensitive literals, not just resolved credentials, from curl's stderr",
-      "line_start": 159,
-      "line_end": 186,
-      "done": true
+      "title": "Stop printing a secret-bearing request body, and reference it in the emitted curl",
+      "depends_on": [],
+      "line_start": 372,
+      "line_end": 432,
+      "done": false
     },
     {
       "id": 6,
       "section": "6",
-      "title": "Restrict `history replay` to credentials inside the auth namespace",
-      "line_start": 189,
-      "line_end": 218,
-      "done": true
+      "title": "Compaction — tasks 1–5",
+      "depends_on": [5],
+      "line_start": 433,
+      "line_end": 466,
+      "done": false
+    },
+    {
+      "id": 7,
+      "section": "7",
+      "title": "Bound every read of untrusted input — the remote spec and the history file",
+      "depends_on": [],
+      "line_start": 467,
+      "line_end": 526,
+      "done": false
+    },
+    {
+      "id": 8,
+      "section": "8",
+      "title": "Zero the config document that actually held the credential",
+      "depends_on": [],
+      "line_start": 527,
+      "line_end": 571,
+      "done": false
+    },
+    {
+      "id": 9,
+      "section": "9",
+      "title": "Cut `internal/corpus`'s dependency on `internal/curl`, and guard it",
+      "depends_on": [],
+      "line_start": 572,
+      "line_end": 615,
+      "done": false
+    },
+    {
+      "id": 10,
+      "section": "10",
+      "title": "Close the two holes in the canary gate",
+      "depends_on": [2, 3],
+      "line_start": 616,
+      "line_end": 665,
+      "done": false
+    },
+    {
+      "id": 11,
+      "section": "11",
+      "title": "Compaction — tasks 7–10",
+      "depends_on": [10],
+      "line_start": 666,
+      "line_end": 686,
+      "done": false
+    },
+    {
+      "id": 12,
+      "section": "12",
+      "title": "Make `--output tsv` structurally valid",
+      "depends_on": [],
+      "line_start": 687,
+      "line_end": 730,
+      "done": false
+    },
+    {
+      "id": 13,
+      "section": "13",
+      "title": "Stop curl prompting on a TTY, and bound the version preflight",
+      "depends_on": [],
+      "line_start": 731,
+      "line_end": 786,
+      "done": false
+    },
+    {
+      "id": 14,
+      "section": "14",
+      "title": "Make Ctrl-C and SIGTERM work",
+      "depends_on": [],
+      "line_start": 787,
+      "line_end": 850,
+      "done": false
+    },
+    {
+      "id": 15,
+      "section": "15",
+      "title": "Stop the tool lying about history",
+      "depends_on": [],
+      "line_start": 851,
+      "line_end": 913,
+      "done": false
+    },
+    {
+      "id": 16,
+      "section": "16",
+      "title": "Give the spec cache a TTL, a conditional revalidation and a bypass",
+      "depends_on": [],
+      "line_start": 914,
+      "line_end": 976,
+      "done": false
+    },
+    {
+      "id": 17,
+      "section": "17",
+      "title": "Compaction — tasks 12–16",
+      "depends_on": [16],
+      "line_start": 977,
+      "line_end": 999,
+      "done": false
+    },
+    {
+      "id": 18,
+      "section": "18",
+      "title": "Audit comments that assert an invariant no test enforces",
+      "depends_on": [17],
+      "line_start": 1000,
+      "line_end": 1054,
+      "done": false
+    },
+    {
+      "id": 19,
+      "section": "19",
+      "title": "Stop re-reading the whole history file twice per append",
+      "depends_on": [15],
+      "line_start": 1055,
+      "line_end": 1101,
+      "done": false
+    },
+    {
+      "id": 20,
+      "section": "20",
+      "title": "Verify the phase end to end",
+      "depends_on": [19],
+      "line_start": 1102,
+      "line_end": 1149,
+      "done": false
+    },
+    {
+      "id": 21,
+      "section": "21",
+      "title": "Compaction — tasks 18–20 and the phase",
+      "depends_on": [20],
+      "line_start": 1150,
+      "line_end": 1171,
+      "done": false
     }
   ]
 }
