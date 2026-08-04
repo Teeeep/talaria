@@ -373,23 +373,31 @@ run_iterations() {
 
 # ── Findings counters ────────────────────────────────────────────────────────
 
+# -a on every read below is load-bearing, not defensive. REVIEW_FINDINGS.md
+# quotes hostile input verbatim — a spec whose securitySchemes name carries
+# ESC[2K, a stored body of C0 bytes — so the file contains control characters as
+# a matter of course, and this box ships ugrep as `grep`, which reports no match
+# and exit 1 on a file it decides is binary. Measured on the 2026-08-04 cycle-1
+# findings: every counter returned empty without -a and the correct value with
+# it. A guardrail that reads zero because it could not read at all is the exact
+# failure this harness was rebuilt around this morning.
 count_findings() {
   [ -f REVIEW_FINDINGS.md ] || { echo 0; return; }
-  local c; c=$(grep -c '^## Finding' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
+  local c; c=$(grep -ac '^## Finding' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
 }
 count_crits() {
   [ -f REVIEW_FINDINGS.md ] || { echo 0; return; }
-  local c; c=$(grep -c '^\- \*\*Severity:\*\* CRIT' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
+  local c; c=$(grep -ac '^\- \*\*Severity:\*\* CRIT' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
 }
 # Findings the fix loop must not attempt: they need a human decision, or a previous
 # fix for the same defect already failed. Counted so the loop can stop instead of spin.
 count_design_blocked() {
   [ -f REVIEW_FINDINGS.md ] || { echo 0; return; }
-  local c; c=$(grep -c '^\- \*\*Blocked-by:\*\* design' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
+  local c; c=$(grep -ac '^\- \*\*Blocked-by:\*\* design' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
 }
 count_repeats() {
   [ -f REVIEW_FINDINGS.md ] || { echo 0; return; }
-  local c; c=$(grep -c '^\- \*\*Repeat-of:\*\* cycle' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
+  local c; c=$(grep -ac '^\- \*\*Repeat-of:\*\* cycle' REVIEW_FINDINGS.md 2>/dev/null || true); echo "${c:-0}"
 }
 
 # The guardrails below are all about CRITs — their messages say so. Counting a
@@ -426,7 +434,33 @@ count_repeat_crits()         { count_crits_with "Repeat-of"  "cycle"; }
 #
 # Introduced-by is the field that does answer it, and it is the one that matters:
 # a fix creating a critical is what actually broke arm A, at one to two per cycle.
-count_introduced_crits() { count_crits_with "Introduced-by" "task"; }
+# Introduced unless the value begins "none". Reviewers write it as a sha and a
+# task — "`d1548bf` (task 2)" — or as "none — reproduces on `main`", with the
+# reasoning inline. An exact-match on the word "task" read 0 against 18 findings
+# that carried a sha, which is why this matches the negative instead: the field
+# is prose with a fixed first token, so the first token is the only safe thing to
+# key on.
+count_introduced_crits() {
+  [ -f REVIEW_FINDINGS.md ] || { echo 0; return; }
+  awk '
+    function flush() { if (sev == "CRIT" && val != "" && val != "none") n++; sev = ""; val = "" }
+    /^## Finding/                    { flush() }
+    /^\- \*\*Severity:\*\*/        { sev = $3 }
+    /^\- \*\*Introduced-by:\*\*/   { val = $3; sub(/^none.*/, "none", val) }
+    END                              { flush(); print n+0 }
+  ' REVIEW_FINDINGS.md
+}
+
+# Whether the review recorded the field at all. A counter that cannot see its
+# input must not answer "clear" — that is the defect this whole harness was
+# rebuilt around today, and it recurred within hours: Introduced-by was added to
+# the finding template, four reviewer subagents composed their own prompts
+# without it, and count_introduced_crits read 0 across 8 CRITs and let the run
+# continue. Absent is not zero.
+findings_record_field() {
+  [ -f REVIEW_FINDINGS.md ] || return 1
+  grep -aq "^\- \*\*$1:\*\*" REVIEW_FINDINGS.md
+}
 
 # Everything the loop could not resolve on its own, in one file for the human.
 write_escalation() {
@@ -661,6 +695,13 @@ phase_review() {
     if [ "$blocked_crits" -gt 0 ] && [ "$blocked_crits" -eq "$crits" ]; then
       log "All $crits CRIT finding(s) need a design decision this loop cannot make."
       write_escalation "every CRIT is blocked on a design decision" "$cycle"
+      push_changes; unset RALPH_REVIEW_CYCLE; return 5
+    fi
+
+    if [ "$crits" -gt 0 ] && ! findings_record_field "Introduced-by"; then
+      log "The review recorded no Introduced-by field, so the self-inflicted check could not run."
+      log "Not treating that as zero: $crits CRIT finding(s) are unclassified."
+      write_escalation "the review omitted Introduced-by; whether the fixes created these $crits CRIT(s) is unknown" "$cycle"
       push_changes; unset RALPH_REVIEW_CYCLE; return 5
     fi
 
