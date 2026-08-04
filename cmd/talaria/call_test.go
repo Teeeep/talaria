@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -379,10 +378,5 @@ func TestCallStopsWhenTheProcessIsCancelled(t *testing.T) {
 func allowHost(t *testing.T, srv *callServer) string {
 	t.Helper()
 
-	parsed, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatalf("parsing %q: %v", srv.URL, err)
-	}
-
-	return "--allow-host=" + parsed.Host
+	return "--allow-host=" + callHost(t, srv)
 }

@@ -184,14 +184,14 @@ func Resolve(op operation.Operation, doc *spec.Document, prof *Profile) ([]Crede
 		// would fix it, so exit 5 would send an agent to export something that
 		// cannot help.
 		return nil, clierr.Usage("no usable security scheme for %s: %s",
-			operationName(op), strings.Join(unsupported, "; "))
+			op.Name(), strings.Join(unsupported, "; "))
 	}
 
 	// Exit 5 is the published contract for "credential missing for a required
 	// security scheme", and that is what this is: the reasons name the variable
 	// that would satisfy each alternative.
 	return nil, clierr.CredentialMissing("no usable security scheme for %s: %s",
-		operationName(op), strings.Join(unsupported, "; "))
+		op.Name(), strings.Join(unsupported, "; "))
 }
 
 // Schemes lists every security scheme the document declares, as the credential
@@ -397,31 +397,6 @@ func credentialFor(name string, scheme *v3high.SecurityScheme, prof *Profile) (C
 // envRef matches a profile auth entry: ${VAR} or $VAR, and nothing else.
 var envRef = regexp.MustCompile(`^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$`)
 
-// ReferencesEnv reports whether this profile's auth map names the given
-// environment variable.
-//
-// It exists for `history replay`, which reads a variable's *name* out of a file
-// on disk and would otherwise resolve whatever that file asked for. The set of
-// names a replay may resolve is the TALARIA_AUTH_* convention plus this: the
-// variables the profile in force deliberately points at. A literal entry — the
-// one profileRef refuses — names no variable and so admits none.
-//
-// The nil receiver is "no --profile was given", which names nothing rather than
-// everything.
-func (p *Profile) ReferencesEnv(name string) bool {
-	if p == nil || name == "" {
-		return false
-	}
-
-	for _, entry := range p.Auth {
-		if match := envRef.FindStringSubmatch(entry); match != nil && match[1] == name {
-			return true
-		}
-	}
-
-	return false
-}
-
 // profileRef reads the profile's entry for a scheme. A profile may only
 // *reference* an environment variable; a literal value is refused, because a
 // credential in a config file is a credential this process would have to carry,
@@ -458,9 +433,9 @@ func securitySchemes(doc *spec.Document) map[string]*v3high.SecurityScheme {
 		return out
 	}
 
-	for pair := doc.Model.Components.SecuritySchemes.First(); pair != nil; pair = pair.Next() {
-		if scheme := pair.Value(); scheme != nil {
-			out[pair.Key()] = scheme
+	for name, scheme := range doc.Model.Components.SecuritySchemes.FromOldest() {
+		if scheme != nil {
+			out[name] = scheme
 		}
 	}
 
@@ -500,14 +475,4 @@ func envSuffix(scheme string) string {
 	}
 
 	return b.String()
-}
-
-// operationName is the operation's ID, falling back to method and path for a
-// spec that sets no operationId — an error naming neither is unactionable.
-func operationName(op operation.Operation) string {
-	if op.ID != "" {
-		return op.ID
-	}
-
-	return op.Method + " " + op.Path
 }

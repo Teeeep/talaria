@@ -18,6 +18,7 @@ import (
 	"github.com/Teeeep/talaria/internal/corpus"
 	"github.com/Teeeep/talaria/internal/curl"
 	"github.com/Teeeep/talaria/internal/operation"
+	"github.com/Teeeep/talaria/internal/replay"
 	"github.com/Teeeep/talaria/internal/request"
 	"github.com/Teeeep/talaria/internal/secret"
 	"github.com/Teeeep/talaria/internal/spec"
@@ -836,7 +837,7 @@ func TestHistoryDisabledInTheProfileRecordsNothing(t *testing.T) {
 
 // replayFor builds a replay against the call fixture, which is the spec every
 // other test in this file records entries under.
-func replayFor(t *testing.T, entry corpus.Entry) replay {
+func replayFor(t *testing.T, entry corpus.Entry) replay.Inputs {
 	t.Helper()
 
 	doc, err := spec.LoadFile(filepath.Join("testdata", "call.yaml"))
@@ -844,7 +845,7 @@ func replayFor(t *testing.T, entry corpus.Entry) replay {
 		t.Fatalf("LoadFile(call.yaml): %v", err)
 	}
 
-	return replay{
+	return replay.Inputs{
 		Entry:  entry,
 		Doc:    doc,
 		Index:  operation.NewIndexFor(doc),
@@ -880,10 +881,10 @@ func findPair(t *testing.T, pairs []request.Pair, name string) request.Value {
 
 // replayErr asserts the replay failed with exit 2 — that entry, not the process
 // — and returns the error so the caller can assert what it names.
-func replayErr(t *testing.T, r replay) error {
+func replayErr(t *testing.T, in replay.Inputs) error {
 	t.Helper()
 
-	req, err := r.request()
+	req, err := replay.Build(in)
 	if err == nil {
 		t.Fatalf("replay succeeded, want a usage error; got %+v", req)
 	}
@@ -957,7 +958,7 @@ func TestReplaySendsTheOriginalBytesOfABinaryBody(t *testing.T) {
 		Encoding:    corpus.EncodingBase64,
 	}
 
-	req, err := replayFor(t, entry).request()
+	req, err := replay.Build(replayFor(t, entry))
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -1022,7 +1023,7 @@ func TestReplayRebuildsTheRequestFromTheSpec(t *testing.T) {
 	entry := storedEntry()
 	entry.URL = "https://api.invalid/some/other/prefix/pets/42?verbose=true"
 
-	req, err := replayFor(t, entry).request()
+	req, err := replay.Build(replayFor(t, entry))
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -1058,7 +1059,7 @@ func TestReplayDropsAStoredCredentialReferenceEntirely(t *testing.T) {
 		"X-Plain":       "kept",
 	}
 
-	req, err := replayFor(t, entry).request()
+	req, err := replay.Build(replayFor(t, entry))
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -1193,7 +1194,7 @@ func TestReplayRefusesAStoredHostOutsideTheAllowedSet(t *testing.T) {
 	// Allowed explicitly, it replays — and still goes to the spec's server.
 	r := replayFor(t, entry)
 	r.AllowHosts = []string{"127.0.0.1:19950"}
-	req, err := r.request()
+	req, err := replay.Build(r)
 	if err != nil {
 		t.Fatalf("replay with the host allowed: %v", err)
 	}
@@ -1209,7 +1210,7 @@ func TestReplayHonoursBaseURL(t *testing.T) {
 	r := replayFor(t, storedEntry())
 	r.BaseURL = "https://elsewhere.example"
 
-	req, err := r.request()
+	req, err := replay.Build(r)
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -1285,7 +1286,7 @@ func TestReplayCannotSmuggleAHeaderThroughAStoredContentType(t *testing.T) {
 		Data:        `{"name":"Rex"}`,
 	}
 
-	req, err := replayFor(t, entry).request()
+	req, err := replay.Build(replayFor(t, entry))
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}

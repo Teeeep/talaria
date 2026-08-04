@@ -124,7 +124,7 @@ func (b *binder) err() error {
 	}
 
 	err := clierr.Usage("cannot build a request for %s: %s",
-		operationName(b.in.Op), strings.Join(b.problems, "; "))
+		b.in.Op.Name(), strings.Join(b.problems, "; "))
 	if b.unknown {
 		err = err.WithAlternatives(declaredNames(b.in.Op)...)
 	}
@@ -220,7 +220,7 @@ func (b *binder) params() map[string]string {
 
 		if _, ok := declared[name]; !ok {
 			b.unknown = true
-			b.fail("%s declares no parameter %q", operationName(b.in.Op), name)
+			b.fail("%s declares no parameter %q", b.in.Op.Name(), name)
 			continue
 		}
 
@@ -308,7 +308,7 @@ func (b *binder) located(bound map[string]string, in string) []Pair {
 		// ordinary string an API is free to spell `filter[status]`.
 		if in == inHeader && !isFieldName(p.Name) {
 			b.fail("%s declares header parameter %q, which is not a valid HTTP header name",
-				operationName(b.in.Op), p.Name)
+				b.in.Op.Name(), p.Name)
 			continue
 		}
 
@@ -583,14 +583,4 @@ func declaredNames(op operation.Operation) []string {
 	}
 
 	return names
-}
-
-// operationName is the operation's ID, falling back to method and path for a
-// spec that sets no operationId.
-func operationName(op operation.Operation) string {
-	if op.ID != "" {
-		return op.ID
-	}
-
-	return op.Method + " " + op.Path
 }

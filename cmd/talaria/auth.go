@@ -75,22 +75,17 @@ func newAuthCheckCmd() *cobra.Command {
 				return err
 			}
 
-			cfg, err := config.Load("")
+			inv, err := newInvocation(cmd)
 			if err != nil {
 				return err
 			}
 
-			prof, err := selectProfile(cmd, cfg)
+			creds, err := config.Schemes(doc, inv.Profile)
 			if err != nil {
 				return err
 			}
 
-			creds, err := config.Schemes(doc, prof)
-			if err != nil {
-				return err
-			}
-
-			withheld, err := credentialsWithheld(cmd, doc, prof)
+			withheld, err := credentialsWithheld(inv, doc)
 			if err != nil {
 				return err
 			}
@@ -110,22 +105,17 @@ func newAuthCheckCmd() *cobra.Command {
 // credentialsWithheld reports whether the host this invocation resolves to is
 // one the spec's credentials are bound to.
 //
-// It reads the same two flags and calls the same two functions `call` does, so
+// It reads the same invocation and calls the same two functions `call` does, so
 // the answer cannot drift from what a call would actually do. A spec that
 // declares no server and an invocation with no --base-url resolve to no host at
 // all: there is nothing to withhold from, so the report is the plain one.
-func credentialsWithheld(cmd *cobra.Command, doc *spec.Document, prof *config.Profile) (bool, error) {
-	baseURL, allowHosts, err := hostFlags(cmd)
+func credentialsWithheld(inv *invocation, doc *spec.Document) (bool, error) {
+	allowed, err := request.AllowedHosts(doc, inv.Profile, inv.AllowHosts)
 	if err != nil {
 		return false, err
 	}
 
-	allowed, err := request.AllowedHosts(doc, prof, allowHosts)
-	if err != nil {
-		return false, err
-	}
-
-	target := request.Target(baseURL, prof, doc)
+	target := request.Target(inv.BaseURL, inv.Profile, doc)
 
 	return target != "" && !allowed.Allows(target), nil
 }

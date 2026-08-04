@@ -139,18 +139,15 @@ func newCallCmd() *cobra.Command {
 			if op.IsMutation() && !allowMutations {
 				return clierr.Usage(
 					"%s is a %s request and may change server state: pass --allow-mutations to call it",
-					operationName(op), op.Method)
+					op.Name(), op.Method)
 			}
 
-			// Read whether or not --profile was given: the redaction lists are a
-			// security setting, and one that only takes effect when you happen to
-			// be using a profile is one that silently does not.
-			cfg, err := config.Load("")
+			inv, err := newInvocation(cmd)
 			if err != nil {
 				return err
 			}
 
-			req, err := buildRequest(cmd, cfg, op, doc, params, queries, headers, body)
+			req, err := buildRequest(cmd, inv, op, doc, params, queries, headers, body)
 			if err != nil {
 				return err
 			}
@@ -161,38 +158,32 @@ func newCallCmd() *cobra.Command {
 			warnQueryCredentials(cmd.ErrOrStderr(), warner, req)
 			warnWithheldCredentials(cmd.ErrOrStderr(), req)
 
-			store, err := openHistory(cmd, cfg)
-			if err != nil {
-				return err
-			}
-
 			renderer := output.New(format, cmd.OutOrStdout())
-			redactors := newRedactors(cfg)
 			if dryRun {
 				// Nothing is recorded: a dry run is a question about a request,
 				// not a request, and history answers "what have I already tried".
 				// Nothing is validated either — an empty validation block would
 				// read as "checked, and fine".
-				return renderer.Render(callPayload(req, nil, nil, redactors.Response))
+				return renderer.Render(callPayload(req, nil, nil, inv.Redactors.Response))
 			}
 
 			resp, execErr := curl.ExecuteWith(cmd.Context(), req, timeoutOptions(timeout))
 			// Recorded either way. A request that never completed is still
 			// something that was tried, and the entry says so by having no
 			// response block at all.
-			recordCall(cmd.ErrOrStderr(), store, corpus.SourceCall, req, resp, redactors)
+			recordCall(cmd.ErrOrStderr(), inv.history(), corpus.SourceCall, req, resp, inv.Redactors)
 			if execErr != nil {
 				return execErr
 			}
 
-			view := redactResponse(resp, redactors.Response)
+			view := redactResponse(resp, inv.Redactors.Response)
 			result := validateResponse(cmd.ErrOrStderr(), doc, req, view)
 
 			// Rendered before the exit code is decided: --fail-on-error changes
 			// what the process exits with, not what the caller gets to read. An
 			// agent that asked for the flag still gets the full observation on
 			// stdout to act on.
-			if err := renderer.Render(callPayload(req, view, result, redactors.Response)); err != nil {
+			if err := renderer.Render(callPayload(req, view, result, inv.Redactors.Response)); err != nil {
 				return err
 			}
 			if !failOnError {
@@ -236,17 +227,6 @@ func timeoutOptions(seconds float64) curl.Options {
 	return curl.Options{MaxTime: time.Duration(seconds * float64(time.Second))}
 }
 
-// newRedactors builds the pair of firewalls an entry passes through on its way
-// to disk, extended with whatever the config file added. Request and response
-// share the header list: a name worth hiding on the way back is worth hiding on
-// the way out.
-func newRedactors(cfg *config.Config) corpus.Redactors {
-	return corpus.Redactors{
-		Request:  secret.NewRedactor(cfg.Redact.Headers...),
-		Response: secret.NewResponseRedactor(cfg.Redact.Headers, cfg.Redact.BodyPaths),
-	}
-}
-
 // recordCall writes one entry, reporting a failure to write as a warning and
 // nothing more.
 //
@@ -267,7 +247,7 @@ func recordCall(
 	}
 
 	if err := store.Append(corpus.NewEntry(source, req, resp, red)); err != nil {
-		fmt.Fprintf(stderr, "warning: the call was not recorded in history: %v\n", err)
+		clierr.Warnf(stderr, "the call was not recorded in history: %v", err)
 	}
 }
 
@@ -275,22 +255,12 @@ func recordCall(
 // the flags to the operation.
 func buildRequest(
 	cmd *cobra.Command,
-	cfg *config.Config,
+	inv *invocation,
 	op operation.Operation,
 	doc *spec.Document,
 	params, queries, headers, body []string,
 ) (*request.Request, error) {
-	prof, err := selectProfile(cmd, cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	creds, err := config.Resolve(op, doc, prof)
-	if err != nil {
-		return nil, err
-	}
-
-	baseURL, allowHosts, err := hostFlags(cmd)
+	creds, err := config.Resolve(op, doc, inv.Profile)
 	if err != nil {
 		return nil, err
 	}
@@ -298,10 +268,10 @@ func buildRequest(
 	return request.Build(request.Inputs{
 		Op:         op,
 		Doc:        doc,
-		Profile:    prof,
+		Profile:    inv.Profile,
 		Creds:      creds,
-		BaseURL:    baseURL,
-		AllowHosts: allowHosts,
+		BaseURL:    inv.BaseURL,
+		AllowHosts: inv.AllowHosts,
 		Params:     params,
 		Query:      queries,
 		Headers:    headers,
@@ -309,28 +279,12 @@ func buildRequest(
 		// The same list history is redacted with. A pattern that hides a value
 		// in the permanent artifact but not on the stdout an agent reads has
 		// the firewall backwards.
-		Redactor: newRedactors(cfg).Request,
+		Redactor: inv.Redactors.Request,
 		// The Go process owns the real stdin, and `--body -` is the only thing
 		// that reads it. curl's stdin carries the config document and nothing
 		// else (DESIGN.md §5a).
 		Stdin: cmd.InOrStdin(),
 	})
-}
-
-// hostFlags reads the two persistent flags that decide where a request goes and
-// which hosts its credentials are bound to. They are read together because
-// every caller needs both: --base-url without --allow-host is what withholds a
-// credential, and reading one without the other is how a command comes to
-// report a host it will not actually send to.
-func hostFlags(cmd *cobra.Command) (baseURL string, allowHosts []string, err error) {
-	if baseURL, err = cmd.Flags().GetString("base-url"); err != nil {
-		return "", nil, clierr.Usage("%w", err)
-	}
-	if allowHosts, err = cmd.Flags().GetStringArray("allow-host"); err != nil {
-		return "", nil, clierr.Usage("%w", err)
-	}
-
-	return baseURL, allowHosts, nil
 }
 
 // warnWithheldCredentials reports, in one line on stderr, every credential this
@@ -347,24 +301,10 @@ func warnWithheldCredentials(stderr io.Writer, req *request.Request) {
 		schemes = append(schemes, w.Scheme)
 	}
 
-	fmt.Fprintf(stderr,
-		"warning: %s withheld from %s: it is not a host the spec declares; "+
-			"pass --allow-host %s to send credentials there\n",
+	clierr.Warnf(stderr,
+		"%s withheld from %s: it is not a host the spec declares; "+
+			"pass --allow-host %s to send credentials there",
 		strings.Join(schemes, ", "), req.Withheld[0].Host, req.Withheld[0].Host)
-}
-
-// selectProfile picks the profile named by --profile out of an already-loaded
-// config, or returns nil when no name was given.
-func selectProfile(cmd *cobra.Command, cfg *config.Config) (*config.Profile, error) {
-	name, err := cmd.Flags().GetString("profile")
-	if err != nil {
-		return nil, clierr.Usage("%w", err)
-	}
-	if name == "" {
-		return nil, nil
-	}
-
-	return cfg.Profile(name)
 }
 
 // warnQueryCredentials fires the one-time query-string warning if this request
@@ -433,7 +373,7 @@ func validationInput(req *request.Request, view *responseView) validate.Input {
 // reportValidation turns a validator failure into a warning and no result.
 func reportValidation(stderr io.Writer, result *validate.Result, err error) *validate.Result {
 	if err != nil {
-		fmt.Fprintf(stderr, "warning: the response was not validated: %v\n", err)
+		clierr.Warnf(stderr, "the response was not validated: %v", err)
 		return nil
 	}
 
@@ -577,14 +517,4 @@ func pairMap(pairs []request.Pair) map[string]string {
 	}
 
 	return out
-}
-
-// operationName is the operation's ID, falling back to method and path for a
-// spec that sets no operationId.
-func operationName(op operation.Operation) string {
-	if op.ID != "" {
-		return op.ID
-	}
-
-	return strings.TrimSpace(op.Method + " " + op.Path)
 }

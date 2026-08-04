@@ -119,6 +119,24 @@ type renderable struct {
 	Error  renderableErr `json:"error"`
 }
 
+// Warnf writes one warning line to w.
+//
+// A warning is the other half of what stderr carries: something the caller
+// should know that is deliberately not a failure — a call that succeeded but
+// was not recorded, a credential withheld from an off-spec host, a response
+// that could not be validated. None of them change the exit code, so none of
+// them go through *Error, and the shape lives here so the prefix and the line
+// break are decided once rather than at each Fprintf.
+//
+// A nil writer is a caller that has nowhere to warn, and writes nothing.
+func Warnf(w io.Writer, format string, a ...any) {
+	if w == nil {
+		return
+	}
+
+	fmt.Fprintf(w, "warning: "+format+"\n", a...)
+}
+
 type renderableErr struct {
 	Code         Code     `json:"code"`
 	Message      string   `json:"message"`

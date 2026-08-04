@@ -3,8 +3,9 @@ package secret
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
+
+	"github.com/Teeeep/talaria/internal/clierr"
 	"strings"
 	"sync"
 )
@@ -256,10 +257,10 @@ func (w *QueryKeyWarner) Warn(out io.Writer, param string, ref SecretRef) {
 	}
 
 	w.once.Do(func() {
-		fmt.Fprintf(out,
-			"warning: this operation sends %s in the query parameter %q; "+
+		clierr.Warnf(out,
+			"this operation sends %s in the query parameter %q; "+
 				"URLs are recorded in server access logs, so the key is exposed there "+
-				"whatever talaria redacts\n",
+				"whatever talaria redacts",
 			ref.Symbolic(), param)
 	})
 }

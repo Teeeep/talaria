@@ -35,6 +35,7 @@ internal/spec/        load (file/URL/cache), v2→v3 convert
 internal/operation/   THE core model — id, method, path, params, schemas, auth
 internal/secret/      SecretRef, redaction — the trust boundary
 internal/request/     the Request type; secret fields are structurally refs
+internal/replay/      re-derives a history entry into a request, through the spec
 internal/curl/        config-document builder + executor (os/exec)
 internal/validate/    response vs schema
 internal/corpus/      history store
@@ -116,12 +117,36 @@ past a perfectly good `request.body`. `internal/canary`'s file-body case is the 
 
 **`cmd/talaria` is wiring.** Parse flags, call a package, render the result. Decisions,
 transformations and multi-step workflows belong in a package that can be tested without cobra.
-The command layer holds 28% of production code (1,589 of 5,511 non-comment lines) and 12 view
-structs; it is the largest single component. Do not add to it — a new view struct belongs beside
-its siblings, not in a new command file.
+The command layer holds 26% of production code (1,525 of 5,896 non-comment lines) and 12 view
+structs; it is still the largest single component. Do not add to it — a new view struct belongs
+beside its siblings, not in a new command file. `history replay` is the worked example of the
+rule going the other way: it was a struct and eight helpers inside `history.go`, and it is now
+`internal/replay`, which takes an `Inputs` and returns a `*request.Request` — same shape as
+`request.Build`, and testable without a command tree.
+
+**One `invocation` per RunE.** `newInvocation(cmd)` (`cmd/talaria/root.go`) reads the config
+file, the `--profile` it names, the redaction firewalls that profile configures, and
+`--base-url`/`--allow-host`, once. Every request-making command builds one at the top of its
+RunE and passes it down; `inv.history()` opens the store from it. Do not re-read any of those
+four things further down a command — a single `call` used to select the profile three times and
+construct two independent `corpus.Redactors` from the same settings, and nothing but a shared
+constructor kept the two in step. `selectProfile` and `flagString` live beside it and are the
+only readers of those flags.
 
 **Errors go through `internal/clierr`.** Exit codes are a published contract that agents branch
 on. A new failure mode maps to an existing code or the design doc changes — never both silently.
+Warnings go through the same package: `clierr.Warnf(stderr, format, ...)` owns the `warning: `
+prefix and the trailing newline, so a warning is never a bare `fmt.Fprintf`. A warning is
+something the caller should know that deliberately does *not* change the exit code — the
+call that succeeded but was not recorded, the credential withheld from an off-spec host, the
+response that could not be validated, the replay field that was dropped.
+
+**One name for one thing.** `operation.Operation.Name()` is how an operation is referred to in
+any message (its `operationId`, else method and path); `request.Host`/`request.AllowedHosts` are
+how a host is named and compared. Both had three near-copies before Task 6 drained them. Before
+writing a small helper that renders or compares a domain value, grep for it — it exists.
+Likewise reach for the standard library first: `slices.Sorted(maps.Keys(m))` replaced a
+hand-rolled `sortedKeys`.
 
 **Never write a comment asserting a property no test enforces.** "This buffer is zeroed",
 "callers must hold the lock", "validated upstream". Either add the test or drop the claim. Four

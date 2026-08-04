@@ -671,6 +671,23 @@ lines.
 **Verify:** `go test ./...` green, `test -z "$(gofmt -l .)" && go vet ./... && golangci-lint run ./...`
 clean, and report the net line delta in the commit message.
 
+**Done 2026-08-04, with one deliberate divergence.** "No new files" and step 4's "move logic
+down into the package that owns it" cannot both hold: no existing package could own the
+`history replay` transformation (`request` would have had to import `corpus`), so
+`internal/replay` was created — one new file, and a move rather than new behaviour. Every other
+new-file candidate in `.ralph/refactor-backlog.md` was left with a note instead of being split,
+which is why that file is now almost entirely file-size entries.
+
+Measured: `cmd/talaria` fell from 1,589 → 1,525 non-comment production lines and from 30% → 26%
+of the tree. Consolidated: `newRedactors`/`selectProfile`/`hostFlags` into one `invocation`
+(`cmd/talaria/root.go`); three copies of `operationName` into `operation.Operation.Name()`; five
+bare warning `Fprintf`s into `clierr.Warnf`; `sortedKeys` into `slices.Sorted(maps.Keys(…))`;
+`openHistory`+`loadHistory` into `invocation.history()`; two test host helpers into one.
+Deleted: `config.(*Profile).ReferencesEnv` and its two tests, orphaned by Task 2 — nothing had
+called it since replay stopped reading a variable name out of the store. Host normalisation was
+found already single (`internal/request/hosts.go`, Task 2); the orderedmap iteration in
+`internal/config/auth.go` now uses `FromOldest()` like the rest of the tree.
+
 ---
 
 ### Task 7: Bound every read of untrusted input — the remote spec and the history file

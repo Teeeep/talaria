@@ -10,7 +10,7 @@
       "title": "Substitute server variables and expose the spec's server URLs",
       "depends_on": [],
       "line_start": 99,
-      "line_end": 177,
+      "line_end": 178,
       "done": true
     },
     {
@@ -21,7 +21,7 @@
         1
       ],
       "line_start": 181,
-      "line_end": 372,
+      "line_end": 373,
       "done": true
     },
     {
@@ -30,7 +30,7 @@
       "title": "Report unsupported security schemes instead of hiding them",
       "depends_on": [],
       "line_start": 376,
-      "line_end": 482,
+      "line_end": 483,
       "done": true
     },
     {
@@ -39,7 +39,7 @@
       "title": "Refuse a spec-supplied media type that would inject headers",
       "depends_on": [],
       "line_start": 486,
-      "line_end": 555,
+      "line_end": 554,
       "done": true
     },
     {
@@ -48,27 +48,27 @@
       "title": "Stop printing a secret-bearing request body, and reference it in the emitted curl",
       "depends_on": [],
       "line_start": 557,
-      "line_end": 635,
+      "line_end": 636,
       "done": true
     },
     {
       "id": 6,
       "section": "6",
-      "title": "Compaction \u2014 tasks 1\u20135",
+      "title": "Compaction — tasks 1–5",
       "depends_on": [
         5
       ],
       "line_start": 639,
-      "line_end": 672,
-      "done": false
+      "line_end": 690,
+      "done": true
     },
     {
       "id": 7,
       "section": "7",
-      "title": "Bound every read of untrusted input \u2014 the remote spec and the history file",
+      "title": "Bound every read of untrusted input — the remote spec and the history file",
       "depends_on": [],
-      "line_start": 676,
-      "line_end": 807,
+      "line_start": 693,
+      "line_end": 825,
       "done": false
     },
     {
@@ -76,8 +76,8 @@
       "section": "8",
       "title": "Zero the config document that actually held the credential",
       "depends_on": [],
-      "line_start": 811,
-      "line_end": 868,
+      "line_start": 828,
+      "line_end": 886,
       "done": false
     },
     {
@@ -85,8 +85,8 @@
       "section": "9",
       "title": "Cut `internal/corpus`'s dependency on `internal/curl`, and guard it",
       "depends_on": [],
-      "line_start": 872,
-      "line_end": 928,
+      "line_start": 889,
+      "line_end": 946,
       "done": false
     },
     {
@@ -97,19 +97,19 @@
         2,
         3
       ],
-      "line_start": 932,
-      "line_end": 1020,
+      "line_start": 949,
+      "line_end": 1038,
       "done": false
     },
     {
       "id": 11,
       "section": "11",
-      "title": "Compaction \u2014 tasks 7\u201310",
+      "title": "Compaction — tasks 7–10",
       "depends_on": [
         10
       ],
-      "line_start": 1024,
-      "line_end": 1041,
+      "line_start": 1041,
+      "line_end": 1059,
       "done": false
     },
     {
@@ -117,8 +117,8 @@
       "section": "12",
       "title": "Make `--output tsv` structurally valid",
       "depends_on": [],
-      "line_start": 1045,
-      "line_end": 1107,
+      "line_start": 1062,
+      "line_end": 1125,
       "done": false
     },
     {
@@ -126,8 +126,8 @@
       "section": "13",
       "title": "Stop curl prompting on a TTY, and bound the version preflight",
       "depends_on": [],
-      "line_start": 1111,
-      "line_end": 1176,
+      "line_start": 1128,
+      "line_end": 1194,
       "done": false
     },
     {
@@ -135,8 +135,8 @@
       "section": "14",
       "title": "Make Ctrl-C and SIGTERM work",
       "depends_on": [],
-      "line_start": 1180,
-      "line_end": 1257,
+      "line_start": 1197,
+      "line_end": 1275,
       "done": false
     },
     {
@@ -144,8 +144,8 @@
       "section": "15",
       "title": "Stop the tool lying about history",
       "depends_on": [],
-      "line_start": 1261,
-      "line_end": 1355,
+      "line_start": 1278,
+      "line_end": 1373,
       "done": false
     },
     {
@@ -155,19 +155,19 @@
       "depends_on": [
         14
       ],
-      "line_start": 1359,
-      "line_end": 1455,
+      "line_start": 1376,
+      "line_end": 1473,
       "done": false
     },
     {
       "id": 17,
       "section": "17",
-      "title": "Compaction \u2014 tasks 12\u201316",
+      "title": "Compaction — tasks 12–16",
       "depends_on": [
         16
       ],
-      "line_start": 1459,
-      "line_end": 1480,
+      "line_start": 1476,
+      "line_end": 1498,
       "done": false
     },
     {
@@ -177,8 +177,8 @@
       "depends_on": [
         17
       ],
-      "line_start": 1484,
-      "line_end": 1556,
+      "line_start": 1501,
+      "line_end": 1574,
       "done": false
     },
     {
@@ -190,8 +190,8 @@
         14,
         15
       ],
-      "line_start": 1560,
-      "line_end": 1615,
+      "line_start": 1577,
+      "line_end": 1633,
       "done": false
     },
     {
@@ -201,19 +201,19 @@
       "depends_on": [
         19
       ],
-      "line_start": 1619,
-      "line_end": 1675,
+      "line_start": 1636,
+      "line_end": 1693,
       "done": false
     },
     {
       "id": 21,
       "section": "21",
-      "title": "Compaction \u2014 tasks 18\u201320 and the phase",
+      "title": "Compaction — tasks 18–20 and the phase",
       "depends_on": [
         20
       ],
-      "line_start": 1679,
-      "line_end": 1708,
+      "line_start": 1696,
+      "line_end": 1745,
       "done": false
     }
   ]

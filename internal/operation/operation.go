@@ -11,6 +11,8 @@
 package operation
 
 import (
+	"strings"
+
 	"github.com/pb33f/libopenapi/datamodel/high/base"
 )
 
@@ -111,6 +113,18 @@ var safeMethods = map[string]bool{
 // and so whether it falls under the --allow-mutations gate.
 func (o Operation) IsMutation() bool {
 	return !safeMethods[o.Method]
+}
+
+// Name is how an operation is referred to in a message: its operationId, or
+// method and path for a spec that sets none. An error naming neither is
+// unactionable, so every layer that reports on an operation reads it from here
+// rather than deriving it again.
+func (o Operation) Name() string {
+	if o.ID != "" {
+		return o.ID
+	}
+
+	return strings.TrimSpace(o.Method + " " + o.Path)
 }
 
 // ResponseFor returns the declared response for a status key, or nil if the

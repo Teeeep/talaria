@@ -10,8 +10,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Teeeep/talaria/internal/clierr"
+	"github.com/Teeeep/talaria/internal/config"
+	"github.com/Teeeep/talaria/internal/corpus"
 	"github.com/Teeeep/talaria/internal/curl"
 	"github.com/Teeeep/talaria/internal/output"
+	"github.com/Teeeep/talaria/internal/secret"
 	"github.com/Teeeep/talaria/internal/spec"
 )
 
@@ -106,6 +109,98 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newHistoryCmd())
 
 	return root
+}
+
+// invocation is the per-command context every request-making command reads:
+// the config file, the profile --profile names, the redaction firewalls that
+// profile configures, and the two persistent flags that decide where a request
+// goes and which hosts its credentials are bound to.
+//
+// It is built once per RunE and passed down. Each part used to be derived at
+// the point it was needed, so one `call` selected the profile three times and
+// constructed two independent pairs of redactors from the same settings —
+// objects nothing but a shared constructor kept in step.
+type invocation struct {
+	Config  *config.Config
+	Profile *config.Profile
+	// Redactors is the pair of firewalls an entry passes through on its way to
+	// disk, extended with whatever the config file added. Request and response
+	// share the header list: a name worth hiding on the way back is worth hiding
+	// on the way out.
+	Redactors corpus.Redactors
+	// BaseURL is --base-url and AllowHosts is --allow-host. They are read
+	// together because every caller needs both: --base-url without --allow-host
+	// is what withholds a credential, and reading one without the other is how a
+	// command comes to report a host it will not actually send to.
+	BaseURL    string
+	AllowHosts []string
+}
+
+func newInvocation(cmd *cobra.Command) (*invocation, error) {
+	// The config is read whether or not --profile was given: the redaction lists
+	// are a security setting, and one that only takes effect when you happen to
+	// be using a profile is one that silently does not.
+	cfg, err := config.Load("")
+	if err != nil {
+		return nil, err
+	}
+
+	prof, err := selectProfile(cmd, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	baseURL, err := flagString(cmd, "base-url")
+	if err != nil {
+		return nil, err
+	}
+
+	allowHosts, err := cmd.Flags().GetStringArray("allow-host")
+	if err != nil {
+		return nil, clierr.Usage("%w", err)
+	}
+
+	return &invocation{
+		Config:  cfg,
+		Profile: prof,
+		Redactors: corpus.Redactors{
+			Request:  secret.NewRedactor(cfg.Redact.Headers...),
+			Response: secret.NewResponseRedactor(cfg.Redact.Headers, cfg.Redact.BodyPaths),
+		},
+		BaseURL:    baseURL,
+		AllowHosts: allowHosts,
+	}, nil
+}
+
+// history is the store, opened with the recording setting the selected profile
+// asks for. Reading never consults it — history written before recording was
+// switched off is still history — but call and replay write, so it has to be
+// right.
+func (in *invocation) history() *corpus.Store {
+	// The empty dir is the default state directory; internal/corpus locates it.
+	return corpus.New("", in.Profile.HistoryEnabled())
+}
+
+// selectProfile picks the profile named by --profile out of an already-loaded
+// config, or returns nil when no name was given.
+func selectProfile(cmd *cobra.Command, cfg *config.Config) (*config.Profile, error) {
+	name, err := flagString(cmd, "profile")
+	if err != nil || name == "" {
+		return nil, err
+	}
+
+	return cfg.Profile(name)
+}
+
+// flagString reads a string flag, classifying cobra's bare error as the bad
+// invocation it is.
+func flagString(cmd *cobra.Command, name string) (string, error) {
+	value, err := cmd.Flags().GetString(name)
+	if err != nil {
+		return "", clierr.Usage("%w", err)
+	}
+
+	return value, nil
 }
 
 // unknownCommand rejects any positional argument on the root command, which by

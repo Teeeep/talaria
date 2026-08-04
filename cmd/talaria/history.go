@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
-	"io"
+	"maps"
 	"net/url"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -12,14 +12,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Teeeep/talaria/internal/clierr"
-	"github.com/Teeeep/talaria/internal/config"
 	"github.com/Teeeep/talaria/internal/corpus"
 	"github.com/Teeeep/talaria/internal/curl"
 	"github.com/Teeeep/talaria/internal/operation"
 	"github.com/Teeeep/talaria/internal/output"
-	"github.com/Teeeep/talaria/internal/request"
-	"github.com/Teeeep/talaria/internal/secret"
-	"github.com/Teeeep/talaria/internal/spec"
+	"github.com/Teeeep/talaria/internal/replay"
 )
 
 // historyEntryView is one line of `history`: enough to recognise a call and its
@@ -180,15 +177,12 @@ func newHistoryReplayCmd() *cobra.Command {
 				return err
 			}
 
-			cfg, err := config.Load("")
+			inv, err := newInvocation(cmd)
 			if err != nil {
 				return err
 			}
 
-			store, err := openHistory(cmd, cfg)
-			if err != nil {
-				return err
-			}
+			store := inv.history()
 
 			entries, err := store.Read()
 			if err != nil {
@@ -216,26 +210,16 @@ func newHistoryReplayCmd() *cobra.Command {
 				return err
 			}
 
-			prof, err := selectProfile(cmd, cfg)
-			if err != nil {
-				return err
-			}
-
-			baseURL, allowHosts, err := hostFlags(cmd)
-			if err != nil {
-				return err
-			}
-
-			req, err := replay{
+			req, err := replay.Build(replay.Inputs{
 				Entry:      entry,
 				Doc:        doc,
 				Index:      index,
-				Profile:    prof,
-				BaseURL:    baseURL,
-				AllowHosts: allowHosts,
-				Redactor:   newRedactors(cfg).Request,
+				Profile:    inv.Profile,
+				BaseURL:    inv.BaseURL,
+				AllowHosts: inv.AllowHosts,
+				Redactor:   inv.Redactors.Request,
 				Stderr:     cmd.ErrOrStderr(),
-			}.request()
+			})
 			if err != nil {
 				return err
 			}
@@ -243,20 +227,19 @@ func newHistoryReplayCmd() *cobra.Command {
 			warnWithheldCredentials(cmd.ErrOrStderr(), req)
 
 			renderer := output.New(format, cmd.OutOrStdout())
-			redactors := newRedactors(cfg)
 
 			resp, execErr := curl.ExecuteWith(cmd.Context(), req, timeoutOptions(curl.DefaultMaxTime.Seconds()))
-			recordCall(cmd.ErrOrStderr(), store, corpus.SourceReplay, req, resp, redactors)
+			recordCall(cmd.ErrOrStderr(), store, corpus.SourceReplay, req, resp, inv.Redactors)
 			if execErr != nil {
 				return execErr
 			}
 
 			// A replay is re-bound through the spec, so it has the same contract to
 			// check against a call does and renders the same validation block.
-			view := redactResponse(resp, redactors.Response)
+			view := redactResponse(resp, inv.Redactors.Response)
 
 			return renderer.Render(callPayload(
-				req, view, validateResponse(cmd.ErrOrStderr(), doc, req, view), redactors.Response))
+				req, view, validateResponse(cmd.ErrOrStderr(), doc, req, view), inv.Redactors.Response))
 		},
 	}
 
@@ -266,34 +249,16 @@ func newHistoryReplayCmd() *cobra.Command {
 	return cmd
 }
 
-// openHistory builds the store with the recording setting the selected profile
-// asks for. Reading never consults it — history written before recording was
-// switched off is still history — but replay writes, so it has to be right.
-func openHistory(cmd *cobra.Command, cfg *config.Config) (*corpus.Store, error) {
-	prof, err := selectProfile(cmd, cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	// The empty dir is the default state directory; internal/corpus locates it.
-	return corpus.New("", prof.HistoryEnabled()), nil
-}
-
 // loadHistory loads the store for a read-only command. The profile still
 // decides the Enabled flag so the store is constructed the one way, but nothing
 // on this path writes.
 func loadHistory(cmd *cobra.Command) ([]corpus.Entry, error) {
-	cfg, err := config.Load("")
+	inv, err := newInvocation(cmd)
 	if err != nil {
 		return nil, err
 	}
 
-	store, err := openHistory(cmd, cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	return store.Read()
+	return inv.history().Read()
 }
 
 // historyPayload renders the store newest first, keeping the entries the filter
@@ -356,7 +321,7 @@ func historyShowPayload(index int, entry corpus.Entry) output.Payload {
 	rows := [][]string{
 		{entry.Method + " " + entry.URL},
 	}
-	for _, name := range sortedKeys(entry.Request.Headers) {
+	for _, name := range slices.Sorted(maps.Keys(entry.Request.Headers)) {
 		rows = append(rows, []string{name + ": " + entry.Request.Headers[name]})
 	}
 	if entry.Request.Body != nil {
@@ -566,389 +531,4 @@ func parseStatusFilter(value string) (*statusFilter, error) {
 	}
 
 	return &statusFilter{low: code, high: code}, nil
-}
-
-// replay is one `history replay`: a stored entry re-derived against the spec,
-// the flags and the environment in force now.
-//
-// DESIGN.md §5a's rule is that a history entry is data, never instruction. The
-// entry says which operation ran, with which parameters and which body. It does
-// not say where the request goes — that comes from --base-url, the profile or
-// the spec — and it does not say which credential to attach, because nothing in
-// it is resolved: credentials come back through config.Resolve exactly as they
-// do for a call.
-type replay struct {
-	Entry      corpus.Entry
-	Doc        *spec.Document
-	Index      *operation.Index
-	Profile    *config.Profile
-	BaseURL    string
-	AllowHosts []string
-	// Redactor is the config file's display patterns, passed through so a
-	// replayed request hides the same fields the original did.
-	Redactor *secret.Redactor
-	// Stderr carries the warnings for fields the entry could not give back.
-	Stderr io.Writer
-}
-
-// request rebuilds the runnable request, or fails *this entry* with exit 2.
-//
-// Every refusal below is per-entry rather than per-process, which is what makes
-// a hostile store survivable: one edited line stops one replay, and `history`,
-// `history show` and every other entry go on working.
-func (r replay) request() (*request.Request, error) {
-	op, err := r.operation()
-	if err != nil {
-		return nil, err
-	}
-
-	stored, err := r.storedURL()
-	if err != nil {
-		return nil, err
-	}
-
-	body, err := r.body()
-	if err != nil {
-		return nil, err
-	}
-
-	target, err := r.target(stored)
-	if err != nil {
-		return nil, err
-	}
-
-	params, err := replayParams(op, stored.EscapedPath())
-	if err != nil {
-		return nil, err
-	}
-
-	query, extra, err := r.query(op, stored.RawQuery)
-	if err != nil {
-		return nil, err
-	}
-
-	creds, err := config.Resolve(op, r.Doc, r.Profile)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := request.Build(request.Inputs{
-		Op:         op,
-		Doc:        r.Doc,
-		Profile:    r.Profile,
-		Creds:      creds,
-		BaseURL:    target,
-		AllowHosts: r.AllowHosts,
-		Params:     append(params, query...),
-		Query:      extra,
-		Headers:    r.headers(op),
-		Redactor:   r.Redactor,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// Set after Build rather than through Inputs.Body: that field carries
-	// --body's three forms, so a stored body beginning `@` or equal to `-` would
-	// be read as a file path or as this process's stdin. The bytes recorded are
-	// the bytes to send, and nothing about them selects a source.
-	req.Body = body
-
-	return req, nil
-}
-
-// operation looks the entry's operationId up in the *current* spec. An entry
-// that names none, or one the spec no longer has, cannot be re-derived — and
-// re-deriving is the whole of what replay now does.
-func (r replay) operation() (operation.Operation, error) {
-	if r.Entry.OperationID == "" {
-		return operation.Operation{}, clierr.Usage(
-			"the entry records no operationId, so there is nothing in the spec to replay it against")
-	}
-
-	op, err := r.Index.Lookup(r.Entry.OperationID)
-	if err != nil {
-		return operation.Operation{}, err
-	}
-
-	// The method is part of what the operation is. An entry whose method has
-	// drifted from the spec's is either a spec that changed under it or a line
-	// somebody edited; either way, sending the stored one would issue a request
-	// this spec does not describe.
-	if !strings.EqualFold(r.Entry.Method, op.Method) {
-		return operation.Operation{}, clierr.Usage(
-			"the entry records a %s but %s is a %s in this spec",
-			r.Entry.Method, op.ID, op.Method)
-	}
-
-	return op, nil
-}
-
-// storedURL parses the entry's URL, which is read for its path and its query
-// and never for its host.
-func (r replay) storedURL() (*url.URL, error) {
-	// The store is a file on disk, so what it holds is checked on the way out as
-	// well as on the way in. Both checks come before the parse error below,
-	// which quotes the URL it could not read.
-	if host, ok := request.Userinfo(r.Entry.URL); ok {
-		return nil, clierr.Usage(
-			"the recorded URL for %s carries a credential in its userinfo, so it will not be replayed; "+
-				"re-run the call with %s=user:password set instead", host, config.EnvBasic)
-	}
-
-	parsed, err := url.Parse(r.Entry.URL)
-	if err != nil {
-		return nil, clierr.Usage("the recorded URL %q cannot be parsed: %v", r.Entry.URL, err)
-	}
-	if !request.IsHTTPScheme(parsed.Scheme) {
-		return nil, clierr.Usage("the recorded URL %q has scheme %q; only http and https can be replayed",
-			r.Entry.URL, parsed.Scheme)
-	}
-
-	return parsed, nil
-}
-
-// target is where the replay actually goes: --base-url, the profile, or the
-// spec — never the stored URL (DESIGN.md:407).
-//
-// The stored host still has to agree with it. Silently retargeting a recorded
-// call at a different host would make `replay` mean something other than "do
-// that again", so a stored host that is neither the target nor in the allowed
-// set fails the entry rather than being quietly redirected.
-func (r replay) target(stored *url.URL) (string, error) {
-	target, err := request.ResolveBaseURL(r.BaseURL, r.Profile, r.Doc)
-	if err != nil {
-		return "", err
-	}
-
-	storedHost := request.Host(r.Entry.URL)
-	if storedHost == request.Host(target) {
-		return target, nil
-	}
-
-	allowed, err := request.AllowedHosts(r.Doc, r.Profile, r.AllowHosts)
-	if err != nil {
-		return "", err
-	}
-	if allowed.Allows(r.Entry.URL) {
-		return target, nil
-	}
-
-	return "", clierr.Usage(
-		"the entry was recorded against %s, which is neither where this invocation would send (%s) "+
-			"nor a host the spec declares; replay will not silently retarget it, so pass --base-url "+
-			"or --allow-host %s if that is what you mean",
-		storedHost, request.Host(target), storedHost)
-}
-
-// body returns the recorded request body as the bytes to send.
-//
-// A body holding a redaction placeholder is refused. The store is written
-// redacted, so such a body is one talaria itself hollowed out — sending it would
-// put the literal text `<redacted>` where a client_secret stood, which is not
-// the request that was recorded and is not one anybody asked for.
-func (r replay) body() (*request.Body, error) {
-	stored := r.Entry.Request.Body
-	if stored == nil {
-		return nil, nil
-	}
-	if stored.Truncated {
-		return nil, clierr.Usage(
-			"the recorded request body was truncated at %d bytes, so replaying it would send something the original did not",
-			corpus.MaxBody)
-	}
-
-	data, err := stored.Bytes()
-	if err != nil {
-		return nil, err
-	}
-	if strings.Contains(string(data), secret.Placeholder) {
-		return nil, clierr.Usage(
-			"the recorded request body holds a redacted value, which history does not store, " +
-				"so it cannot be replayed; re-run the call instead")
-	}
-
-	return &request.Body{ContentType: stored.ContentType, Data: data}, nil
-}
-
-// query splits the recorded query string into the parameters the operation
-// declares and the ones it does not, so a declared one is bound and checked
-// like any other rather than appended raw.
-//
-// A value that is a redaction is dropped with a warning: it was a credential
-// position, and config.Resolve is what puts a credential back.
-func (r replay) query(op operation.Operation, raw string) (declared, extra []string, err error) {
-	locations := declaredParams(op)
-
-	// Walked rather than url.ParseQuery'd because a map would lose the order,
-	// and a replay that reorders the query string is not the same request.
-	for _, field := range strings.Split(raw, "&") {
-		if field == "" {
-			continue
-		}
-
-		rawName, rawValue, _ := strings.Cut(field, "=")
-		name, err := url.QueryUnescape(rawName)
-		if err != nil {
-			return nil, nil, clierr.Usage("the recorded query parameter %q cannot be parsed: %v", rawName, err)
-		}
-		value, err := url.QueryUnescape(rawValue)
-		if err != nil {
-			return nil, nil, clierr.Usage("the recorded value of query parameter %q cannot be parsed: %v", name, err)
-		}
-
-		if isRedacted(value) {
-			warnUnreplayable(r.Stderr, "query parameter", name)
-			continue
-		}
-
-		if locations[name] == "query" {
-			declared = append(declared, name+"="+value)
-			continue
-		}
-		extra = append(extra, name+"="+value)
-	}
-
-	return declared, extra, nil
-}
-
-// headers returns the recorded headers as --header flags, dropping the ones a
-// stored entry must not decide.
-//
-// Anything that is a redaction goes: a `<redacted:env:NAME>` is the store
-// naming a variable, and after this task nothing in an entry is resolved — the
-// credential comes back through config.Resolve or not at all. Passing it
-// through as a literal would put that text on the wire, and resolving it would
-// make talaria a "read $ANY_VAR and send it" primitive driven by a file.
-func (r replay) headers(op operation.Operation) []string {
-	locations := declaredParams(op)
-
-	out := make([]string, 0, len(r.Entry.Request.Headers))
-	for _, name := range sortedKeys(r.Entry.Request.Headers) {
-		value := r.Entry.Request.Headers[name]
-		if isRedacted(value) {
-			warnUnreplayable(r.Stderr, "header", name)
-			continue
-		}
-
-		out = append(out, name+"="+value)
-	}
-
-	// Cookies have no flag to come back through, so a recorded one is only
-	// replayable when the operation declares it as a parameter — and that is
-	// bound below by name, alongside the path and query parameters.
-	for _, name := range sortedKeys(r.Entry.Request.Cookies) {
-		if locations[name] != "cookie" || isRedacted(r.Entry.Request.Cookies[name]) {
-			warnUnreplayable(r.Stderr, "cookie", name)
-		}
-	}
-
-	return out
-}
-
-// replayParams recovers the operation's path parameters by matching the stored
-// path against the operation's path template.
-//
-// The template is matched against the *tail* of the stored path: a recorded URL
-// carries whatever prefix its server had (/v1, /api/v2), and the replay's own
-// base URL supplies its own. Everything before the template's segments is
-// therefore discarded rather than compared.
-func replayParams(op operation.Operation, storedPath string) ([]string, error) {
-	want := pathSegments(op.Path)
-	got := pathSegments(storedPath)
-	if len(got) < len(want) {
-		return nil, clierr.Usage(
-			"the recorded path %q has %d segments, too few for %s's %q",
-			storedPath, len(got), op.ID, op.Path)
-	}
-	got = got[len(got)-len(want):]
-
-	var params []string
-	for i, segment := range want {
-		name, ok := strings.CutPrefix(segment, "{")
-		if !ok || !strings.HasSuffix(name, "}") {
-			if segment != got[i] {
-				return nil, clierr.Usage(
-					"the recorded path %q does not match %s's %q", storedPath, op.ID, op.Path)
-			}
-			continue
-		}
-
-		value, err := url.PathUnescape(got[i])
-		if err != nil {
-			return nil, clierr.Usage(
-				"the recorded path segment for %s will not percent-decode: %v",
-				strings.TrimSuffix(name, "}"), err)
-		}
-
-		params = append(params, strings.TrimSuffix(name, "}")+"="+value)
-	}
-
-	return params, nil
-}
-
-// pathSegments splits a path into its non-empty segments, so a leading or
-// trailing slash does not change the count either side of the comparison.
-func pathSegments(path string) []string {
-	var out []string
-	for _, segment := range strings.Split(path, "/") {
-		if segment != "" {
-			out = append(out, segment)
-		}
-	}
-
-	return out
-}
-
-// declaredParams maps each parameter the operation declares to where it goes,
-// so a recorded value can be routed to the flag that binds it.
-func declaredParams(op operation.Operation) map[string]string {
-	out := make(map[string]string, len(op.Params))
-	for _, p := range op.Params {
-		out[p.Name] = p.In
-	}
-
-	return out
-}
-
-// isRedacted reports whether a stored value is a redaction rather than
-// something that was really sent: either the bare placeholder a literal became,
-// or the `<redacted:env:NAME>` a credential reference became.
-func isRedacted(value string) bool {
-	if value == secret.Placeholder {
-		return true
-	}
-
-	// The prefix a scheme puts in front of a credential is part of the stored
-	// text — `Bearer <redacted:env:…>` — so the ref is looked for after it.
-	for _, enc := range []request.Encoding{request.EncodeBearer, request.EncodeBasic, request.EncodeRaw} {
-		prefix := request.Secret(secret.SecretRef{}, enc).Prefix()
-		if _, ok := secret.ParseRef(strings.TrimPrefix(value, prefix)); ok {
-			return true
-		}
-	}
-
-	return false
-}
-
-// warnUnreplayable reports a field the replay had to drop. It is a warning
-// rather than a failure: the request is still worth making, the credential a
-// redacted field held is re-resolved from the environment anyway, and a 401
-// with an explanation on stderr is more useful than a refusal.
-func warnUnreplayable(stderr io.Writer, kind, name string) {
-	fmt.Fprintf(stderr,
-		"warning: the recorded %s %q held a redacted value, which history does not store; replaying without it\n",
-		kind, name)
-}
-
-// sortedKeys is the deterministic iteration order for the maps a stored entry
-// holds.
-func sortedKeys(m map[string]string) []string {
-	names := make([]string, 0, len(m))
-	for name := range m {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	return names
 }
