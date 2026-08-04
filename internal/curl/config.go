@@ -230,18 +230,26 @@ func (d *document) build(req *request.Request, capture Capture, opts Options) er
 // auth writes the request headers, diverting basic auth to curl's own user
 // directive: the header text is base64(user:password), and letting curl encode
 // it means this package never has to.
+//
+// The header line is written into d.b a piece at a time, the way cookies is and
+// for the same reason: `h.Name + ": " + prefix + value` is a Go string holding
+// the resolved credential, in the one kind of buffer this package can neither
+// address nor zero — the hazard directive() is written in four pieces to avoid,
+// reintroduced one line above the call to it.
 func (d *document) auth(req *request.Request) error {
 	for _, h := range req.Headers {
-		value, err := resolve(h.Value)
+		prefix, value, err := resolveParts(h.Value)
 		if err != nil {
 			return err
 		}
 
-		if err := checkSplit("header", h.Name, value); err != nil {
+		if err := checkSplit("header", h.Name, prefix, value); err != nil {
 			return err
 		}
 
 		if h.Value.Encoding() == request.EncodeBasic {
+			// The prefix is dropped rather than stripped: curl writes its own
+			// `Basic ` around the base64 it makes of the pair.
 			pair, err := basicPair(h.Value, value)
 			if err != nil {
 				return err
@@ -250,7 +258,13 @@ func (d *document) auth(req *request.Request) error {
 			continue
 		}
 
-		d.directive("header", h.Name+": "+value)
+		d.write("header")
+		d.write(` = "`)
+		d.write(escapeDirective(h.Name))
+		d.write(": ")
+		d.write(escapeDirective(prefix))
+		d.write(escapeDirective(value))
+		d.write("\"\n")
 	}
 
 	return nil
@@ -272,12 +286,12 @@ func (d *document) cookies(req *request.Request) error {
 
 	d.write(`cookie = "`)
 	for i, c := range req.Cookies {
-		value, err := resolve(c.Value)
+		prefix, value, err := resolveParts(c.Value)
 		if err != nil {
 			return err
 		}
 
-		if err := checkSplit("cookie", c.Name, value); err != nil {
+		if err := checkSplit("cookie", c.Name, prefix, value); err != nil {
 			return err
 		}
 
@@ -286,6 +300,7 @@ func (d *document) cookies(req *request.Request) error {
 		}
 		d.write(escapeDirective(c.Name))
 		d.write("=")
+		d.write(escapeDirective(prefix))
 		d.write(escapeDirective(value))
 	}
 	d.write("\"\n")

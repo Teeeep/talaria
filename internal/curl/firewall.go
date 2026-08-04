@@ -21,10 +21,22 @@ import (
 // a string here, after resolve. escapeDirective is not the answer — it protects
 // curl's parser, and curl un-escapes \r\n back to the two bytes on the wire.
 //
+// The value arrives in the pieces it will be written in rather than joined,
+// because joining a resolved credential is the copy this package cannot zero
+// (see resolveParts). Scanning the pieces is the same test as scanning the
+// join: neither CR nor LF can straddle two of them.
+//
 // Only the name is quoted back, and never the value: the value may be the
 // resolved credential this package exists to keep off every other surface.
-func checkSplit(kind, name, value string) error {
-	if !request.SplitsRequest(name, value) {
+func checkSplit(kind, name string, values ...string) error {
+	// The charset stays in request.SplitsRequest rather than being respelled
+	// here: the name is checked against an empty value, and each piece against
+	// an empty name.
+	split := request.SplitsRequest(name, "")
+	for _, value := range values {
+		split = split || request.SplitsRequest("", value)
+	}
+	if !split {
 		return nil
 	}
 
@@ -32,9 +44,10 @@ func checkSplit(kind, name, value string) error {
 		"early and append a header the caller did not write (its value is not echoed)", kind, name)
 }
 
-// basicPair is the last gate on a basic-auth credential: it strips the `Basic `
-// prefix resolve added and refuses a value curl would not read as a
-// user:password pair.
+// basicPair is the last gate on a basic-auth credential: it refuses a value
+// curl would not read as a user:password pair. The `Basic ` prefix is not here
+// to be stripped — resolveParts hands the prefix back separately, and the
+// caller drops it rather than writing it — so what arrives is the pair itself.
 //
 // curl treats a -u value with no colon as a username and asks for the password
 // on /dev/tty, which is not the config pipe and never answers — the call blocks
@@ -45,10 +58,8 @@ func checkSplit(kind, name, value string) error {
 // talaria builds wants it.
 //
 // Only the variable is named, never the value: this function is downstream of
-// resolve, so what it holds is the credential itself.
-func basicPair(v request.Value, resolved string) (string, error) {
-	pair := strings.TrimPrefix(resolved, v.Prefix())
-
+// resolveParts, so what it holds is the credential itself.
+func basicPair(v request.Value, pair string) (string, error) {
 	if user, _, ok := strings.Cut(pair, ":"); ok && user != "" {
 		return pair, nil
 	}
@@ -111,22 +122,43 @@ func (d *document) cleanupWith(config []byte) func() {
 	}
 }
 
-// resolve is the renderer that reads real credential values. It is the single
+// resolveParts is the reader of real credential values. It is the single
 // crossing of the firewall described in DESIGN.md §5a: every other renderer in
 // talaria produces a redacted or symbolic form, and this one exists only to
 // feed the config document.
-func resolve(v request.Value) (string, error) {
+//
+// It hands back the scheme prefix and the value as two pieces rather than
+// joined, because the join is a Go string holding the credential and a string
+// is the one buffer this package can neither address nor zero. What it returns
+// is the environment's own string — immutable and outliving this call whatever
+// this package does, which is the residue §5a concedes; the concatenation added
+// a second copy of exactly the same kind, on top of one that was unavoidable.
+func resolveParts(v request.Value) (prefix, value string, err error) {
 	if !v.IsSecret() {
 		// Reveal rather than String: a literal the user typed under a
 		// credential-shaped name displays redacted everywhere else, and the
 		// wire is the one place it must not.
-		return v.Reveal(), nil
+		return "", v.Reveal(), nil
 	}
 
-	value, err := v.Ref().Resolve()
+	value, err = v.Ref().Resolve()
+	if err != nil {
+		return "", "", err
+	}
+
+	return v.Prefix(), value, nil
+}
+
+// resolve is resolveParts joined, for the request.Render function Request.URL
+// takes. The join is the copy resolveParts exists to avoid, so it is confined
+// to the URL path, which assembles the query string in a strings.Builder that
+// has the same residue and no seam at which to avoid it. Nothing that writes a
+// directive may call this.
+func resolve(v request.Value) (string, error) {
+	prefix, value, err := resolveParts(v)
 	if err != nil {
 		return "", err
 	}
 
-	return v.Prefix() + value, nil
+	return prefix + value, nil
 }

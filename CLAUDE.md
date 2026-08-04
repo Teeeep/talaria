@@ -97,6 +97,22 @@ writes its four pieces separately rather than concatenating: a concatenation, an
 all single bytes so the replacer returns its argument untouched when there is nothing to escape
 — `TestEscapingAValueNeedingNoEscapeDoesNotCopyIt` is what keeps that true.
 
+The same argument reaches back past the buffer to the crossing itself: `resolveParts`
+(`internal/curl/firewall.go`) hands back the scheme prefix and the value as *two* strings,
+because `v.Prefix() + value` was a fresh allocation holding the credential, and `document.auth`
+writes its header line in six pieces rather than concatenating `h.Name + ": " + prefix + value`
+— `cookies`' shape, for `cookies`' reason. `checkSplit` is variadic for that: the pieces are
+scanned separately, since neither CR nor LF can straddle two of them, and joining them to check
+them would rebuild the string the split exists to avoid. `resolve` is the joined form and exists
+only for the `request.Render` that `Request.URL` takes, where `QueryString`'s own
+`strings.Builder` has the identical residue and no seam at which to avoid it — nothing that
+writes a directive may call it. The tests are pointer identity against the environment's own
+string (`TestResolvingACredentialDoesNotCopyItOutOfTheEnvironment`) and an allocation count of
+zero over `auth` and `cookies` writing into a pre-grown buffer
+(`TestWritingACredentialAllocatesNothingToHoldIt`, over `credentialShapes`): every piece either
+is a constant or is a string the caller already held, so one allocation is one copy. Keep any
+new writer allocation-free, and do not make the pieces reach it through a variadic that escapes.
+
 Never introduce another accumulator for credential-bearing text without both properties. And
 scope the claim when you write it down: what is scrubbed is the arrays this package allocated
 plus the copy it returns. `os.Getenv`'s own string is immutable and outlives the call, and
@@ -342,7 +358,9 @@ with no username and colon as a prompt for the password on `/dev/tty` — which 
 pipe and never answers — so the call blocked for its whole `max-time` and then reported *"curl
 outlived its 30s timeout"*, sending the reader after a slow API that was working fine. It is
 `clierr.CredentialMissing` (exit 5), naming the variable and never the value, because it runs
-downstream of `resolve`. `user:` is legal (an empty password) and so is `user:pass:word` (curl
+downstream of `resolveParts`. What it is handed is the pair alone — the `Basic ` prefix comes
+back separately and `auth` drops it rather than writing it, so there is no prefix here to strip.
+`user:` is legal (an empty password) and so is `user:pass:word` (curl
 splits at the first colon); `:password` and a bare `:` are not. There is deliberately no
 counterpart on the render path: `headerArgs` emits `-u "$TALARIA_AUTH_BASIC"` from
 `Ref().Symbolic()` and never resolves, so it has no value whose shape it could check — `--dry-run`

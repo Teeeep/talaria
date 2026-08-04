@@ -304,6 +304,78 @@ func TestEscapingAValueNeedingNoEscapeDoesNotCopyIt(t *testing.T) {
 	}
 }
 
+// TestResolvingACredentialDoesNotCopyItOutOfTheEnvironment is the other half,
+// at the crossing itself. `v.Prefix() + value` was a Go string holding the
+// resolved credential, allocated on every resolve and readable for as long as
+// the collector left it alone — the residue §5a concedes is os.Getenv's own
+// immutable string, and a second copy of the same kind is not covered by that
+// concession. Returning the two pieces means the value that comes back *is* the
+// environment's string rather than a copy of it, which pointer identity is the
+// only way to state.
+func TestResolvingACredentialDoesNotCopyItOutOfTheEnvironment(t *testing.T) {
+	const name = "TALARIA_AUTH_BEARER"
+	t.Setenv(name, canary)
+
+	prefix, value, err := resolveParts(request.Secret(secret.Env(name), request.EncodeBearer))
+	if err != nil {
+		t.Fatalf("resolveParts() error = %v", err)
+	}
+	if prefix != "Bearer " || value != canary {
+		t.Fatalf("resolveParts() = %q, %q, want %q, %q", prefix, value, "Bearer ", canary)
+	}
+
+	if unsafe.StringData(value) != unsafe.StringData(os.Getenv(name)) {
+		t.Error("resolveParts copied the credential out of the environment's own string, " +
+			"into one nothing can address or zero")
+	}
+}
+
+// TestWritingACredentialAllocatesNothingToHoldIt is the same reasoning one
+// level up, over the two places a resolved credential is written: document.auth
+// and document.cookies. `h.Name + ": " + value` and `v.Prefix() + value` are
+// each one allocation whose bytes are the credential, in a Go string this
+// package can neither address nor zero — the hazard directive() is written in
+// four pieces to avoid, reintroduced at the call site and inside resolve.
+//
+// Allocation count is what makes that visible: every piece these two write is
+// either a constant or a string the caller already held (the environment's own,
+// via escapeDirective, which returns its argument when nothing needs escaping),
+// so writing into a buffer with room for them copies the credential nowhere and
+// allocates nothing. One allocation is one copy.
+func TestWritingACredentialAllocatesNothingToHoldIt(t *testing.T) {
+	for _, tc := range credentialShapes {
+		t.Run(tc.name, func(t *testing.T) {
+			setenv(t, tc.env)
+
+			req := tc.req()
+			// Sized past the longest document these shapes build, so a write never
+			// grows the buffer: grow's allocation is the one this test must not
+			// count, and it is TestBuildZeroesTheArrayItAbandonsWhenTheBufferGrows'
+			// subject rather than this one's.
+			d := &document{b: make([]byte, 0, 4*len(longCanary))}
+			t.Cleanup(d.discard)
+
+			allocs := testing.AllocsPerRun(10, func() {
+				d.b = d.b[:0]
+				if err := d.auth(req); err != nil {
+					t.Fatalf("auth() error = %v", err)
+				}
+				if err := d.cookies(req); err != nil {
+					t.Fatalf("cookies() error = %v", err)
+				}
+			})
+
+			if !bytes.Contains(owned(d), []byte(canary)) {
+				t.Fatal("nothing wrote the credential, so this test proves nothing")
+			}
+			if allocs != 0 {
+				t.Errorf("writing the credential allocated %v times; every allocation here is "+
+					"a copy of it in a string nothing can zero", allocs)
+			}
+		})
+	}
+}
+
 // TestBuildConfigRejectsCRLFThatWouldSplitTheRequest is the last gate, and it
 // is not redundant with the binder's: not every Request comes from
 // request.Build — `history replay` rebuilds one from a stored entry, which is

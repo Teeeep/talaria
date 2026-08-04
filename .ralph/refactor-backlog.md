@@ -155,3 +155,20 @@ that pass — and task 6's before it — deliberately did not do, and why.
   side task 34 added (`encodeLine`, `halveBodies`, `halfOf`, `shorten`). They meet only at
   `maxEntryBytes`. The seam is a `line.go` for the write side, with the constant staying here;
   `file_test.go` (362 lines) splits on exactly the same line.
+
+- `internal/curl/config.go:253` (`auth`) — third spelling of "write one `name = "value"` header
+  line": `directive` writes it in four pieces, `auth` now writes it in six (the value is two
+  pieces so the credential is never joined), and `body` still builds it as
+  `contentTypeHeader + ": " + ct` (`config.go:322`), with `render.go`'s `headerArgs` a fourth on
+  the argv side. The seam the plan named is a `document.pair(name, sep string, pieces ...string)`
+  — deliberately not taken in task 35, because a variadic call there is the one thing the new
+  `TestWritingACredentialAllocatesNothingToHoldIt` cannot allow to escape to the heap. A refactor
+  pass should introduce it with that test in front of it.
+
+- `internal/curl/config.go` is 454 lines and holds two concerns: the document *builder*
+  (`BuildConfig` → `build` → `auth`/`cookies`/`body`/`tempFile`) and the buffer primitives under
+  it (`write`, `grow`, `directive`, `flag`, `configEscape`, `escapeDirective`, `seconds`). The
+  second group is what the zeroing argument is about and what CLAUDE.md's longest house rule
+  describes; a `buffer.go` beside `firewall.go` would give it a file, and `config_test.go` (the
+  shape of the document) already splits cleanly from `firewall_test.go` (the buffer) on the
+  same line.
