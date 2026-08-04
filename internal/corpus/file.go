@@ -9,6 +9,7 @@ package corpus
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -35,6 +36,14 @@ const (
 	// leaves a file to move aside; loading it and being killed for the memory
 	// leaves nothing.
 	maxStoreBytes = 64 << 20
+	// maxKeptBytes is what trim leaves behind, and it is where the retention
+	// policy and the read bound meet: trim runs immediately before Append writes
+	// its line, so a store this package maintains is at most maxKeptBytes plus
+	// one maximal line — maxStoreBytes exactly. maxPerSource cannot do that job,
+	// because it counts entries and the reader holds bytes: 1000 entries per
+	// source at maxEntryBytes each is 500 MiB against a 64 MiB bound, which is
+	// how talaria came to write stores it would then refuse to read.
+	maxKeptBytes = maxStoreBytes - (maxEntryBytes + 1)
 
 	dirMode  fs.FileMode = 0o700
 	fileMode fs.FileMode = 0o600
@@ -74,10 +83,20 @@ func write(path string, line []byte) error {
 	return nil
 }
 
-// trim enforces the per-source cap, rewriting the file only when some source is
-// over it. The common append leaves the file alone.
-func trim(path string) error {
-	data, err := readStore(path)
+// trim enforces the retention policy: the newest maxPerSource entries of each
+// source, within maxKeptBytes of file. incoming is the source of the entry the
+// caller is about to write — Append trims first, so the line it is holding
+// counts here. The common append is over neither bound and leaves the file
+// alone.
+//
+// The entry cap is per source and the byte budget is over the whole file,
+// because what a reader must hold is the file rather than any one source's share
+// of it.
+func trim(path string, incoming Source) error {
+	data, cut, err := tail(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -93,6 +112,12 @@ func trim(path string) error {
 			counts[head.Source]++
 		}
 	}
+	if incoming != "" {
+		// The caller writes its line the moment this returns, so the cap counts
+		// it here. Trimming to maxPerSource and then appending would leave the
+		// store one entry over its own policy.
+		counts[incoming]++
+	}
 
 	drop := map[Source]int{}
 	for source, n := range counts {
@@ -100,7 +125,7 @@ func trim(path string) error {
 			drop[source] = n - maxPerSource
 		}
 	}
-	if len(drop) == 0 {
+	if len(drop) == 0 && !cut {
 		return nil
 	}
 
@@ -178,15 +203,64 @@ func lineHead(line []byte) (entryHead, bool) {
 	return head, true
 }
 
+// tail reads the end of the history file: the whole of it when it fits in
+// maxKeptBytes, and otherwise the last maxKeptBytes, from the first line
+// boundary inside that window. The second result says whether anything was left
+// behind, which is what tells trim to rewrite even when no source is over its
+// cap.
+//
+// Reading the tail rather than the whole file is what lets trim repair a store
+// Read has already refused. The read bound exists so a file nothing maintains
+// cannot exhaust this process, and trim is the only thing that shrinks one: if
+// it needed the whole file to run, the over-bound state would be absorbing and
+// an operator's only way out would be rm.
+func tail(path string) ([]byte, bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close() //nolint:errcheck // Read-only; the read error is the one worth reporting.
+
+	// Stat only chooses where to start reading. The bound below is on the bytes
+	// actually read, for the same reason readStore's is: a FIFO or a symlink to a
+	// character device stats as empty and reads forever.
+	cut := false
+	if info, err := f.Stat(); err == nil && info.Mode().IsRegular() && info.Size() > maxKeptBytes {
+		if _, err := f.Seek(info.Size()-maxKeptBytes, io.SeekStart); err != nil {
+			return nil, false, fmt.Errorf("cannot read the history file: %w", err)
+		}
+		cut = true
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxKeptBytes+1))
+	if err != nil {
+		return nil, false, fmt.Errorf("cannot read the history file: %w", err)
+	}
+	if len(data) > maxKeptBytes {
+		return nil, false, fmt.Errorf("the history file at %s is not one talaria can trim to %d bytes; move it aside", path, maxKeptBytes)
+	}
+
+	if cut {
+		// The window opens mid-line. That fragment is not an entry, and keeping
+		// it would put a line nothing can parse at the head of the store.
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			data = data[i+1:]
+		} else {
+			data = nil
+		}
+	}
+
+	return data, cut, nil
+}
+
 // readStore reads the whole history file, refusing one past maxStoreBytes.
 //
 // The bound is on the bytes actually read, not on what os.Stat reports: a store
 // that is a symlink to /dev/zero or a FIFO stats as empty and reads forever, and
-// this file is user-writable by design. A caller that only wants what it can
-// parse — storedIDs — treats the refusal like any other unreadable file; the
-// ones that report to a human pass the error up, because a store this size has
-// stopped being the file trim maintains and moving it aside is a decision only
-// its owner can make.
+// this file is user-writable by design. Every caller passes the refusal up: a
+// store this size has stopped being the file trim maintains, and whether to move
+// it aside is a decision only its owner can make. Getting there is not a dead
+// end, because trim reads the tail instead and any Append repairs it first.
 func readStore(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {

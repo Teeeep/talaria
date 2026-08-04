@@ -232,6 +232,59 @@ func TestAppendDisambiguatesEntriesSharingATimestamp(t *testing.T) {
 	}
 }
 
+// Finding 23: the shipped binary returned "the call was not recorded" for an
+// entry that was on disk with its response, because the retention pass ran after
+// the write and failed on a store past the read bound. An operator who believes
+// that re-runs a mutating call.
+func TestAppendDoesNotReportFailureForALineItWrote(t *testing.T) {
+	store, path := newStore(t)
+
+	writeStore(t, path, maximalStore(t, 384))
+
+	err := store.Append(Entry{Source: SourceCall, Method: "GET", URL: "https://api.example.com/pets/new"})
+
+	stored, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("reading the store back: %v", readErr)
+	}
+	wrote := bytes.Contains(stored, []byte("https://api.example.com/pets/new"))
+
+	if err != nil && wrote {
+		t.Fatalf("Append reported %q for an entry it had already written; the caller is told the call was not recorded", err)
+	}
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if !wrote {
+		t.Fatal("Append returned nil without writing the entry")
+	}
+}
+
+// Finding 24: a store that exists and cannot be read is not an empty one.
+// Reporting no ids there retires uniqueID's collision check silently, and two
+// entries sharing an id means `history replay` sends the wrong request.
+func TestStoredIDsDistinguishesAMissingStoreFromAnUnreadableOne(t *testing.T) {
+	dir := t.TempDir()
+
+	ids, err := storedIDs(filepath.Join(dir, fileName))
+	if err != nil {
+		t.Fatalf("storedIDs on a store that was never written: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("got %d ids from a store that does not exist", len(ids))
+	}
+
+	// A directory opens and refuses to be read, which is the shape of every
+	// unreadable store: the bytes are there and this process cannot have them.
+	unreadable := filepath.Join(dir, "not-a-file")
+	if err := os.Mkdir(unreadable, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if _, err := storedIDs(unreadable); err == nil {
+		t.Error("storedIDs accepted an unreadable store, want the read error")
+	}
+}
+
 func TestReadKeepsEntriesWrittenBeforeIDsExisted(t *testing.T) {
 	store, path := newStore(t)
 
@@ -461,6 +514,54 @@ func TestConcurrentAppendsKeepEveryEntryTheyAcknowledged(t *testing.T) {
 	}
 	if missing != 0 {
 		t.Errorf("Append returned nil for %d of %d entries that are not in the store", missing, len(recorded))
+	}
+}
+
+// Two processes finding the store past the read bound both try to repair it.
+// The lock is what makes that safe: whichever trims first, neither may be told
+// its entry was lost, and neither entry may actually be.
+func TestConcurrentAppendsRepairAnOverBoundStoreWithoutLosingEachOther(t *testing.T) {
+	store, path := newStore(t)
+
+	writeStore(t, path, maximalStore(t, 384))
+
+	const writers = 3
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+
+			url := "https://api.example.com/pets/concurrent-" + strconv.Itoa(w)
+			if err := store.Append(Entry{Source: SourceCall, Method: "GET", URL: url}); err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		t.Errorf("Append on an over-bound store: %v", err)
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	present := map[string]bool{}
+	for _, e := range entries {
+		present[e.URL] = true
+	}
+	for w := 0; w < writers; w++ {
+		if url := "https://api.example.com/pets/concurrent-" + strconv.Itoa(w); !present[url] {
+			t.Errorf("%s is not in the store, though Append reported it recorded", url)
+		}
 	}
 }
 

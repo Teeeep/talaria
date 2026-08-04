@@ -300,11 +300,11 @@ this process. Bound every read, size-check before allocating, and treat any spec
 that reaches the wire as hostile until checked — a media type became a header-injection vector
 exactly this way. Failures must be entry-level or request-level, never process-level.
 
-**Every read of the history file is bounded, in one place.** `readStore(path)` in
-`internal/corpus/file.go` is the only way the store's bytes are loaded — `Read`, `storedIDs` and
-`trim` all go through it — and it bounds the bytes *actually read* through an `io.LimitReader`
-rather than trusting `os.Stat`, because a store that is a symlink to `/dev/zero` or a FIFO stats
-as empty and reads forever. Never re-introduce an `os.ReadFile` on this path. Two bounds, both
+**Every read of the history file is bounded.** `readStore(path)` in `internal/corpus/file.go`
+loads the store for `Read` and `storedIDs`, and `tail(path)` loads it for `trim`; both bound the
+bytes *actually read* through an `io.LimitReader` rather than trusting `os.Stat`, because a store
+that is a symlink to `/dev/zero` or a FIFO stats as empty and reads forever. Never re-introduce
+an `os.ReadFile` on this path. Two bounds, both
 entry-level where they can be: `maxStoreBytes` (64 MiB) refuses the whole file, since a file that
 size has stopped being the store `trim` maintains; `maxEntryBytes` (256 KiB) is applied in
 `lines`, which drops an over-long line exactly as an unparseable one is dropped, so the entries
@@ -323,6 +323,28 @@ aside" is wrong advice for a permission denial), so a shared helper would need a
 `errors.Is` at each call site and save nothing. Copy the four lines and the `+1`; the tests that
 hold them honest (`requireOverBound`, and the store's own) already require the error to name the
 limit.
+
+**The retention policy and the read bound are one arithmetic, and `Append` trims before it
+writes.** `maxPerSource` counts entries and `readStore` bounds bytes, so the two only agree if
+someone writes the multiplication down: 1000 entries × 2 sources × `maxEntryBytes` is 500 MiB
+against a 64 MiB bound, and talaria wrote itself into stores it then refused to read.
+`maxKeptBytes = maxStoreBytes - (maxEntryBytes + 1)` is that relationship —
+`trim` leaves at most `maxKeptBytes`, `Append` writes one line after it, so the file `readStore`
+is handed is `maxStoreBytes` at worst. `TestTheReadBoundAdmitsWhatTrimLeavesPlusOneMaximalLine`
+fails if either constant moves alone. The entry cap stays per source; the byte budget is over the
+whole file, because what a reader must hold is the file rather than any one source's share.
+
+The order inside the lock is `trim` → `storedIDs` → `write`, and both halves of that matter.
+`trim` reads the *tail* (`tail(path)` — the last `maxKeptBytes` from the first line boundary
+inside the window, `os.Stat` choosing only where to seek), never `readStore`, because trim is the
+only thing that shrinks the store: if repairing an over-bound file needed the whole file, the
+state would be absorbing and `rm` would be the only way out. And the write goes *last* because a
+retention pass after it can only report a failure for an entry already on disk — the shipped
+binary told operators "the call was not recorded" for an entry that was, which is how a mutating
+call gets re-run. `trim` therefore takes the incoming `Source` and counts the line the caller is
+about to write, so the cap still means `maxPerSource` and not one more. For the same reason
+`storedIDs` returns an error: a store that exists and cannot be read is not an empty one, and an
+empty id set silently retires `uniqueID`'s collision check.
 
 **Reading a stored entry back belongs to `internal/corpus`.** `Entry.Replay(op)` returns a
 `Replayable` — the `name=value` strings `request.Inputs` takes — and it is where the path-template

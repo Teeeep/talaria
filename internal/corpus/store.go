@@ -74,13 +74,20 @@ func (s *Store) Recording() bool {
 // Append records one entry, gives it its stable id, and applies the retention
 // cap.
 //
-// The id, the write and the trim are one critical section. Trim rewrites the
-// whole file from a snapshot it read, so an entry appended between that read and
-// the rename would be dropped silently — Append had already returned nil for it,
-// so nothing would ever report it missing. The id is chosen against the same
-// snapshot for the same reason: two processes that picked one concurrently could
-// pick the same one. Holding the lock across all three is what makes a nil
-// return mean the entry is in the store under an id nothing else holds.
+// The trim, the id and the write are one critical section, in that order. Trim
+// rewrites the file from a snapshot it read, so an entry appended between that
+// read and the rename would be dropped silently — Append had already returned
+// nil for it, so nothing would ever report it missing. The id is chosen against
+// the trimmed file for the same reason: two processes that picked one
+// concurrently could pick the same one. Holding the lock across all three is
+// what makes a nil return mean the entry is in the store under an id nothing
+// else holds.
+//
+// The write goes last so that what this returns is the truth about the line it
+// wrote. A retention pass afterwards can only report a failure for an entry
+// already on disk — the operator is told the call was not recorded when it was,
+// and re-runs a mutating call — and it could never repair a store past the read
+// bound, because the read that refused the store came first.
 //
 // With recording off it does nothing at all — no file, no directory, no lock.
 // An opt-out that still left a history file behind would not be one.
@@ -100,18 +107,22 @@ func (s *Store) Append(e Entry) error {
 	}
 	defer unlock()
 
-	e.ID = uniqueID(path, e)
+	if err := trim(path, e.Source); err != nil {
+		return err
+	}
+
+	taken, err := storedIDs(path)
+	if err != nil {
+		return err
+	}
+	e.ID = uniqueID(taken, e)
 
 	line, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("cannot encode the history entry: %w", err)
 	}
 
-	if err := write(path, append(line, '\n')); err != nil {
-		return err
-	}
-
-	return trim(path)
+	return write(path, append(line, '\n'))
 }
 
 // uniqueID is the id the entry goes to disk under. The caller holds the append
@@ -123,13 +134,12 @@ func (s *Store) Append(e Entry) error {
 // less than nanosecond resolution — and a duplicate id would resolve to whichever
 // entry came first and silently replay the wrong request, which is the thing the
 // field exists to stop. So a taken id gets a counting suffix instead.
-func uniqueID(path string, e Entry) string {
+func uniqueID(taken map[string]bool, e Entry) string {
 	candidate := e.ID
 	if candidate == "" {
 		candidate = e.Timestamp.UTC().Format(time.RFC3339Nano)
 	}
 
-	taken := storedIDs(path)
 	if !taken[candidate] {
 		return candidate
 	}
@@ -141,14 +151,20 @@ func uniqueID(path string, e Entry) string {
 	}
 }
 
-// storedIDs is the set of ids already in the store. A file that cannot be read —
-// it usually does not exist yet — holds no ids, which makes every candidate
-// free. Lines written before ids existed contribute none, so an old store's
-// entries never make a new id look taken.
-func storedIDs(path string) map[string]bool {
+// storedIDs is the set of ids already in the store. A store that was never
+// written holds none, which makes every candidate free; one that exists and
+// cannot be read is an error rather than an empty set, because an empty set
+// there retires uniqueID's collision check silently, and two entries sharing an
+// id means `history replay` sends the wrong request. Lines written before ids
+// existed contribute none, so an old store's entries never make a new id look
+// taken.
+func storedIDs(path string) (map[string]bool, error) {
 	data, err := readStore(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	ids := map[string]bool{}
@@ -158,7 +174,7 @@ func storedIDs(path string) map[string]bool {
 		}
 	}
 
-	return ids
+	return ids, nil
 }
 
 // Read returns every readable entry, oldest first.

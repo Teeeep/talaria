@@ -126,3 +126,13 @@ that pass — and task 6's before it — deliberately did not do, and why.
   and the `document` type itself — beside `firewall.go`, which already owns `discard()`, the
   other end of the same invariant. Splitting it would put the whole "what can this package
   zero" story in two adjacent files instead of three.
+
+- `internal/corpus/store_test.go` (917 lines) — task 29 created `file_test.go` for the bounds
+  themselves, but the file-mechanics tests already in `store_test.go` did not move with them:
+  `TestReadRefusesAStorePastTheWholeFileBound`, `TestReadOfAnEndlessStoreTerminates`,
+  `TestReadOfAStoreOfEmptyLinesIsEmpty`, `TestReadSkipsAnOversizedLine`,
+  `TestReadSkipsADeeplyNestedLine` and the `writeStore`/`oversizedLine` helpers are all about
+  what `readStore`/`lines` will hold, which is `file.go`'s half. The seam is those five tests
+  plus the two helpers into `file_test.go`, leaving the Store API — what Append records, what
+  Read gives back, ids, redaction, locking — in `store_test.go`. CLAUDE.md's "tests split the
+  same way, with the same names" is only half true for this package now.
