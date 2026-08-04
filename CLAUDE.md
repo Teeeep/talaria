@@ -16,9 +16,12 @@ you establish them; the next session starts with no memory of this one.
 | All tests | `go test ./...` |
 | One package | `go test ./<dir>/...` |
 | Build | `go build ./...` |
-| Lint | `test -z "$(gofmt -l .)" && go vet ./...` |
+| Lint | `test -z "$(gofmt -l .)" && go vet ./... && golangci-lint run ./...` |
 
-`golangci-lint` is not installed. Run lint before every commit.
+`golangci-lint` v2.12.2 is installed and `.golangci.yml` selects the linter set — every
+exclusion in it records why. Run lint before every commit. These four commands are the ones
+in `.ralph/stack.json` and `.github/workflows/ci.yml`; `internal/ci/workflow_test.go` fails
+if those two disagree, so change them together.
 
 **A green suite is not evidence of correctness here.** `go test ./...` passed with 32 review
 findings live, 8 of them critical, including credential exfiltration. If you are about to claim
