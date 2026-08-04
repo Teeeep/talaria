@@ -103,6 +103,17 @@ the offending word quietly dropped — `--dry-run` reaches `Render` without ever
 document. Three surfaces, one value. A new field that reaches the wire needs the same sweep: bind
 time, the config document, and the emitted curl.
 
+**The request body is a credential position, and it points inward.** Every other secret in this
+tool travels agent → talaria → wire and is a `SecretRef`; a body travels human/CI → talaria →
+*agent*, as plain bytes nothing upstream made symbolic. Two rules follow, and each one alone still
+leaks. `callPayload` (`cmd/talaria/call.go`) redacts `request.body` through the same
+`*secret.ResponseRedactor` the response and the history entry use — pass the one already built,
+never construct a second. And `curl.Render` *references* a body it was not shown: `request.Body`
+carries a `BodySource` (`internal/request/request.go`) that the binder sets, and a `@file` or
+`stdin` body renders as `--data @path` / `--data @-` while an argv body stays inlined
+(DESIGN.md §3.4). `request.curl` is not redacted by design, so inlining a file body would leak it
+past a perfectly good `request.body`. `internal/canary`'s file-body case is the gate on both.
+
 **`cmd/talaria` is wiring.** Parse flags, call a package, render the result. Decisions,
 transformations and multi-step workflows belong in a package that can be tested without cobra.
 The command layer holds 28% of production code (1,589 of 5,511 non-comment lines) and 12 view

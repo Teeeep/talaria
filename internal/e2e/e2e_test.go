@@ -578,15 +578,22 @@ func TestThePreviewedCommandSendsWhatTheCallSends(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
+		// file, when set, is written to disk and passed as --body @path. The
+		// emitted command references that file rather than inlining it, so what
+		// curl reads back off disk is part of what "the same request" means.
+		// Single-line by necessity: `--data @path` strips newlines, which
+		// TestAPreviewedFileBodyLosesTheNewlinesTheCallSends below pins.
+		file string
 	}{
-		{"a GET carrying a body", []string{"searchPets", "--body", `{"name":"Rex"}`}},
+		{name: "a GET carrying a body", args: []string{"searchPets", "--body", `{"name":"Rex"}`}},
 		// -I rather than -X HEAD, which pasted would wait for a body the server
 		// never sends.
-		{"a HEAD", []string{"checkPets"}},
+		{name: "a HEAD", args: []string{"checkPets"}},
 		// One -b holding every cookie, because curl keeps only the last of several.
-		{"a cookie parameter", []string{"sessionPets", "--param", "petId=42", "--param", "session=s3ss10n"}},
+		{name: "a cookie parameter", args: []string{"sessionPets", "--param", "petId=42", "--param", "session=s3ss10n"}},
 		// A media type that is not the JSON curl would otherwise assume.
-		{"a form body", []string{"createPetForm", "--body", "name=Rex", "--allow-mutations"}},
+		{name: "a form body", args: []string{"createPetForm", "--body", "name=Rex", "--allow-mutations"}},
+		{name: "a file body", args: []string{"searchPets"}, file: `{"name":"Rex"}`},
 	}
 
 	for _, tc := range cases {
@@ -598,6 +605,9 @@ func TestThePreviewedCommandSendsWhatTheCallSends(t *testing.T) {
 
 			args := []string{"call", reproSpecPath}
 			args = append(args, tc.args...)
+			if tc.file != "" {
+				args = append(args, "--body", "@"+writeBodyFile(t, tc.file))
+			}
 			args = append(args, "--base-url", srv.URL, "--output", "json")
 
 			dry := decode[callVw](t, h.runOK(append(slices.Clone(args), "--dry-run")...))
@@ -614,6 +624,60 @@ func TestThePreviewedCommandSendsWhatTheCallSends(t *testing.T) {
 					diff, dry.Request.Curl)
 			}
 		})
+	}
+}
+
+// writeBodyFile writes a request body to a file and returns its path, for the
+// cases that pass --body @path.
+func writeBodyFile(t *testing.T, content string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "body.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("writing the body file: %v", err)
+	}
+
+	return path
+}
+
+// TestAPreviewedFileBodyLosesTheNewlinesTheCallSends pins a divergence rather
+// than a guarantee: `--data @path` is what the emitted command uses for a file
+// body, and curl strips newlines out of a file read that way, while the call
+// itself sends the file's bytes exactly as they are. So for a pretty-printed or
+// signed payload the preview and the call send different bytes.
+//
+// It is asserted here because the alternative is that nobody knows. DESIGN.md
+// §3.4 names --data, so widening this to --data-binary is a design decision and
+// not a bug fix. If this test ever fails because the two now agree, the decision
+// was taken — delete the test and the note in .ralph/refactor-backlog.md with
+// it.
+func TestAPreviewedFileBodyLosesTheNewlinesTheCallSends(t *testing.T) {
+	t.Parallel()
+
+	const body = "{\n  \"name\": \"Rex\"\n}\n"
+
+	h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": "reproduce-token"})
+	srv := newServer(t)
+
+	args := []string{"call", reproSpecPath, "searchPets",
+		"--body", "@" + writeBodyFile(t, body),
+		"--base-url", srv.URL, "--output", "json"}
+
+	dry := decode[callVw](t, h.runOK(append(slices.Clone(args), "--dry-run")...))
+	h.reproduce(dry.Request.Curl)
+	h.runOK(args...)
+
+	got := srv.requests()
+	if len(got) != 2 {
+		t.Fatalf("the server saw %d requests, want 2 (the previewed command, then the call): %+v", len(got), got)
+	}
+	if got[1].Body != body {
+		t.Errorf("the call sent %q, want the file's bytes unchanged", got[1].Body)
+	}
+	if want := strings.ReplaceAll(body, "\n", ""); got[0].Body != want {
+		t.Errorf("the previewed command sent %q, want %q — curl's own newline stripping.\n"+
+			"If it now matches the call, --data was widened and this test has served its purpose",
+			got[0].Body, want)
 	}
 }
 

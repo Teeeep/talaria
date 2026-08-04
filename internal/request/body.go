@@ -30,19 +30,22 @@ const contentTypeHeader = "Content-Type"
 // req is read for the headers already bound, so a user's own Content-Type can
 // beat the operation's declared media type.
 func (b *binder) body(req *Request) *Body {
-	data, ok := b.bodyData()
+	body, ok := b.bodyData()
 	if !ok {
 		return nil
 	}
+	body.ContentType = b.contentType(req)
 
-	return &Body{ContentType: b.contentType(req), Data: data}
+	return body
 }
 
-// bodyData reads whichever of the three sources --body named. The second return
-// is false when there is no body to send, either because none was asked for or
-// because reading it failed — in which case the problem is already recorded and
-// Build will return it.
-func (b *binder) bodyData() ([]byte, bool) {
+// bodyData reads whichever of the three sources --body named, and records which
+// one it was: an emitted command references a file or stdin body instead of
+// printing bytes the reader never saw (curl.Render). The second return is false
+// when there is no body to send, either because none was asked for or because
+// reading it failed — in which case the problem is already recorded and Build
+// will return it.
+func (b *binder) bodyData() (*Body, bool) {
 	if len(b.in.Body) == 0 {
 		return nil, false
 	}
@@ -57,7 +60,7 @@ func (b *binder) bodyData() ([]byte, bool) {
 	if len(b.in.Body) > 1 {
 		kinds := make([]string, 0, len(b.in.Body))
 		for _, raw := range b.in.Body {
-			kinds = append(kinds, bodyKind(raw))
+			kinds = append(kinds, string(bodyKind(raw)))
 		}
 
 		b.fail("--body was given %d times (%s); a request has one body",
@@ -66,13 +69,24 @@ func (b *binder) bodyData() ([]byte, bool) {
 	}
 
 	raw := b.in.Body[0]
-	switch {
-	case raw == stdinFlag:
-		return b.stdinBody()
-	case strings.HasPrefix(raw, fileFlagPrefix):
-		return b.fileBody(strings.TrimPrefix(raw, fileFlagPrefix))
+	switch kind := bodyKind(raw); kind {
+	case BodyStdin:
+		data, ok := b.stdinBody()
+		if !ok {
+			return nil, false
+		}
+
+		return &Body{Data: data, Source: kind}, true
+	case BodyFile:
+		path := strings.TrimPrefix(raw, fileFlagPrefix)
+		data, ok := b.fileBody(path)
+		if !ok {
+			return nil, false
+		}
+
+		return &Body{Data: data, Source: kind, Path: path}, true
 	default:
-		return []byte(raw), true
+		return &Body{Data: []byte(raw), Source: kind}, true
 	}
 }
 
@@ -80,14 +94,14 @@ func (b *binder) bodyData() ([]byte, bool) {
 // tell the user which of their bodies is which without quoting any of them.
 // A file's path is elided along with the bytes: it is chosen by the same
 // command line and can name the secret it holds.
-func bodyKind(raw string) string {
+func bodyKind(raw string) BodySource {
 	switch {
 	case raw == stdinFlag:
-		return "stdin"
+		return BodyStdin
 	case strings.HasPrefix(raw, fileFlagPrefix):
-		return "@file"
+		return BodyFile
 	default:
-		return "literal"
+		return BodyLiteral
 	}
 }
 

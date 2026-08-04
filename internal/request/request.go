@@ -176,13 +176,38 @@ type Pair struct {
 	Value Value  `json:"value"`
 }
 
+// BodySource names which of --body's three forms the bytes came from. It is the
+// text a message uses for them too, so an error naming a body and the renderer
+// choosing how to reference it cannot drift apart.
+type BodySource string
+
+const (
+	// BodyLiteral is a body written on the command line.
+	BodyLiteral BodySource = "literal"
+	// BodyFile is a body read from the path --body @path named.
+	BodyFile BodySource = "@file"
+	// BodyStdin is a body read from this process's standard input.
+	BodyStdin BodySource = "stdin"
+)
+
 // Body is the request body: the bytes --body resolved to, and the media type
 // they will be sent as. Data is already the final bytes — the Go process reads
 // a file or stdin before curl exists, so nothing downstream has to open
 // anything (DESIGN.md §5a).
+//
+// Source and Path record where the bytes came from, because that decides how an
+// emitted command may talk about them: a file or stdin body can hold a
+// credential the agent only handed talaria a path to, so the reproduction
+// references it rather than printing it (DESIGN.md §3.4, curl.Render). A Body
+// built anywhere but the binder — a replayed history entry — leaves Source
+// empty and is inlined, which is right: those bytes came back off a surface the
+// reader can already read.
 type Body struct {
 	ContentType string
 	Data        []byte
+	Source      BodySource
+	// Path is the file BodyFile came from, empty for every other source.
+	Path string
 }
 
 // MarshalJSON renders the body as text alongside its content type.

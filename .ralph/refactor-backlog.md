@@ -25,6 +25,22 @@ refactor pass drains them later.
   env-var/profile naming machinery (`envSuffix`, `envRef`, `profileRef`, `ReferencesEnv`,
   `checkEnvCollisions`). The naming machinery is the clean seam: it has no dependency on
   `operation` or `spec` and would test standalone as `internal/config/envnames.go`.
+- `cmd/talaria/call.go:170` — `newRedactors(cfg)` is built twice on one call path: once here and
+  again at `:312` inside `buildRequest`. Two objects, one config, and nothing makes them agree
+  beyond both calling the same constructor. Task 5 threaded the existing one into `callPayload`
+  rather than adding a third; the fix is to build it once in `RunE` and pass it down.
+- `internal/canary/canary_test.go:73` — `readSources` does not do what its comment claims. The
+  suite stayed `(cached)` after edits to `internal/curl/render.go` and to `internal/spec/servers.go`
+  (probed twice on 2026-08-04, only `-count=1` re-ran it), so the gate *can* go stale exactly the
+  way the comment says it cannot. The canary package imports none of the code it tests, so nothing
+  but the testlog would invalidate it. Either make the dependency real or drop the claim — the
+  comment is currently an invariant no test enforces. Relevant to Task 10.
+- `internal/curl/render.go:bodyArgs` + `internal/e2e/e2e_test.go:TestAPreviewedFileBodyLosesTheNewlinesTheCallSends`
+  — a `--body @file` body renders as `--data @path`, and curl strips newlines out of a file read
+  that way, while the executed call sends the file's bytes verbatim. So the previewed command and
+  the call send different bytes for a pretty-printed or signed payload. DESIGN.md §3.4 names
+  `--data`; widening it to `--data-binary` is a design decision, not a bug fix. The test pins the
+  divergence so it is known rather than discovered.
 - `internal/curl/config.go:1` — 431 lines after task 4 pushed it past 400. Seam: the `document`
   type and its directive writers (`build`, `auth`, `cookies`, `body`, `directive`, `tempFile`,
   `escapeDirective`) are a distinct concern from the `Options`/`Capture`/`BuildConfig` entry

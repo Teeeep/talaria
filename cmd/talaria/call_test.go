@@ -31,6 +31,7 @@ type callExecJSON struct {
 		Method  string            `json:"method"`
 		URL     string            `json:"url"`
 		Headers map[string]string `json:"headers"`
+		Body    string            `json:"body"`
 	} `json:"request"`
 	Response *struct {
 		Status  int                 `json:"status"`

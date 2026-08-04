@@ -116,6 +116,95 @@ func TestCallLeavesAnUnmatchedBodyExactlyAsItCame(t *testing.T) {
 	}
 }
 
+// bodyCanary is what the *caller* sends: a refresh token in the request body.
+// History already redacts it (corpus.NewEntry); stdout is the surface an agent
+// reads, so redacting the permanent artifact and not the live one would have the
+// §5a firewall backwards.
+const bodyCanary = "caller-refresh-CANARY-31d8ab"
+
+func TestCallRedactsASecretInTheRequestBody(t *testing.T) {
+	srv := newCallServer(t, jsonPet)
+
+	code, stdout, stderr := runCall(t, "testdata/call.yaml", "getPublic",
+		"--base-url", srv.URL, "--output", "json",
+		"--body", `{"refresh_token":"`+bodyCanary+`","page":2}`)
+	if code != 0 {
+		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	var body struct {
+		RefreshToken string `json:"refresh_token"`
+		Page         int    `json:"page"`
+	}
+	if err := json.Unmarshal([]byte(decodeCall(t, stdout).Request.Body), &body); err != nil {
+		t.Fatalf("request.body is not JSON: %v\n%s", err, stdout)
+	}
+	if body.RefreshToken != "<redacted>" {
+		t.Errorf("request.body.refresh_token = %q, want <redacted>", body.RefreshToken)
+	}
+	if body.Page != 2 {
+		t.Errorf("request.body lost the surrounding fields: %+v", body)
+	}
+
+	// Redaction is a display decision, not a change to the request: the server
+	// still received what the caller wrote. Without this the test above would
+	// pass just as well if talaria had sent nothing.
+	if got := srv.received().Body; !strings.Contains(got, bodyCanary) {
+		t.Errorf("the server received %q, want the caller's real body", got)
+	}
+}
+
+// TestCallRedactsAConfiguredPathInTheRequestBody covers the user-extensible list
+// on the request side, at a depth and inside an array — the shapes the built-in
+// token names never reach.
+func TestCallRedactsAConfiguredPathInTheRequestBody(t *testing.T) {
+	writeRedactConfig(t, "redact:\n  body-paths:\n    - data.token\n")
+
+	srv := newCallServer(t, jsonPet)
+
+	code, stdout, stderr := runCall(t, "testdata/call.yaml", "getPublic",
+		"--base-url", srv.URL, "--output", "json",
+		"--body", `[{"data":{"token":"`+bodyCanary+`","name":"Rex"}}]`)
+	if code != 0 {
+		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	if got := decodeCall(t, stdout).Request.Body; strings.Contains(got, bodyCanary) {
+		t.Errorf("request.body = %s, want data.token redacted inside the array", got)
+	}
+}
+
+// TestCallLeavesANonJSONRequestBodyIntact is the hostile half: the redactor's
+// JSON walk runs over whatever the caller passed, and a form body, a binary
+// payload or plain prose must come back byte for byte rather than corrupted,
+// dropped or fatal.
+func TestCallLeavesANonJSONRequestBodyIntact(t *testing.T) {
+	writeRedactConfig(t, "redact:\n  body-paths:\n    - data.token\n")
+
+	cases := map[string]string{
+		"prose":  "not json at all",
+		"a form": "name=Rex&refresh_token=" + bodyCanary,
+		// Truncated JSON: enough to start the parse, not enough to finish it.
+		"half a document": `{"refresh_token":"` + bodyCanary,
+	}
+
+	for name, sent := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := newCallServer(t, jsonPet)
+
+			code, stdout, stderr := runCall(t, "testdata/call.yaml", "getPublic",
+				"--base-url", srv.URL, "--output", "json", "--body", sent)
+			if code != 0 {
+				t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
+			}
+
+			if got := decodeCall(t, stdout).Request.Body; got != sent {
+				t.Errorf("request.body = %q, want the bytes sent, unchanged: %q", got, sent)
+			}
+		})
+	}
+}
+
 func TestCallWarnsOnceThatAQueryStringKeyReachesServerLogs(t *testing.T) {
 	// getKeyed authenticates with an apiKey in the query string. §5a: talaria
 	// keeps it out of its own output, and cannot keep it out of the server's

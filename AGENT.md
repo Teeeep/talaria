@@ -166,6 +166,14 @@ property of the API, not a bug you can work around.
 Response bodies are redacted only at the OAuth2 token fields and whatever JSON paths the user
 configured. A login or token-issuing endpoint is for a human to run, not for you.
 
+Request bodies pass through the same redaction on their way to `request.body`, so a
+`refresh_token` you were given a *file* for is `<redacted>` in the output while the server still
+receives it. A body read from a file or from stdin is referenced rather than printed in the
+emitted curl — `--data @path`, `--data @-` — because its bytes may be a credential you never saw.
+Only a body you typed on the command line is inlined. One consequence worth knowing before you
+paste: curl strips newlines out of a file read with `--data`, so for a pretty-printed or signed
+payload the emitted command sends different bytes than the call did.
+
 ## Output
 
 `--output json|pretty|tsv` on every command. Piped output defaults to `json`, so you normally get

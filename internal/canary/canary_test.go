@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -278,6 +279,7 @@ type recordedRequest struct {
 	Header  http.Header
 	Query   url.Values
 	Cookies map[string]bool
+	Body    string
 }
 
 type recordingServer struct {
@@ -299,11 +301,17 @@ func newServer(t *testing.T, body string) *recordingServer {
 			cookies[c.Value] = true
 		}
 
+		sent, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading the request body: %v", err)
+		}
+
 		rs.mu.Lock()
 		rs.last = recordedRequest{
 			Header:  r.Header.Clone(),
 			Query:   r.URL.Query(),
 			Cookies: cookies,
+			Body:    string(sent),
 		}
 		rs.mu.Unlock()
 
@@ -787,6 +795,59 @@ func TestAnUnconfiguredHeaderNameIsNotRedacted(t *testing.T) {
 	if !strings.Contains(res.stdout, value) {
 		t.Errorf("X-Session-Id was redacted with no pattern configured; the built-in list has grown "+
 			"and the test above no longer proves redact.headers does anything:\n%s", res.stdout)
+	}
+}
+
+// TestARequestBodyFromAFileReachesNoSurfaceButTheWire is the credential
+// position this suite otherwise never covers: one that travels *into* talaria
+// from a human or from CI, in a file the agent handed over a path to and never
+// read. Every other case here injects through the environment.
+//
+// Two things have to hold at once for the scan to come back clean, and each one
+// alone would still leak. The displayed body is redacted like a response body,
+// and the emitted curl references the file — `--data @path` — instead of
+// inlining bytes nobody showed the reader. The `request.curl` field is not
+// redacted by design, so an inlined file body would put the value on stdout
+// however well the body field behaved.
+func TestARequestBodyFromAFileReachesNoSurfaceButTheWire(t *testing.T) {
+	for _, format := range canary.Formats() {
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+
+			value := canary.Value("filebody")
+			h := newHarness(t, nil)
+			srv := newServer(t, `{"ok":true}`)
+
+			// Written outside every directory the scan walks, and under a name that
+			// carries no part of the value: the path itself is printed.
+			path := filepath.Join(t.TempDir(), "body.json")
+			if err := os.WriteFile(path, []byte(`{"refresh_token":"`+value+`"}`), 0o600); err != nil {
+				t.Fatalf("writing the body file: %v", err)
+			}
+
+			call := []string{"call", specPath, "getPublic", "--base-url", srv.URL,
+				"--body", "@" + path, "--output", format}
+			runs := []result{
+				h.runOK(append(slices.Clone(call), "--dry-run")...),
+				h.runOK(call...),
+				h.runOK("history", "--output", format),
+				h.runOK("history", "show", "1", "--output", format),
+			}
+
+			// The body still went on the wire in full: talaria decides what it
+			// prints, not what the caller sends. Without this the assertions below
+			// would pass just as well if the body had been dropped.
+			if got := srv.received().Body; !strings.Contains(got, value) {
+				t.Fatalf("the server received %q; the leak assertions below prove nothing", got)
+			}
+
+			var surfaces []canary.Surface
+			for _, res := range runs {
+				surfaces = append(surfaces, res.surfaces()...)
+			}
+
+			assertNoLeak(t, value, append(surfaces, h.written()...))
+		})
 	}
 }
 

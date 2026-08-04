@@ -107,6 +107,45 @@ func TestBodyFlagAtFileReadsTheFile(t *testing.T) {
 	}
 }
 
+// TestBodyProvenanceIsRecordedOnTheBody pins where the bytes came from onto the
+// Body itself. It is what lets the emitted curl reference a file or this
+// process's stdin instead of inlining bytes the reader was never shown: a body
+// read from disk can carry a credential the agent handed talaria a path to and
+// never saw itself (DESIGN.md §3.4).
+func TestBodyProvenanceIsRecordedOnTheBody(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "body.json")
+	if err := os.WriteFile(path, []byte(`{"a":1}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cases := []struct {
+		name     string
+		flag     string
+		source   request.BodySource
+		wantPath string
+	}{
+		{"a literal", `{"a":1}`, request.BodyLiteral, ""},
+		{"a file", "@" + path, request.BodyFile, path},
+		{"stdin", "-", request.BodyStdin, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := bodyInputs(t)
+			in.Body = []string{tc.flag}
+			in.Stdin = strings.NewReader(`{"a":1}`)
+
+			body := buildBody(t, in)
+			if body.Source != tc.source {
+				t.Errorf("body.Source = %q, want %q", body.Source, tc.source)
+			}
+			if body.Path != tc.wantPath {
+				t.Errorf("body.Path = %q, want %q", body.Path, tc.wantPath)
+			}
+		})
+	}
+}
+
 func TestBodyFlagAtMissingFileIsUsageError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "absent.json")
 

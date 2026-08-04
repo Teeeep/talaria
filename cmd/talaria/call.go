@@ -173,7 +173,7 @@ func newCallCmd() *cobra.Command {
 				// not a request, and history answers "what have I already tried".
 				// Nothing is validated either — an empty validation block would
 				// read as "checked, and fine".
-				return renderer.Render(callPayload(req, nil, nil))
+				return renderer.Render(callPayload(req, nil, nil, redactors.Response))
 			}
 
 			resp, execErr := curl.ExecuteWith(cmd.Context(), req, timeoutOptions(timeout))
@@ -192,7 +192,7 @@ func newCallCmd() *cobra.Command {
 			// what the process exits with, not what the caller gets to read. An
 			// agent that asked for the flag still gets the full observation on
 			// stdout to act on.
-			if err := renderer.Render(callPayload(req, view, result)); err != nil {
+			if err := renderer.Render(callPayload(req, view, result, redactors.Response)); err != nil {
 				return err
 			}
 			if !failOnError {
@@ -478,8 +478,15 @@ func pluralise(n int, noun string) string {
 // The view is built from the request's *redacted* representation throughout —
 // requestView holds Value.String() and curl.Render's symbolic form, never a
 // resolved credential. The only code that resolves one is internal/curl, at
-// exec time, and it hands back a Response rather than a Request (§5a).
-func callPayload(req *request.Request, resp *responseView, result *validate.Result) output.Payload {
+// exec time, and it hands back a Response rather than a Request (§5a). The body
+// is the exception that needs red: its bytes are the caller's own, so nothing
+// upstream has made them symbolic and the redaction happens here.
+func callPayload(
+	req *request.Request,
+	resp *responseView,
+	result *validate.Result,
+	red *secret.ResponseRedactor,
+) output.Payload {
 	view := callView{
 		DryRun:              resp == nil,
 		CredentialsWithheld: req.Withheld,
@@ -492,7 +499,12 @@ func callPayload(req *request.Request, resp *responseView, result *validate.Resu
 		},
 	}
 	if req.Body != nil {
-		view.Request.Body = string(req.Body.Data)
+		// The same redactor the response body and the history entry pass through.
+		// A body is where a client_secret, a password or a refresh token travels,
+		// and this one came *from* the caller — the direction the rest of the tool
+		// does not guard — so stdout gets the redacted form and only the wire gets
+		// the bytes.
+		view.Request.Body = string(red.Body(req.Body.Data))
 	}
 
 	// One line each: the request being described, then the command that makes

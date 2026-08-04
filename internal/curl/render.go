@@ -22,6 +22,13 @@ import (
 // emitted command and the config document.
 const contentTypeHeader = "Content-Type"
 
+// fileFlagPrefix and stdinFlag are curl's spellings for "read this from a file"
+// and "read this from standard input", the same two --body accepts.
+const (
+	fileFlagPrefix = "@"
+	stdinFlag      = "-"
+)
+
 // Render returns the curl command that reproduces req: a portable, symbolic
 // reproduction for bug reports, docs and scripts (§3.4).
 //
@@ -130,11 +137,19 @@ func cookieWord(req *request.Request) *word {
 }
 
 // bodyArgs renders the request body and the content type that describes it.
-// --data-raw rather than --data or --data-binary, matching the config document
-// for the same reason (config.go's body): those two read a value starting with
-// @ as a filename, so the emitted command would read a local file and send it
-// to the API where the call sent the text. --data also strips newlines, which
-// changes the bytes a signed or whitespace-sensitive payload carries.
+//
+// A body read from a file or from stdin is *referenced* rather than printed:
+// its bytes may be a credential the caller handed talaria a path to and never
+// saw, and this command is the surface an agent reads (DESIGN.md §3.4). Only
+// --data and --data-binary give curl a reference at all, and --data is what the
+// design names.
+//
+// A body written on the command line is inlined, and with --data-raw rather
+// than --data, matching the config document for the same reason (config.go's
+// body): those two read a value starting with @ as a filename, so the emitted
+// command would read a local file and send it to the API where the call sent
+// the text. That body is already in the caller's hands, so there is nothing to
+// withhold.
 func bodyArgs(req *request.Request) []string {
 	if req.Body == nil {
 		return nil
@@ -143,6 +158,13 @@ func bodyArgs(req *request.Request) []string {
 	var args []string
 	if req.Body.ContentType != "" && !hasHeader(req, contentTypeHeader) {
 		args = append(args, "-H", (&word{}).literal(contentTypeHeader+": "+req.Body.ContentType).String())
+	}
+
+	switch req.Body.Source {
+	case request.BodyFile:
+		return append(args, "--data", (&word{}).literal(fileFlagPrefix+req.Body.Path).String())
+	case request.BodyStdin:
+		return append(args, "--data", (&word{}).literal(fileFlagPrefix+stdinFlag).String())
 	}
 
 	return append(args, "--data-raw", (&word{}).literal(string(req.Body.Data)).String())

@@ -2,6 +2,7 @@ package curl
 
 import (
 	"net/http"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -284,6 +285,83 @@ func TestRenderSendsALeadingAtBodyAsText(t *testing.T) {
 	}
 	if strings.Contains(got, "--data-binary") {
 		t.Errorf("Render() = %s\nwant no --data-binary: it would read the local file", got)
+	}
+}
+
+// TestRenderReferencesABodyTheReaderWasNeverShown is DESIGN.md §3.4 for the one
+// input that travels in the opposite direction from the rest of the tool: the
+// body comes from a human or from CI and is read back by the agent. A file or a
+// stdin body can hold a credential the agent only ever handed talaria a path to,
+// so the emitted command references it the way curl does rather than inlining
+// its bytes. An argv body is already in the agent's hands and stays inline —
+// TestRenderSendsALeadingAtBodyAsText above is that clause's guard.
+func TestRenderReferencesABodyTheReaderWasNeverShown(t *testing.T) {
+	cases := []struct {
+		name string
+		body request.Body
+		want string
+	}{
+		{
+			"a file body",
+			request.Body{Source: request.BodyFile, Path: "/tmp/secret.json", Data: []byte(`{"token":"` + canary + `"}`)},
+			`--data '@/tmp/secret.json'`,
+		},
+		{
+			"a stdin body",
+			request.Body{Source: request.BodyStdin, Data: []byte(`{"token":"` + canary + `"}`)},
+			`--data '@-'`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := tc.body
+			got := Render(&request.Request{
+				Method:  http.MethodPost,
+				BaseURL: "https://api.example.com",
+				Path:    "/pets",
+				Body:    &body,
+			})
+
+			assertNoCanary(t, got)
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("Render() = %s\nwant it to contain %s", got, tc.want)
+			}
+			if strings.Contains(got, "--data-raw") {
+				t.Errorf("Render() = %s\nwant no --data-raw: it would inline the bytes", got)
+			}
+		})
+	}
+}
+
+// TestRenderQuotesAHostileFileBodyPathAsOneShellWord is the injection case for
+// the reference above. The path is chosen on the same command line as the body,
+// but a rendered command is pasted into a shell — so a path holding a quote, a
+// substitution or a newline must arrive at curl as one word, unexpanded, or the
+// "portable reproduction" is an execution primitive on paste.
+//
+// The assertion runs the rendered arguments through a real shell rather than
+// re-implementing its quoting, because only sh can say how sh splits them.
+func TestRenderQuotesAHostileFileBodyPathAsOneShellWord(t *testing.T) {
+	path := "/tmp/tal aria's $(touch pwned) `touch pwned` \n body.json"
+
+	got := Render(&request.Request{
+		Method:  http.MethodPost,
+		BaseURL: "https://api.example.com",
+		Path:    "/pets",
+		Body:    &request.Body{Source: request.BodyFile, Path: path, Data: []byte("{}")},
+	})
+
+	// Every word but the leading `curl` is handed to the shell, which prints back
+	// the ones that start with @ — exactly one, if the path survived as a word.
+	script := "set -- " + strings.TrimPrefix(got, "curl ") +
+		`; for a do case "$a" in @*) printf '%s' "$a";; esac; done`
+	out, err := exec.Command("sh", "-c", script).Output()
+	if err != nil {
+		t.Fatalf("the rendered command is not valid shell: %v\n%s", err, got)
+	}
+	if string(out) != "@"+path {
+		t.Errorf("sh read the body argument as %q, want %q\nrendered: %s", out, "@"+path, got)
 	}
 }
 

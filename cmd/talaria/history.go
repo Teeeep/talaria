@@ -255,7 +255,8 @@ func newHistoryReplayCmd() *cobra.Command {
 			// check against a call does and renders the same validation block.
 			view := redactResponse(resp, redactors.Response)
 
-			return renderer.Render(callPayload(req, view, validateResponse(cmd.ErrOrStderr(), doc, req, view)))
+			return renderer.Render(callPayload(
+				req, view, validateResponse(cmd.ErrOrStderr(), doc, req, view), redactors.Response))
 		},
 	}
 
