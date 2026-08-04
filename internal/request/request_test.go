@@ -703,6 +703,114 @@ func TestBuildAcceptsHTTPSchemesInAnyCase(t *testing.T) {
 	}
 }
 
+// varServerSpec is a one-operation spec whose only server is a template, so a
+// test can pin what Build does with a server variable without disturbing the
+// shared fixture's plain servers.
+func varServerSpec(t *testing.T, serverURL, name, def string) Inputs {
+	t.Helper()
+
+	src := fmt.Sprintf(`openapi: 3.0.3
+info:
+  title: variable server
+  version: "1"
+servers:
+  - url: %s
+    variables:
+      %s:
+        default: %q
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        "200":
+          description: ok
+`, serverURL, name, def)
+
+	doc, err := spec.LoadBytes([]byte(src))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+
+	for _, op := range operation.Extract(doc) {
+		if op.ID == "listPets" {
+			return Inputs{Op: op, Doc: doc}
+		}
+	}
+
+	t.Fatalf("inline spec has no listPets")
+	return Inputs{}
+}
+
+// A host-position variable is uncallable today: url.Parse rejects `{` in a
+// host, so binder.baseURL refuses the spec's own server and the operation
+// needs --base-url to run at all.
+func TestBuildSubstitutesAServerVariableInTheHost(t *testing.T) {
+	in := varServerSpec(t, "https://{region}.api.example.com/v1", "region", "eu")
+
+	if got, want := build(t, in).BaseURL, "https://eu.api.example.com/v1"; got != want {
+		t.Errorf("BaseURL = %q, want %q", got, want)
+	}
+}
+
+// A path-position variable fails differently and silently: the URL parses, so
+// Build succeeds and the request goes out with a literal `{basePath}` in it.
+// b.path() rejects leftover braces in the operation path, never in the base
+// URL, so the wrong URL — not an error — is what has to be asserted.
+func TestBuildSubstitutesAServerVariableInThePath(t *testing.T) {
+	in := varServerSpec(t, "https://api.example.com/{basePath}", "basePath", "v2")
+
+	if got, want := build(t, in).BaseURL, "https://api.example.com/v2"; got != want {
+		t.Errorf("BaseURL = %q, want %q", got, want)
+	}
+}
+
+// Substitution splices spec-controlled text into the authority, so it can
+// forge exactly the userinfo a hand-typed base URL is refused for. The
+// substituted result has to reach the same check, and the refusal still must
+// not echo the credential.
+func TestBuildRejectsAServerVariableDefaultCarryingUserinfo(t *testing.T) {
+	const password = "s3cr3t"
+	in := varServerSpec(t, "https://{sub}.example.com", "sub", "admin:"+password+"@attacker.com")
+
+	err := buildErr(t, in)
+	if strings.Contains(err.Error(), password) {
+		t.Errorf("the refusal echoes the userinfo it refused: %v", err)
+	}
+	if !strings.Contains(err.Error(), "attacker.com") {
+		t.Errorf("error %v does not name the host the substituted URL pointed at", err)
+	}
+}
+
+// The guard on the empty case: a spec with no servers still reaches the usage
+// error, rather than Servers turning it into some other failure.
+func TestBuildReportsNoBaseURLWhenTheSpecDeclaresNoServer(t *testing.T) {
+	doc, err := spec.LoadBytes([]byte(`openapi: 3.0.3
+info:
+  title: no servers
+  version: "1"
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        "200":
+          description: ok
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+
+	in := Inputs{Doc: doc}
+	for _, op := range operation.Extract(doc) {
+		in.Op = op
+	}
+
+	if got := buildErr(t, in).Error(); !strings.Contains(got, "no base URL") {
+		t.Errorf("error %q does not report the missing base URL", got)
+	}
+}
+
 func TestBuildAppliesProfileHeaders(t *testing.T) {
 	in := inputs(t, "listPets")
 	in.Params = []string{"limit=10"}

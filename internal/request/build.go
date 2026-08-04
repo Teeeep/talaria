@@ -169,13 +169,16 @@ func (b *binder) baseURL() string {
 	return ""
 }
 
-// firstServer returns the document's first server URL, or "" when it has none.
+// firstServer returns the document's first usable server URL, or "" when it has
+// none. spec.Servers substitutes server variables and drops the servers it
+// cannot substitute, so a URL still carrying a {placeholder} never reaches the
+// base-URL checks below.
 func firstServer(doc *spec.Document) string {
-	if doc == nil || doc.Model == nil || len(doc.Model.Servers) == 0 || doc.Model.Servers[0] == nil {
-		return ""
+	if urls := spec.Servers(doc); len(urls) > 0 {
+		return urls[0]
 	}
 
-	return doc.Model.Servers[0].URL
+	return ""
 }
 
 // params parses --param flags against the parameters the operation declares,

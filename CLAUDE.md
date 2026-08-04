@@ -58,7 +58,10 @@ design exists to prevent. `SecretRef` cannot print itself; keep it that way, so 
 a deliberate, greppable call.
 
 **Credentials bind to hosts.** A resolved credential goes only to a host the spec declares or a
-human explicitly allowed. Redaction answers *does it print*; it does not answer *who receives
+human explicitly allowed. `spec.Servers` (`internal/spec/servers.go`) is the only reader of
+`doc.Model.Servers`: it substitutes `{variable}` placeholders from their defaults and omits any
+server it cannot fully substitute, so "the hosts the spec declares" means its output, never the
+raw URLs. Read the spec's servers through it or the host set is computed from templates. Redaction answers *does it print*; it does not answer *who receives
 it*. Both questions need an answer for every new path that carries a credential.
 
 **The spec is untrusted input, and so is the history file.** Both are fetched or edited outside
