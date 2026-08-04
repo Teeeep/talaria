@@ -436,12 +436,17 @@ func callPayload(
 	}
 	view.CredentialsWithheld = req.Withheld
 
-	// One line each: the request being described, then the command that makes
-	// it. A table would put the curl in a column and pad it into unreadability.
-	rows := [][]string{
-		{view.Request.Method + " " + view.Request.URL},
-		{view.Request.Curl},
+	// output.Lines, not a one-column table: the curl is a command the caller
+	// pastes into a shell, and a table cell is escaped — a backslash in the body
+	// doubles and a tab folds into "\t", so the printed command stops being the
+	// one talaria ran. Both strings are composed by this process from values
+	// already redacted for display, which is what makes them safe to print
+	// unescaped; the rows below stay rows.
+	lines := []string{
+		view.Request.Method + " " + view.Request.URL,
+		view.Request.Curl,
 	}
+	var rows [][]string
 
 	if resp != nil {
 		view.Response = resp
@@ -458,7 +463,7 @@ func callPayload(
 		}
 	}
 
-	return output.Payload{Data: view, Table: output.Table{Rows: rows}}
+	return output.Payload{Data: view, Lines: lines, Table: output.Table{Rows: rows}}
 }
 
 // displayRequest returns the one request every display field is built from: req

@@ -412,6 +412,37 @@ func TestCallPrettyOutputShowsStatusAndTimingWithoutResponseHeaders(t *testing.T
 	}
 }
 
+// TestThePrettyCurlLineIsByteIdenticalToTheJSONOne: pretty is the default when
+// stdout is a terminal, and its curl line is a command a human is about to
+// paste. Rendered as a table cell it goes through escapeCell, which doubles a
+// backslash and folds a tab into "\t" — correct for a cell of untrusted text,
+// and a command that is not the one talaria ran.
+func TestThePrettyCurlLineIsByteIdenticalToTheJSONOne(t *testing.T) {
+	body := `{"pattern":"a\\b","note":"x` + "\t" + `y"}`
+	args := []string{
+		"testdata/call.yaml", "createPet", "--allow-mutations",
+		"--body", body, "--base-url", "https://api.invalid/v1", "--dry-run",
+	}
+
+	code, stdout, stderr := runCall(t, append(args[:len(args):len(args)], "--output", "json")...)
+	if code != 0 {
+		t.Fatalf("call --dry-run --output json = %d, want 0; stderr: %s", code, stderr)
+	}
+	want := decodeCall(t, stdout).Request.Curl
+	if !strings.Contains(want, `a\\b`) {
+		t.Fatalf("the json curl field does not carry the body as typed: %q", want)
+	}
+
+	code, pretty, stderr := runCall(t, append(args[:len(args):len(args)], "--output", "pretty")...)
+	if code != 0 {
+		t.Fatalf("call --dry-run --output pretty = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	if !strings.Contains(pretty, want) {
+		t.Errorf("pretty output does not contain the curl command verbatim.\nwant: %q\ngot:\n%s", want, pretty)
+	}
+}
+
 func TestCallTreatsAnHTTPErrorAsASuccessfulObservation(t *testing.T) {
 	// §4: a 404 is something talaria observed, not something that went wrong.
 	srv := newCallServer(t, func(w http.ResponseWriter, _ *http.Request) {

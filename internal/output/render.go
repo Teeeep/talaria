@@ -20,10 +20,19 @@ type Table struct {
 func (t Table) Empty() bool { return len(t.Headers) == 0 && len(t.Rows) == 0 }
 
 // Payload is what a command hands to a renderer: Data is serialised by the JSON
-// renderer, Table is printed by the pretty and TSV renderers. A command fills in
-// whichever the formats it supports need.
+// renderer, Lines and Table are printed by the pretty and TSV renderers, lines
+// first. A command fills in whichever the formats it supports need.
+//
+// Lines is for text that is already a line — a curl command a human pastes into
+// a shell — and is printed verbatim, where every Table cell goes through
+// escapeCell. That is the whole distinction: escaping is right for a spec
+// summary or a recorded response body, which have to survive being cut out of a
+// row, and wrong for a command, whose doubled backslashes are no longer the
+// command talaria ran. Put untrusted text in a Table row; put a line here only
+// when this process composed it.
 type Payload struct {
 	Data  any
+	Lines []string
 	Table Table
 }
 
@@ -103,6 +112,7 @@ type tsvRenderer struct{ w io.Writer }
 // fixed column count however hostile the text inside it.
 func (r tsvRenderer) Render(p Payload) error {
 	var b strings.Builder
+	writeLines(&b, p.Lines)
 	for _, row := range p.Table.Rows {
 		b.WriteString(strings.Join(escapeRow(row), "\t"))
 		b.WriteByte('\n')
@@ -112,17 +122,38 @@ func (r tsvRenderer) Render(p Payload) error {
 	return err
 }
 
+// writeLines appends each line and its terminator, unescaped.
+func writeLines(b *strings.Builder, lines []string) {
+	for _, line := range lines {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+}
+
 type prettyRenderer struct{ w io.Writer }
 
-// Render prints a column-aligned table. A payload with no table has no human
-// shape to print, so it falls back to JSON rather than emitting nothing.
+// Render prints the payload's lines, then a column-aligned table. A payload
+// with neither has no human shape to print, so it falls back to JSON rather
+// than emitting nothing.
 //
 // Cells go through escapeCell for the same reason the TSV renderer does, and
 // one more: tabwriter reads an embedded tab as a cell terminator, so a single
 // hostile cell re-partitions the whole column block around it.
 func (r prettyRenderer) Render(p Payload) error {
-	if p.Table.Empty() {
+	if p.Table.Empty() && len(p.Lines) == 0 {
 		return jsonRenderer{w: r.w}.Render(p)
+	}
+
+	// Lines go to the writer itself, never through the tabwriter: a tab inside
+	// one would be read as a column terminator and padded, which is the same
+	// rewriting escapeCell does and the reason Lines exists.
+	var b strings.Builder
+	writeLines(&b, p.Lines)
+	if _, err := io.WriteString(r.w, b.String()); err != nil {
+		return err
+	}
+	if p.Table.Empty() {
+		return nil
 	}
 
 	tw := tabwriter.NewWriter(r.w, 0, 0, 2, ' ', 0)

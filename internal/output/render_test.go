@@ -207,6 +207,59 @@ func TestPrettyFallsBackToJSONWithoutATable(t *testing.T) {
 	}
 }
 
+// TestBothRenderersPrintALineVerbatim is the whole point of Payload.Lines: a
+// curl command is text the caller pastes into a shell, not a cell of untrusted
+// text, and escapeCell doubles the backslashes and folds the tabs of a cell.
+// Both text renderers have to agree, because either can be the default.
+func TestBothRenderersPrintALineVerbatim(t *testing.T) {
+	line := `curl -q -s -X POST --data-raw '{"p":"a\b","q":"x` + "\t" + `y"}' https://api.example.com/pets`
+
+	for _, f := range []Format{FormatPretty, FormatTSV} {
+		var out bytes.Buffer
+		if err := New(f, &out).Render(Payload{Lines: []string{line}}); err != nil {
+			t.Fatalf("%s Render returned error: %v", f, err)
+		}
+
+		if got := out.String(); got != line+"\n" {
+			t.Errorf("%s printed %q, want the line unchanged: %q", f, got, line+"\n")
+		}
+	}
+}
+
+// TestALineIsPrintedBeforeTheTable pins the order the call envelope depends on:
+// the request and the curl come first, the status summary after them.
+func TestALineIsPrintedBeforeTheTable(t *testing.T) {
+	for _, f := range []Format{FormatPretty, FormatTSV} {
+		var out bytes.Buffer
+		err := New(f, &out).Render(Payload{
+			Lines: []string{"first", "second"},
+			Table: Table{Rows: [][]string{{"third"}}},
+		})
+		if err != nil {
+			t.Fatalf("%s Render returned error: %v", f, err)
+		}
+
+		if got := out.String(); got != "first\nsecond\nthird\n" {
+			t.Errorf("%s printed %q, want lines before rows", f, got)
+		}
+	}
+}
+
+// TestPrettyPrintsLinesRatherThanFallingBackToJSON: a payload whose only human
+// shape is a line still has a human shape.
+func TestPrettyPrintsLinesRatherThanFallingBackToJSON(t *testing.T) {
+	var out bytes.Buffer
+
+	p := Payload{Data: map[string]any{"status": 200}, Lines: []string{"200 OK"}}
+	if err := New(FormatPretty, &out).Render(p); err != nil {
+		t.Fatalf("Render returned error: %v", err)
+	}
+
+	if got := out.String(); got != "200 OK\n" {
+		t.Errorf("pretty output = %q, want the line", got)
+	}
+}
+
 func TestParseFormat(t *testing.T) {
 	for _, name := range []string{"json", "pretty", "tsv"} {
 		got, err := ParseFormat(name)

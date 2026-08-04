@@ -253,6 +253,18 @@ pre-escaped text. A command that *sizes* a column measures `output.CellWidth` an
 (`cmd/talaria/list.go`) runs, so a summary of tabs doubles in width on the way out and overflows
 the line the budget was meant to bound.
 
+**A curl command is a line, not a cell, and `output.Payload.Lines` is where a line goes.** Both
+text renderers print `Lines` verbatim, before the table and — in the pretty renderer — outside
+the `tabwriter`, since a tab inside a line is a column terminator to it. That is the *only*
+exemption from `escapeCell`, and its condition is the reverse of a cell's: a `Lines` entry must
+be text this process composed, never spec- or server-derived. `callPayload`
+(`cmd/talaria/call.go`) puts the `METHOD url` line and `request.curl` there, so the command a
+human pastes is byte-identical to the JSON `curl` field — as a cell it had its body's
+backslashes doubled and its tabs folded, and pretty is the default on a terminal. Do not exempt
+one-column rows generically instead: `history show`'s single column is a recorded response body
+and must stay escaped. `TestThePrettyCurlLineIsByteIdenticalToTheJSONOne` is the agreement
+between the two surfaces; `TestBothRenderersPrintALineVerbatim` is the renderer half.
+
 **One redaction firewall per invocation.** `newRedactors(cfg)` (`cmd/talaria/record.go`, beside
 `recordCall` and `observed` — the recording plumbing `call` and `history replay` share) is called
 exactly once, in the command's `RunE`, and the `corpus.Redactors` it returns is threaded from
