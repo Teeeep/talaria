@@ -81,6 +81,18 @@ that pass — and task 6's before it — deliberately did not do, and why.
   command layer's tests are next reorganised — it is one rename plus four call sites, but it
   collides with the `call_redact_test.go` split already recorded below, so they want one pass.
 
+- `internal/corpus` takes **175s for one `-race` pass**, so task 38's own verify line
+  (`go test -race -count=20 ./internal/corpus/...`) cannot pass: twenty passes is ~58 minutes
+  against `go test`'s 10-minute per-binary default, and the run dies with a timeout panic that
+  reads exactly like a hang in whichever test it landed in. Task 38 verified by repeating the
+  lock tests alone (`-run 'TestALock|TestAnAbandoned|TestTheLock|TestAppendStopsWaiting|TestAppendRecords'`,
+  20×, 30s). The cost is concentrated: `TestAppendCapsEachSourceSeparately` is 24s of it on its
+  own, appending `maxPerSource` × 2 entries through the real `Append`, each one re-reading and
+  rewriting the store — the O(n²) that task 21 ("one pass over the history file per append")
+  exists to remove. Two things for a later pass: re-time the package after task 21 lands, and
+  make any surviving repeat-under-race verify line name its `-run` filter rather than the
+  package, so the command in the plan is one that can actually be run.
+
 ## Examined and deliberately not consolidated
 
 - The bounded-read idiom in `internal/corpus/file.go` (`readStore`) and `internal/spec/source.go`

@@ -166,6 +166,94 @@ func TestALockGrantedAfterTheWaitGaveUpIsReleased(t *testing.T) {
 	unlock()
 }
 
+// queued opens a descriptor of its own on the append lock and starts the
+// blocking flock behind whatever holds it, exactly as waitForLock does, so a
+// test can drive the abandonment with a deadline of its own instead of waiting
+// out abandonTimeout. The caller must already be holding the lock through
+// holdLock, or the flock returns immediately and there is nothing to abandon.
+func queued(t *testing.T, path string) (*os.File, <-chan error) {
+	t.Helper()
+
+	f, err := os.OpenFile(path+lockSuffix, os.O_CREATE|os.O_RDWR, fileMode)
+	if err != nil {
+		t.Fatalf("opening the lock file: %v", err)
+	}
+
+	// Resolved before the goroutine for the reason waitForLock resolves it there:
+	// the abandonment closes f on a deadline, and os.File.Fd races with Close.
+	fd := int(f.Fd())
+
+	taken := make(chan error, 1)
+	go func() { taken <- syscall.Flock(fd, syscall.LOCK_EX) }()
+
+	return f, taken
+}
+
+// ran reports whether an abandonment returned within waitSlack, and fails the
+// test if it did not: an abandonment that never returns is the unbounded wait
+// these tests exist for, and asserting on it inline would hang the package
+// rather than fail it.
+func ran(t *testing.T, f *os.File, taken <-chan error, timeout time.Duration) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		abandonWith(f, taken, timeout)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(waitSlack):
+		t.Fatalf("the abandonment was still waiting %s after giving up on a lock that never arrives", waitSlack)
+	}
+}
+
+// A wait that gave up on a lock nobody will ever release still holds a
+// descriptor on the lock file. The flock queued behind the holder cannot be
+// cancelled — closing the descriptor does not wake it — so the goroutine stays
+// parked, but the descriptor is this process's to drop, and a long-lived
+// embedder that appends on a schedule would otherwise accumulate one per
+// abandoned wait until it ran out of them.
+func TestAnAbandonedWaitDropsItsDescriptorWhenTheLockNeverArrives(t *testing.T) {
+	_, path := newStore(t)
+	holdLock(t, path)
+
+	f, taken := queued(t, path)
+	ran(t, f, taken, testTimeout)
+
+	// Asserted through the *os.File rather than by stat-ing the raw descriptor:
+	// the number is free for reuse the moment it is closed, and a second Close
+	// answers the question without racing whatever took it.
+	if err := f.Close(); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("closing the abandoned descriptor again = %v, want %v — it was still open", err, os.ErrClosed)
+	}
+}
+
+// Dropping the descriptor early is only safe if a lock granted afterwards is not
+// one this process keeps: the flock is still queued on the open file
+// description, and what has to be true is that the grant does not outlive the
+// syscall that was waiting for it. This is the same guarantee
+// TestALockGrantedAfterTheWaitGaveUpIsReleased asserts for the descriptor that
+// was still open, on the path where it is not.
+func TestALockGrantedOnADroppedDescriptorIsNotHeld(t *testing.T) {
+	_, path := newStore(t)
+	release := holdLock(t, path)
+
+	f, taken := queued(t, path)
+	ran(t, f, taken, testTimeout)
+
+	// The abandoned flock is now the only thing queued on the lock, and the
+	// descriptor it will be granted on is closed. Releasing hands it the lock.
+	release()
+
+	unlock, err, _ := awaited(t, context.Background(), path, waitSlack)
+	if err != nil {
+		t.Fatalf("taking the lock after a grant on a dropped descriptor: %v", err)
+	}
+	unlock()
+}
+
 func TestAppendStopsWaitingWhenTheContextIsCancelled(t *testing.T) {
 	store, path := newStore(t)
 	holdLock(t, path)

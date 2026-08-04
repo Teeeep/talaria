@@ -25,6 +25,10 @@ import (
 // not that it is busy — and a human has the faster way out either way.
 const lockTimeout = time.Minute
 
+// abandonTimeout bounds the second wait: how long a wait that already gave up
+// keeps its descriptor open hoping the flock it queued will still be granted.
+const abandonTimeout = time.Minute
+
 // lock takes the exclusive advisory lock covering the history file at path and
 // returns the call that releases it.
 //
@@ -98,13 +102,19 @@ func lockWith(ctx context.Context, path string, timeout time.Duration) (func(), 
 // during ordinary contention.
 //
 // A wait that gave up may still be granted the lock afterwards, so the descriptor
-// is handed to a goroutine that closes it — releasing the lock — when the flock
-// finally returns. The channel is buffered so neither goroutine can be left
-// blocked on the send, and the caller is a process on its way to reporting a
-// failure.
+// is handed to abandon, which closes it — releasing the lock — when the flock
+// returns or when abandonTimeout expires, whichever comes first. The channel is
+// buffered so neither goroutine can be left blocked on the send, and the caller
+// is a process on its way to reporting a failure.
 func waitForLock(ctx context.Context, f *os.File, timeout time.Duration) error {
+	// The descriptor is resolved here rather than inside the goroutine: abandon
+	// closes f on a deadline now, and os.File.Fd reads the state Close writes, so
+	// leaving the call in the goroutine is a data race the race detector sees.
+	// The blocking flock only ever needs the number.
+	fd := int(f.Fd())
+
 	taken := make(chan error, 1)
-	go func() { taken <- syscall.Flock(int(f.Fd()), syscall.LOCK_EX) }()
+	go func() { taken <- syscall.Flock(fd, syscall.LOCK_EX) }()
 
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
@@ -128,7 +138,36 @@ func waitForLock(ctx context.Context, f *os.File, timeout time.Duration) error {
 // abandon waits out a flock nothing is listening for any more and drops the
 // descriptor, so a lock granted after the wait gave up is not one this process
 // holds until it exits.
+//
+// The wait itself is bounded, because the flock may be granted late, at exit, or
+// never: a holder that is wedged for good leaves this queued behind it forever,
+// and a long-lived embedder appending on a schedule would accumulate one
+// descriptor per abandoned wait until it ran out of them. Past abandonTimeout
+// the descriptor is dropped anyway —
+// TestALockGrantedOnADroppedDescriptorIsNotHeld is why that is safe: the flock
+// is still queued on the open file description, and the grant does not outlive
+// the syscall that was waiting for it, so a later grant releases as immediately
+// as the timely one does.
+//
+// What is not reclaimed is the goroutine. A flock already in progress cannot be
+// cancelled — closing the descriptor does not wake it, and SA_RESTART means a
+// signal will not either — so it stays parked until the kernel answers. That
+// costs a stack rather than a descriptor, and nothing this package can write
+// makes it shorter.
 func abandon(f *os.File, taken <-chan error) {
-	<-taken
+	abandonWith(f, taken, abandonTimeout)
+}
+
+// abandonWith is abandon with the deadline named rather than defaulted, exactly
+// as lockWith is to lock: a test watches the second wait give up without waiting
+// out abandonTimeout to see it.
+func abandonWith(f *os.File, taken <-chan error, timeout time.Duration) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	select {
+	case <-taken:
+	case <-deadline.C:
+	}
 	f.Close() //nolint:errcheck // Closing is what releases the lock; there is nobody left to report to.
 }

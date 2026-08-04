@@ -338,7 +338,19 @@ in front of it turns every Ctrl-C into a lost entry for a call that was actually
 *wait* is cancellable, and a wait that gave up hands its descriptor to `abandon`, which closes it
 when the flock finally returns — a lock granted after the give-up that nothing closed would be
 held by this process for the rest of its life, having already reported it could not be taken.
-Do not poll `LOCK_NB` against a sleep instead: it is unfair in exactly this store's shape, where a
+**`abandon` is itself a wait, so it has the second way out too**: past `abandonTimeout` the
+descriptor is dropped whether or not the flock was ever granted, because a holder wedged for good
+leaves it queued forever and a long-lived embedder — the twin — would accumulate one descriptor
+per abandoned wait. Dropping it early is safe because the flock stays queued on the *open file
+description*, so a late grant does not outlive the syscall waiting for it
+(`TestALockGrantedOnADroppedDescriptorIsNotHeld` is that claim, and
+`TestALockGrantedAfterTheWaitGaveUpIsReleased` the same one on the timely path). What is *not*
+reclaimed is the goroutine: a flock in progress cannot be cancelled, so it stays parked until the
+kernel answers, and no bound this package writes makes that shorter — scope the claim to the
+descriptor. Because `abandon` now closes on a deadline rather than after `<-taken`, `waitForLock`
+resolves `f.Fd()` *before* starting the goroutine and the goroutine flocks the bare int:
+`os.File.Fd` reads the state `Close` writes, and leaving the call inside is a data race `-race`
+sees. Do not poll `LOCK_NB` against a sleep instead: it is unfair in exactly this store's shape, where a
 writer appending in a loop re-takes the lock while every other waiter is mid-sleep, and the
 starved one then hits the deadline during ordinary contention. `lockTimeout` is a minute because
 a legitimate holder can be slow — one append over a store at `maxStoreBytes` reads it, rewrites it
@@ -346,7 +358,9 @@ and scans it again — so reaching it means the holder is not making progress ra
 busy; the give-up costs a `recordCall` warning on stderr, never a silent loss
 (`cmd/talaria/record_test.go`). The seam that keeps that minute out of the suite's runtime is
 `lockWith(ctx, path, timeout)`, exactly as `preflightWith` names `preflightTimeout`: the deadline
-cases drive `lockWith` with 300ms and the Append-level tests assert only the wiring.
+cases drive `lockWith` with 300ms and the Append-level tests assert only the wiring. `abandonWith`
+is the same seam one level down, and the tests reach it through `queued`, which queues a blocking
+flock behind `holdLock` exactly as `waitForLock` does.
 
 **The version preflight is a subprocess like any other, and gets the same three bounds.**
 `preflight(ctx, path)` (`internal/curl/version.go`) execs `curl --version` before talaria has done
