@@ -377,22 +377,28 @@ func runHistoryKeepingSpecEnv(t *testing.T, keep bool, args ...string) (int, str
 // replayed: sending the marker is a login attempt whose password is the literal
 // text `<redacted>`.
 func TestHistoryReplayRefusesABodyStillCarryingARedactionMarker(t *testing.T) {
-	isolateHistory(t)
-	srv := newCallServer(t, jsonPet)
+	for _, body := range []string{
+		`{"refresh_token":"<redacted>"}`,
+		// The spelling entries recorded before the escaping was fixed hold, which
+		// is what the store held for every entry this branch ever wrote.
+		`{"refresh_token":"\u003credacted\u003e"}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			isolateHistory(t)
+			srv := newCallServer(t, jsonPet)
 
-	entry := seedEntry(corpus.SourceCall, time.Minute, "createPet", "POST", srv.URL+"/pets", 0)
-	entry.Request.Body = &corpus.Body{
-		ContentType: "application/json",
-		Data:        `{"refresh_token":"<redacted>"}`,
-	}
-	seedHistory(t, entry)
+			entry := seedEntry(corpus.SourceCall, time.Minute, "createPet", "POST", srv.URL+"/pets", 0)
+			entry.Request.Body = &corpus.Body{ContentType: "application/json", Data: body}
+			seedHistory(t, entry)
 
-	code, _, stderr := runReplay(t, srv, "1", "--allow-mutations")
-	if code != 2 {
-		t.Fatalf("replay of a redacted body = %d, want 2; stderr: %s", code, stderr)
-	}
-	if rec := srv.received(); rec.Method != "" {
-		t.Errorf("the refused replay still reached the server: %+v", rec)
+			code, _, stderr := runReplay(t, srv, "1", "--allow-mutations")
+			if code != 2 {
+				t.Fatalf("replay of a redacted body = %d, want 2; stderr: %s", code, stderr)
+			}
+			if rec := srv.received(); rec.Method != "" {
+				t.Errorf("the refused replay still reached the server: %+v", rec)
+			}
+		})
 	}
 }
 

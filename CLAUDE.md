@@ -298,6 +298,23 @@ one-column rows generically instead: `history show`'s single column is a recorde
 and must stay escaped. `TestThePrettyCurlLineIsByteIdenticalToTheJSONOne` is the agreement
 between the two surfaces; `TestBothRenderersPrintALineVerbatim` is the renderer half.
 
+**The redaction marker is matched as text, so it is written as text.**
+`secret.Placeholder` is `<redacted>`, and `corpus.Entry.Replay` refuses a stored value
+containing it — a string comparison across two packages, which is the only kind available once
+the value is bytes in a file. `ResponseRedactor.Body` therefore re-encodes through a
+`json.Encoder` with `SetEscapeHTML(false)` (`encodeDocument`, `internal/secret/response.go`),
+never `json.Marshal`: the default escaping writes `\u003credacted\u003e`, which the guard cannot
+see, so a recorded `refresh_token` position replayed as its own placeholder and the API answered
+401 with nothing on stderr. It is also the spelling `request.body`, the emitted curl and
+`history show` each print, so one escape made four surfaces disagree about the same field.
+`carriesRedactionMark` (`internal/corpus/replay.go`) matches the escaped form too, permanently:
+every entry written before the fix holds it, and a store is read back by whatever talaria is
+installed later. `TestARedactedBodySpellsTheMarkerAsItself` is the write side and
+`TestAStoredRedactionMarkerStillStopsAReplay` the round trip — the latter goes
+`NewEntry` → `Append` → `Read` → `Replay`, because a hand-written `corpus.Body` holds the
+unescaped spelling and passes against the defect. Any new writer of a redacted body encodes with
+escaping off, and any new reader asks `carriesRedactionMark` rather than spelling the constant.
+
 **One redaction firewall per invocation.** `newRedactors(cfg)` (`cmd/talaria/record.go`, beside
 `recordCall` and `observed` — the recording plumbing `call` and `history replay` share) is called
 exactly once, in the command's `RunE`, and the `corpus.Redactors` it returns is threaded from

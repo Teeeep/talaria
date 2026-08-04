@@ -18,6 +18,20 @@ import (
 // saying one was removed — so replaying it would send the note itself.
 const redactionMark = "<redacted"
 
+// escapedRedactionMark is the same opening as encoding/json's HTML escaping
+// spelled it. Nothing writes it any more — secret.ResponseRedactor.Body encodes
+// with escaping off — but every entry recorded before that fix holds this form,
+// and a stored body is read back by whatever talaria is installed later. A
+// marker the guard cannot see is a credential position replayed as its own
+// placeholder.
+const escapedRedactionMark = `\u003credacted`
+
+// carriesRedactionMark reports whether a stored value stands where a credential
+// was removed, in either spelling the store has ever held.
+func carriesRedactionMark(value string) bool {
+	return strings.Contains(value, redactionMark) || strings.Contains(value, escapedRedactionMark)
+}
+
 // builtinCredentialNames is §5a's non-configurable list of names that carry a
 // credential — Authorization, Cookie, *api*key*, *token*, *secret*. A recorded
 // field under one of those names is dropped on replay whatever it holds:
@@ -143,7 +157,7 @@ func (r *Replayable) cookies(declared map[string]string, stored map[string]strin
 // credential stood, and the second is a position config.Resolve owns.
 func (r *Replayable) take(declared map[string]string, kind, in, name, value string, flags *[]string) {
 	switch {
-	case strings.Contains(value, redactionMark), builtinCredentialNames.IsSensitive(name):
+	case carriesRedactionMark(value), builtinCredentialNames.IsSensitive(name):
 	case declared[name] == in:
 		r.Params = append(r.Params, name+"="+value)
 		return
@@ -177,7 +191,7 @@ func (r *Replayable) body(body *Body) error {
 	// marker rather than a value. Sending the marker is worse than not sending
 	// the request: the API sees a login attempt whose password is the literal
 	// text `<redacted>`, and the caller sees a 401 with no explanation.
-	if strings.Contains(string(data), redactionMark) {
+	if carriesRedactionMark(string(data)) {
 		return clierr.Usage(
 			"the recorded request body still carries a redaction marker where a credential stood, " +
 				"so it cannot be replayed; re-run the original call instead")

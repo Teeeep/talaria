@@ -116,14 +116,28 @@ func (r *ResponseRedactor) Body(body []byte) []byte {
 		return body
 	}
 
-	out, err := json.Marshal(doc)
-	if err != nil {
-		// Unreachable for a document that just decoded, but the alternative to
-		// returning the original here is returning nothing at all.
+	return encodeDocument(doc, body)
+}
+
+// encodeDocument re-encodes a redacted document, falling back to the original
+// bytes for the encoding error a document that just decoded cannot produce —
+// the alternative there is returning nothing at all.
+//
+// HTML escaping is off. encoding/json's default writes Placeholder as
+// `\u003credacted\u003e`, which is a spelling nothing downstream matches: the
+// marker is compared as text by corpus.Entry.Replay, so an escaped one meant
+// the replay guard could never fire, and `request.body`, the emitted curl and
+// `history show` each showed the marker in a form the others did not.
+func encodeDocument(doc any, body []byte) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(doc); err != nil {
 		return body
 	}
 
-	return out
+	// Encode writes a trailing newline the input did not have.
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 }
 
 // headerRedactor returns the header matcher, treating a nil receiver as the

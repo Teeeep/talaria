@@ -204,6 +204,30 @@ func TestBodyOfAMissingPathIsANoOp(t *testing.T) {
 	}
 }
 
+// The marker has to survive re-encoding as the text every other surface spells
+// it, because it is matched as text downstream: internal/corpus refuses to
+// replay a stored body containing `<redacted`, and encoding/json's default
+// HTML escaping writes `<redacted>` instead — a spelling that guard
+// never sees. `request.body`, the emitted curl and `history show` all print
+// whatever this returns, so one escape makes four surfaces disagree.
+//
+// escapedMark is what encoding/json writes for the marker's first byte with
+// HTML escaping left on, spelled here as the text it lands in the store as.
+const escapedMark = `\u003credacted`
+
+func TestARedactedBodySpellsTheMarkerAsItself(t *testing.T) {
+	red := NewResponseRedactor(nil, nil)
+
+	got := string(red.Body([]byte(`{"refresh_token":"` + responseCanary + `"}`)))
+
+	if want := `{"refresh_token":"` + Placeholder + `"}`; got != want {
+		t.Errorf("Body = %s, want %s", got, want)
+	}
+	if strings.Contains(got, escapedMark) {
+		t.Errorf("the marker came back HTML-escaped: %s", got)
+	}
+}
+
 func TestBodySkipsNonJSONBodies(t *testing.T) {
 	red := NewResponseRedactor(nil, []string{"access_token"})
 

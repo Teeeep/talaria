@@ -2,6 +2,7 @@ package corpus
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"slices"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/operation"
+	"github.com/Teeeep/talaria/internal/request"
 )
 
 // getPet is the operation these tests replay against: one path parameter, one
@@ -245,6 +247,9 @@ func TestReplayRefusesABodyStillCarryingARedactionMarker(t *testing.T) {
 	for _, body := range []string{
 		`{"refresh_token":"<redacted>"}`,
 		`{"token":"<redacted:env:TALARIA_AUTH_BEARER>"}`,
+		// The spelling entries written before the escaping was fixed hold. They
+		// are on disk already, so the guard has to keep seeing them.
+		`{"refresh_token":"\u003credacted\u003e"}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			entry := replayEntry("https://api.example.com/pets/42")
@@ -254,6 +259,49 @@ func TestReplayRefusesABodyStillCarryingARedactionMarker(t *testing.T) {
 			wantUsage(t, err, "a body carrying a redaction marker")
 		})
 	}
+}
+
+// The guard above is only worth having if the spelling it looks for is the one
+// the store actually holds, and a hand-written Body is not evidence of that:
+// this goes NewEntry -> Append -> Read -> Replay, so the marker is whatever the
+// redactor wrote and whatever encodeLine round-tripped. The defect it fails on
+// is encoding/json's HTML escaping, which stores `\u003credacted\u003e` and
+// leaves the guard matching nothing it will ever see.
+func TestAStoredRedactionMarkerStillStopsAReplay(t *testing.T) {
+	store, _ := newStore(t)
+
+	req := &request.Request{
+		OperationID: "getPet",
+		Method:      "GET",
+		BaseURL:     "https://api.example.com",
+		Path:        "/pets/42",
+		Body: &request.Body{
+			ContentType: "application/json",
+			Data:        []byte(`{"refresh_token":"` + canary + `","name":"fido"}`),
+		},
+	}
+	if err := store.Append(context.Background(), NewEntry(SourceCall, req, nil, Redactors{})); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	entries, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("read %d entries, want 1", len(entries))
+	}
+
+	stored := entries[0].Request.Body
+	if stored == nil {
+		t.Fatal("the stored entry has no request body")
+	}
+	if strings.Contains(stored.Data, canary) {
+		t.Fatalf("the credential itself reached the store: %s", stored.Data)
+	}
+
+	_, err = entries[0].Replay(getPet())
+	wantUsage(t, err, "a stored body whose credential position was redacted")
 }
 
 // An empty recorded body is a body, and a missing one is not. Collapsing the

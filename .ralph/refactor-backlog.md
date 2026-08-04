@@ -221,3 +221,9 @@ that pass — and task 6's before it — deliberately did not do, and why.
   line-bound write side (`shorten`, `halfOf`, `halveBodies`, `encodeLine`). The seam is the write
   side into an `encode_test.go` — `file.go` itself divides on the same line, everything from
   `encodeLine` down being about fitting one entry rather than about the file.
+
+- `cmd/talaria/history_replay_test.go` is 559 lines and covers two subjects: what a stored entry
+  may contribute to a re-issued call (hosts, credential positions, redaction markers, mutation
+  gating) and the mechanics of the replay envelope itself (validation block, recorded body
+  reference, ids across two replays). The seam is the first group into a
+  `history_replay_guard_test.go`, which is where the next hostile-entry case will want to land.
