@@ -76,9 +76,16 @@ func inlinable(data []byte) bool {
 }
 
 // discard zeroes the document's buffer and empties it, so a failure part-way
-// through leaves nothing a caller could send or print and nothing a resolved
-// credential could still be read out of. The whole capacity is cleared, not the
-// current length: the bytes past len are the ones the last append walked over.
+// through leaves nothing in it a caller could send or print. The whole capacity
+// is cleared, not the current length: the bytes past len are the ones the last
+// append walked over. Together with grow, which clears each array the buffer
+// outgrows, this covers every array the document allocated.
+//
+// It does not cover every copy of the credential in the process, and no comment
+// here should be read as claiming otherwise. The string os.Getenv hands back is
+// immutable and lives until the collector reclaims it, as does any copy an
+// escaper is forced to make; what this package zeroes is what it can address,
+// which is these arrays and the one it hands to the caller.
 func (d *document) discard() {
 	clear(d.b[:cap(d.b)])
 	d.b = d.b[:0]

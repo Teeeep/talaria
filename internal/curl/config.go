@@ -258,12 +258,19 @@ func (d *document) auth(req *request.Request) error {
 
 // cookies writes every cookie as one directive. curl keeps only the last of
 // several, so they are joined rather than repeated.
+//
+// The joining happens in d.b, one piece at a time, rather than in a
+// strings.Builder handed to directive: a cookie value can be a resolved
+// credential, and Builder.String aliases the builder's array into an immutable
+// string — a second copy, in the one kind of buffer this package can neither
+// address nor zero. Escaping per piece is the same as escaping the join,
+// because none of `;`, ` ` or `=` is a character configEscape touches.
 func (d *document) cookies(req *request.Request) error {
 	if len(req.Cookies) == 0 {
 		return nil
 	}
 
-	var b strings.Builder
+	d.write(`cookie = "`)
 	for i, c := range req.Cookies {
 		value, err := resolve(c.Value)
 		if err != nil {
@@ -275,12 +282,13 @@ func (d *document) cookies(req *request.Request) error {
 		}
 
 		if i > 0 {
-			b.WriteString("; ")
+			d.write("; ")
 		}
-		b.WriteString(c.Name + "=" + value)
+		d.write(escapeDirective(c.Name))
+		d.write("=")
+		d.write(escapeDirective(value))
 	}
-
-	d.directive("cookie", b.String())
+	d.write("\"\n")
 
 	return nil
 }
@@ -362,12 +370,58 @@ func seconds(d time.Duration) string {
 }
 
 // directive writes one `name = "value"` line, escaped for curl's parser.
+//
+// Written in four pieces rather than as one concatenation because a concatenated
+// `name + ` = "` + value + …` is a new Go string holding the resolved
+// credential, and a string is exactly what this package cannot zero. What
+// escapeDirective returns is the same hazard, and is avoided the same way: its
+// replacer hands back the value unchanged when nothing needs escaping, which a
+// credential almost never does.
 func (d *document) directive(name, value string) {
-	d.b = append(d.b, name+` = "`+escapeDirective(value)+"\"\n"...)
+	d.write(name)
+	d.write(` = "`)
+	d.write(escapeDirective(value))
+	d.write("\"\n")
 }
 
 // flag writes one bare directive, the config form of a boolean option.
-func (d *document) flag(name string) { d.b = append(d.b, name+"\n"...) }
+func (d *document) flag(name string) {
+	d.write(name)
+	d.write("\n")
+}
+
+// write appends s to the document's buffer, growing it first so that append
+// never reallocates on its own.
+func (d *document) write(s string) {
+	d.grow(len(s))
+	d.b = append(d.b, s...)
+}
+
+// grow makes room for n more bytes, zeroing the array it leaves behind.
+//
+// This is the half discard() cannot do. append reallocates by allocating,
+// copying and dropping the old array — with whatever resolved credential had
+// been written into it still there, in memory nothing holds a reference to and
+// so nothing can clear. A minimal request reallocates five times, and each
+// abandoned array holds the prefix of the document written so far, credential
+// included. Zeroing on the way past is the only moment the reference still
+// exists.
+func (d *document) grow(n int) {
+	if cap(d.b)-len(d.b) >= n {
+		return
+	}
+
+	old := d.b
+	size := 2 * cap(old)
+	if need := len(old) + n; size < need {
+		size = need
+	}
+
+	b := make([]byte, len(old), size)
+	copy(b, old)
+	clear(old[:cap(old)])
+	d.b = b
+}
 
 // configEscape covers the escape sequences curl's config parser understands, in
 // the order a single pass must apply them. strings.Replacer scans once and

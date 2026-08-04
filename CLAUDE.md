@@ -80,9 +80,27 @@ the bytes past `len` are what the last append walked over — and it runs on bot
 `clear(config)`, so cleanup is idempotent and non-nil even when the build fails. The seam the
 tests use is `buildDocument`, which hands back the `*document` so `owned(doc)` can assert on the
 builder's own array rather than the copy — assert only on the returned `config` and the defect
-passes. Never introduce another accumulator for credential-bearing text without the same
-property, and do not claim scrubbing of anything downstream of the return: curl's stdin is
-outside what this package can reach.
+passes.
+
+Owning the buffer is not enough, because `append` does not keep it. Every write goes through
+`write` → `grow`, which reallocates *and clears the array it abandons* before dropping the last
+reference to it: plain `append` left five readable copies of the document prefix on a minimal
+request, credential included, in memory `discard()` could no longer reach. `owned(doc)` is blind
+to exactly that, so `TestBuildZeroesTheArrayItAbandonsWhenTheBufferGrows` seeds a `document`
+with a capacity ending where the credential's directive ends — the credential lands in an array
+the *test* holds, and the directives after it force the abandonment. Its precondition is
+positional rather than a read of the array, since a correct `grow` has already cleared it.
+`document.cookies` joins into `d.b` a piece at a time for the same reason, and `directive`
+writes its four pieces separately rather than concatenating: a concatenation, and the copy
+`escapeDirective` makes when it must, are strings nothing can zero. `configEscape`'s olds are
+all single bytes so the replacer returns its argument untouched when there is nothing to escape
+— `TestEscapingAValueNeedingNoEscapeDoesNotCopyIt` is what keeps that true.
+
+Never introduce another accumulator for credential-bearing text without both properties. And
+scope the claim when you write it down: what is scrubbed is the arrays this package allocated
+plus the copy it returns. `os.Getenv`'s own string is immutable and outlives the call, and
+curl's stdin is downstream of the return — neither is reachable, and a comment implying
+otherwise is the unenforced-invariant class the house rules forbid.
 
 **A server URL is a template.** `servers[].url` carries `{name}` spans filled from
 `servers[].variables`, and §5a defines the allowed host set as the servers *after*

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/Teeeep/talaria/internal/clierr"
 	"github.com/Teeeep/talaria/internal/request"
@@ -60,31 +61,176 @@ func TestBuildConfigMissingCredentialIsExitCodeFive(t *testing.T) {
 // owned is the whole array the document wrote into, not the slice it currently
 // presents. Zeroing that a caller cannot see is the point: the defect this
 // guards against scrubbed the copy handed back and left the original readable.
+//
+// It can only ever see the array the document ended on. The arrays abandoned on
+// the way there are TestBuildZeroesTheArrayItAbandonsWhenTheBufferGrows.
 func owned(d *document) []byte { return d.b[:cap(d.b)] }
 
+// cookieReq is a GET whose credential goes in a cookie: the other place in the
+// document a resolved credential is written, and the one the builder assembles
+// by joining several values into a single directive. The secret is last so the
+// directive ends with it.
+func cookieReq() *request.Request {
+	return &request.Request{
+		OperationID: "getPet",
+		Method:      "GET",
+		BaseURL:     "https://api.example.com/v1",
+		Path:        "/pets/42",
+		Cookies: []request.Pair{
+			{Name: "flavour", Value: request.Literal("salty")},
+			{Name: "session", Value: request.Secret(secret.Env("TALARIA_AUTH_APIKEY"), request.EncodeRaw)},
+		},
+	}
+}
+
+// twoCookieReq is cookieReq with a second credential, so the joined directive
+// carries more than one.
+func twoCookieReq() *request.Request {
+	req := cookieReq()
+	req.Cookies = append(req.Cookies, request.Pair{
+		Name:  "sso",
+		Value: request.Secret(secret.Env("TALARIA_AUTH_SSO"), request.EncodeRaw),
+	})
+
+	return req
+}
+
+// longCanary is a token several times the size of the buffer it is written
+// into, so its own directive forces the reallocation rather than the ones after
+// it. It contains canary at both ends, which is what lets every assertion below
+// search for canary alone.
+var longCanary = canary + strings.Repeat("-x", 4096) + canary
+
+// credentialShapes are the ways a resolved credential reaches the document,
+// hostile sizes and counts included. Every value contains canary, and last is
+// the one whose text ends its directive — which is where a test that sizes a
+// buffer to the credential has to measure to.
+var credentialShapes = []struct {
+	name string
+	env  map[string]string
+	last string
+	req  func() *request.Request
+}{
+	{
+		name: "bearer header",
+		env:  map[string]string{"TALARIA_AUTH_BEARER": canary},
+		last: canary,
+		req:  bearerReq,
+	},
+	{
+		name: "cookie",
+		env:  map[string]string{"TALARIA_AUTH_APIKEY": canary},
+		last: canary,
+		req:  cookieReq,
+	},
+	{
+		name: "two cookie credentials in one directive",
+		env: map[string]string{
+			"TALARIA_AUTH_APIKEY": canary,
+			"TALARIA_AUTH_SSO":    canary + "-sso",
+		},
+		last: canary + "-sso",
+		req:  twoCookieReq,
+	},
+	{
+		name: "a bearer token far larger than the buffer",
+		env:  map[string]string{"TALARIA_AUTH_BEARER": longCanary},
+		last: longCanary,
+		req:  bearerReq,
+	},
+}
+
+// setenv installs a case's credentials for the duration of the test.
+func setenv(t *testing.T, env map[string]string) {
+	t.Helper()
+	for name, value := range env {
+		t.Setenv(name, value)
+	}
+}
+
 func TestBuildConfigCleanupZeroesTheDocument(t *testing.T) {
-	t.Setenv("TALARIA_AUTH_BEARER", canary)
+	for _, tc := range credentialShapes {
+		t.Run(tc.name, func(t *testing.T) {
+			setenv(t, tc.env)
 
-	doc, config, cleanup, err := buildDocument(bearerReq(), Capture{}, DefaultOptions())
-	if err != nil {
-		t.Fatalf("buildDocument() error = %v", err)
-	}
-	if !bytes.Contains(config, []byte(canary)) {
-		t.Fatal("the document never carried the credential, so this test proves nothing")
-	}
-	// Zeroed at the copy-out rather than at cleanup: the shorter the window in
-	// which two readable copies exist, the better.
-	if bytes.Contains(owned(doc), []byte(canary)) {
-		t.Error("the builder's own buffer still holds the credential after the copy out")
-	}
+			doc, config, cleanup, err := buildDocument(tc.req(), Capture{}, DefaultOptions())
+			if err != nil {
+				t.Fatalf("buildDocument() error = %v", err)
+			}
+			if !bytes.Contains(config, []byte(canary)) {
+				t.Fatal("the document never carried the credential, so this test proves nothing")
+			}
+			// Zeroed at the copy-out rather than at cleanup: the shorter the window in
+			// which two readable copies exist, the better.
+			if bytes.Contains(owned(doc), []byte(canary)) {
+				t.Error("the builder's own buffer still holds the credential after the copy out")
+			}
 
-	cleanup()
+			cleanup()
 
-	if bytes.Contains(config, []byte(canary)) {
-		t.Error("cleanup left the resolved credential in the config buffer")
+			if bytes.Contains(config, []byte(canary)) {
+				t.Error("cleanup left the resolved credential in the config buffer")
+			}
+			if bytes.Contains(owned(doc), []byte(canary)) {
+				t.Error("cleanup left the resolved credential in the document's own buffer")
+			}
+		})
 	}
-	if bytes.Contains(owned(doc), []byte(canary)) {
-		t.Error("cleanup left the resolved credential in the document's own buffer")
+}
+
+// TestBuildZeroesTheArrayItAbandonsWhenTheBufferGrows is the half owned() is
+// blind to. A buffer that grows by plain append allocates, copies and drops the
+// old array with the resolved credential still in it: discard() then scrubs the
+// surviving array while several earlier ones stay readable for as long as the
+// collector leaves them alone. A minimal request reallocates five times.
+//
+// The seeded capacity stops exactly where the credential's directive ends, so
+// that directive lands in the seeded array and the ones after it do not fit —
+// which is the abandonment, made deterministic. The precondition is positional
+// rather than a read of the array afterwards, because a build that zeroes what
+// it abandons has already cleared it by the time the test could look.
+func TestBuildZeroesTheArrayItAbandonsWhenTheBufferGrows(t *testing.T) {
+	for _, tc := range credentialShapes {
+		t.Run(tc.name, func(t *testing.T) {
+			setenv(t, tc.env)
+
+			_, config, cleanup, err := buildDocument(tc.req(), Capture{}, DefaultOptions())
+			if err != nil {
+				t.Fatalf("buildDocument() error = %v", err)
+			}
+			at := bytes.Index(config, []byte(tc.last))
+			if at < 0 {
+				t.Fatalf("the document never carried the credential:\n%s", config)
+			}
+			// The last credential is the last thing on its line, so its directive
+			// ends two bytes later: the closing quote and the newline.
+			end, full := at+len(tc.last)+2, len(config)
+			cleanup()
+
+			seed := make([]byte, 0, end)
+			held := seed[:cap(seed)]
+
+			d := &document{b: seed}
+			if err := d.build(tc.req(), Capture{}, DefaultOptions()); err != nil {
+				t.Fatalf("build() error = %v", err)
+			}
+			t.Cleanup(d.cleanup)
+
+			if full <= cap(seed) || cap(d.b) <= cap(seed) {
+				t.Fatalf("the document (%d bytes) never outgrew the seeded array (cap %d), "+
+					"so nothing was abandoned and this test proves nothing", full, cap(seed))
+			}
+
+			d.cleanup()
+			d.discard()
+
+			if bytes.Contains(held, []byte(canary)) {
+				t.Error("the array the buffer outgrew still holds a resolved credential")
+			}
+			if bytes.Contains(owned(d), []byte(canary)) {
+				t.Error("discard left a resolved credential in the surviving array")
+			}
+		})
 	}
 }
 
@@ -135,6 +281,26 @@ func TestBuildConfigCleanupIsSafeToCallTwice(t *testing.T) {
 
 	if bytes.Contains(config, []byte(canary)) || bytes.Contains(owned(doc), []byte(canary)) {
 		t.Error("the credential survived two cleanups")
+	}
+}
+
+// TestEscapingAValueNeedingNoEscapeDoesNotCopyIt holds the reasoning in
+// document.directive honest. The escaped value is written as its own piece so
+// that no concatenation carrying the credential is built, which only helps if
+// the escaper itself does not copy: configEscape's olds are all single bytes,
+// so strings.NewReplacer returns a byteStringReplacer, which returns the string
+// it was given when nothing in it matched. Give it a multi-byte old and it
+// becomes a generic replacer that allocates on every call, credential included.
+func TestEscapingAValueNeedingNoEscapeDoesNotCopyIt(t *testing.T) {
+	value := canary
+
+	if got := escapeDirective(value); unsafe.StringData(got) != unsafe.StringData(value) {
+		t.Error("escapeDirective copied a value that needed no escaping, into a string " +
+			"nothing can zero")
+	}
+	// The other half: a value that does need escaping is a copy, necessarily.
+	if got := escapeDirective(`a"b`); got != `a\"b` {
+		t.Errorf("escapeDirective(`a\"b`) = %q, want %q", got, `a\"b`)
 	}
 }
 

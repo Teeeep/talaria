@@ -117,3 +117,12 @@ that pass — and task 6's before it — deliberately did not do, and why.
   surfaces). Task 26 added ~150 lines to the second half and `writeRedactConfig` is the only
   shared helper. The seam is `call_body_redact_test.go` for the request-body cases, leaving the
   response cases and the helper where they are.
+
+- `internal/curl/config.go` (439 lines) — one file now holds both the *shape* of the document
+  (`build`, `auth`, `cookies`, `body`, `tempFile`) and the *buffer mechanics* under it
+  (`directive`, `flag`, `write`, `grow`, `escapeDirective`), which task 28 grew by ~45 lines
+  because zeroing an abandoned array is a property of the buffer, not of any directive. The
+  seam is a `document.go` for the buffer half — `write`/`grow`/`directive`/`flag`/`configEscape`
+  and the `document` type itself — beside `firewall.go`, which already owns `discard()`, the
+  other end of the same invariant. Splitting it would put the whole "what can this package
+  zero" story in two adjacent files instead of three.
