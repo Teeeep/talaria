@@ -143,6 +143,23 @@ a validation failure, not a missing credential. Verified unused as of v0.5.
 The sudoers snippet, what it does and does not protect, and how to verify it with `doctor`. This
 is documentation, not installation.
 
+### 6. Deferred from phase 2a: break `corpus → request → config`
+
+Phase 2a's task 30 (review cycle 2, finding 5) found that the rule *"`internal/corpus` may not
+import `internal/config`"* was false as written the day it was written: `go list -deps
+./internal/corpus` reaches `config` through `request`, which needs `config.Credential`, `Kind`,
+`Profile` and `Resolve` to build an authenticated request. The human decision on 2026-08-04 was to
+narrow the enforced rule to the *direct* import — that is the `forbiddenDirect` field on
+`internal/e2e/boundary_test.go`'s `boundaries` table — and to leave the transitive edge to this
+phase, because removing it is a package split rather than an import edit.
+
+The shape it wants: the credential *type* is what `request` needs, and the profile *lookup* is
+what `config` is for. Lifting `Credential`/`Kind` into a package both may import — `internal/secret`
+already holds `SecretRef` and is imported by everything on this path — leaves `config` holding
+`Profile` and `Resolve` alone, and `corpus`'s closure stops at a package with no notion of a
+profile file. When it lands, promote the corpus entry from `forbiddenDirect` to `forbidden`;
+`TestTheDirectImportRuleReadsDirectImportsOnly` fails until someone does, by design.
+
 ## Testing
 
 1. **`boundary`** — injected uid pairs across all three verdicts, including root and the

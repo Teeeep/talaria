@@ -379,11 +379,23 @@ as a parameter goes back through `Inputs.Params`, not `Query`/`Headers`, so a *r
 bound rather than reported missing; and a decoded body is handed over as `Inputs.Body = {"-"}`
 with `Inputs.Stdin` set, never as an argv-style literal, because a stored body starting with `@`
 or `-` would otherwise become a file read chosen by a line in a JSONL file.
-`internal/corpus` may not import `internal/config`: the store has to stay usable by the twin,
-which has no profiles. That is why `buildReplay` stays in `cmd/talaria/history_replay.go` —
+`internal/corpus` may not import `internal/config` *directly*: the store has to stay usable by the
+twin, which has no profiles. That is why `buildReplay` stays in `cmd/talaria/history_replay.go` —
 it needs the profile and the flags — and why the parameter locations both packages name live
 in `internal/operation` (`operation.InPath/InQuery/InHeader/InCookie`), the one package
 `config`, `request` and `corpus` may all import. Alias them; do not re-spell them.
+
+Scope that claim honestly: the edge exists transitively today. `corpus → request → config` is
+real (`go list -deps ./internal/corpus`), because `request` needs `config.Credential`, `Kind`,
+`Profile` and `Resolve`. Removing it is a package split, not an import edit, so it is deferred to
+phase 2b (`docs/plans/2026-08-03-phase-2b-boundary.md` §"Deferred from phase 2a"). What is enforced
+until then is the direct import, by the `forbiddenDirect` field on `internal/e2e/boundary_test.go`'s
+`boundaries` table — a second, weaker rule beside `forbidden`, which stays transitive.
+`TestTheDirectImportRuleReadsDirectImportsOnly` is what stops `forbiddenDirect` from quietly
+becoming either vacuous or a second spelling of `forbidden`: it asserts that the reader sees
+`request`'s own import of `config`, that it does *not* see `corpus`'s indirect one, and that the
+indirect one is still there — so the day the split lands, the test says to promote the rule rather
+than leaving a direct-only ban standing over an edge that no longer exists.
 
 **`cmd/talaria` is wiring.** Parse flags, call a package, render the result. Decisions,
 transformations and multi-step workflows belong in a package that can be tested without cobra.

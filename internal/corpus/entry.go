@@ -10,9 +10,13 @@
 // representation of a request and a response, and there is no path through this
 // package that puts a resolved credential on disk.
 //
-// The package deliberately does not import internal/config: the profile's
-// history setting arrives as the Enabled bool a caller passes to New, so the
-// store stays usable by the twin, which has no profiles.
+// The package deliberately does not import internal/config itself: the
+// profile's history setting arrives as the Enabled bool a caller passes to New,
+// so nothing here reads a profile. It does still reach config through
+// internal/request, which needs config.Credential to build an authenticated
+// request; breaking that edge is a package split rather than an import edit and
+// is deferred to phase 2b. Only the direct import is enforced, by the
+// forbiddenDirect entry in internal/e2e/boundary_test.go.
 package corpus
 
 import (
