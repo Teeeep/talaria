@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -118,7 +119,7 @@ func TestCallExecutesAndReturnsTheResponseEnvelope(t *testing.T) {
 
 	code, stdout, stderr := runCall(t,
 		"testdata/call.yaml", "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--output", "json")
+		"--base-url", srv.URL, allowHost(t, srv), "--output", "json")
 	if code != 0 {
 		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
 	}
@@ -166,7 +167,7 @@ func TestCallSendsTheCredentialButReportsTheReference(t *testing.T) {
 
 	code, stdout, stderr := runCall(t,
 		"testdata/call.yaml", "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--output", "json")
+		"--base-url", srv.URL, allowHost(t, srv), "--output", "json")
 	if code != 0 {
 		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
 	}
@@ -353,7 +354,7 @@ func TestCallStopsWhenTheProcessIsCancelled(t *testing.T) {
 	var stdout, stderr strings.Builder
 	code := runContext(ctx, []string{
 		"call", "testdata/call.yaml", "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--output", "json",
+		"--base-url", srv.URL, allowHost(t, srv), "--output", "json",
 	}, &stdout, &stderr)
 
 	if code != int(clierr.CodeRequestFailed) {
@@ -365,4 +366,22 @@ func TestCallStopsWhenTheProcessIsCancelled(t *testing.T) {
 	if rec := srv.received(); rec.Path != "" {
 		t.Errorf("server saw %s %s, want a cancelled call to have sent nothing", rec.Method, rec.Path)
 	}
+}
+
+// allowHost is the argument that lets a credential reach a test server.
+//
+// The fixtures declare an unroutable servers[0] on purpose, so a --base-url at
+// a test server is an *off-spec* host and a credential is withheld from it
+// (internal/request.AllowedHosts). Every case that means to put a credential on
+// the wire therefore has to name the host it is going to; a case that omits
+// this is asserting the withholding instead.
+func allowHost(t *testing.T, srv *callServer) string {
+	t.Helper()
+
+	parsed, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parsing %q: %v", srv.URL, err)
+	}
+
+	return "--allow-host=" + parsed.Host
 }

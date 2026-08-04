@@ -17,10 +17,12 @@
       "id": 2,
       "section": "2",
       "title": "Bind credentials to hosts, and re-derive `history replay` through the spec",
-      "depends_on": [1],
+      "depends_on": [
+        1
+      ],
       "line_start": 181,
       "line_end": 372,
-      "done": false
+      "done": true
     },
     {
       "id": 3,
@@ -52,8 +54,10 @@
     {
       "id": 6,
       "section": "6",
-      "title": "Compaction — tasks 1–5",
-      "depends_on": [5],
+      "title": "Compaction \u2014 tasks 1\u20135",
+      "depends_on": [
+        5
+      ],
       "line_start": 619,
       "line_end": 652,
       "done": false
@@ -61,7 +65,7 @@
     {
       "id": 7,
       "section": "7",
-      "title": "Bound every read of untrusted input — the remote spec and the history file",
+      "title": "Bound every read of untrusted input \u2014 the remote spec and the history file",
       "depends_on": [],
       "line_start": 656,
       "line_end": 787,
@@ -89,7 +93,10 @@
       "id": 10,
       "section": "10",
       "title": "Close the two holes in the canary gate",
-      "depends_on": [2, 3],
+      "depends_on": [
+        2,
+        3
+      ],
       "line_start": 912,
       "line_end": 1000,
       "done": false
@@ -97,8 +104,10 @@
     {
       "id": 11,
       "section": "11",
-      "title": "Compaction — tasks 7–10",
-      "depends_on": [10],
+      "title": "Compaction \u2014 tasks 7\u201310",
+      "depends_on": [
+        10
+      ],
       "line_start": 1004,
       "line_end": 1021,
       "done": false
@@ -143,7 +152,9 @@
       "id": 16,
       "section": "16",
       "title": "Give the spec cache a TTL, a conditional revalidation and a bypass",
-      "depends_on": [14],
+      "depends_on": [
+        14
+      ],
       "line_start": 1339,
       "line_end": 1435,
       "done": false
@@ -151,8 +162,10 @@
     {
       "id": 17,
       "section": "17",
-      "title": "Compaction — tasks 12–16",
-      "depends_on": [16],
+      "title": "Compaction \u2014 tasks 12\u201316",
+      "depends_on": [
+        16
+      ],
       "line_start": 1439,
       "line_end": 1460,
       "done": false
@@ -161,7 +174,9 @@
       "id": 18,
       "section": "18",
       "title": "Audit comments that assert an invariant no test enforces",
-      "depends_on": [17],
+      "depends_on": [
+        17
+      ],
       "line_start": 1464,
       "line_end": 1536,
       "done": false
@@ -170,7 +185,11 @@
       "id": 19,
       "section": "19",
       "title": "Stop re-reading the whole history file twice per append",
-      "depends_on": [7, 14, 15],
+      "depends_on": [
+        7,
+        14,
+        15
+      ],
       "line_start": 1540,
       "line_end": 1595,
       "done": false
@@ -179,7 +198,9 @@
       "id": 20,
       "section": "20",
       "title": "Verify the phase end to end",
-      "depends_on": [19],
+      "depends_on": [
+        19
+      ],
       "line_start": 1599,
       "line_end": 1655,
       "done": false
@@ -187,8 +208,10 @@
     {
       "id": 21,
       "section": "21",
-      "title": "Compaction — tasks 18–20 and the phase",
-      "depends_on": [20],
+      "title": "Compaction \u2014 tasks 18\u201320 and the phase",
+      "depends_on": [
+        20
+      ],
       "line_start": 1659,
       "line_end": 1708,
       "done": false

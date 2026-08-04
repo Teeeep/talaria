@@ -38,6 +38,10 @@ type Inputs struct {
 	Creds []config.Credential
 	// BaseURL is --base-url. It beats the profile, which beats the spec.
 	BaseURL string
+	// AllowHosts are --allow-host: hosts a human explicitly added to the set a
+	// credential may be sent to, on top of the ones the spec declares. See
+	// AllowedHosts.
+	AllowHosts []string
 	// Params are --param name=value for parameters the operation declares, in
 	// any location.
 	Params []string
@@ -128,18 +132,34 @@ func (b *binder) err() error {
 	return err
 }
 
-// baseURL resolves where the request goes: --base-url, then the profile, then
+// baseURL resolves where the request goes, folding a refusal into the problems
+// Build reports together.
+func (b *binder) baseURL() string {
+	url, err := ResolveBaseURL(b.in.BaseURL, b.in.Profile, b.in.Doc)
+	if err != nil {
+		b.fail("%s", err)
+		return ""
+	}
+
+	return url
+}
+
+// ResolveBaseURL picks where a request goes: --base-url, then the profile, then
 // the spec's first server (DESIGN.md §4). A spec whose server URL is relative
 // — common for specs that expect a host to be supplied — counts as no server.
-func (b *binder) baseURL() string {
+//
+// It is exported because `auth check` has to report against the same host
+// `call` would send to. Deriving the target a second time there is how "present"
+// came to mean something different from "will actually be sent".
+func ResolveBaseURL(flag string, prof *config.Profile, doc *spec.Document) (string, error) {
 	candidates := []struct{ source, raw string }{
-		{"--base-url", b.in.BaseURL},
+		{"--base-url", flag},
 	}
-	if b.in.Profile != nil {
+	if prof != nil {
 		candidates = append(candidates, struct{ source, raw string }{
-			"profile " + b.in.Profile.Name, b.in.Profile.BaseURL})
+			"profile " + prof.Name, prof.BaseURL})
 	}
-	candidates = append(candidates, struct{ source, raw string }{"the spec's servers[0].url", firstServer(b.in.Doc)})
+	candidates = append(candidates, struct{ source, raw string }{"the spec's servers[0].url", firstServer(doc)})
 
 	for _, c := range candidates {
 		if c.raw == "" {
@@ -149,24 +169,22 @@ func (b *binder) baseURL() string {
 		// Before the parse, so a URL that fails to parse cannot have its
 		// userinfo quoted back by the message below.
 		if host, ok := Userinfo(c.raw); ok {
-			b.fail("base URL from %s carries a credential in its userinfo (user:password@%s); "+
-				"remove it and set %s=user:password instead, which keeps the value out of the "+
-				"request, the emitted curl and the history", c.source, host, config.EnvBasic)
-			return ""
+			return "", clierr.Usage(
+				"base URL from %s carries a credential in its userinfo (user:password@%s); "+
+					"remove it and set %s=user:password instead, which keeps the value out of the "+
+					"request, the emitted curl and the history", c.source, host, config.EnvBasic)
 		}
 
 		parsed, err := url.Parse(c.raw)
 		if err != nil || parsed.Host == "" || !IsHTTPScheme(parsed.Scheme) {
-			b.fail("base URL %q from %s is not an absolute http(s) URL", c.raw, c.source)
-			return ""
+			return "", clierr.Usage("base URL %q from %s is not an absolute http(s) URL", c.raw, c.source)
 		}
 
-		return strings.TrimSuffix(c.raw, "/")
+		return strings.TrimSuffix(c.raw, "/"), nil
 	}
 
-	b.fail("no base URL: the spec declares no server, so pass --base-url or set one in a profile")
-
-	return ""
+	return "", clierr.Usage(
+		"no base URL: the spec declares no server, so pass --base-url or set one in a profile")
 }
 
 // firstServer returns the document's first usable server URL, or "" when it has
@@ -496,9 +514,38 @@ func elided(raw string) string {
 }
 
 // credentials puts each resolved credential where its scheme says it goes, as a
-// reference. This is the §5a boundary: what lands on the request is the name of
-// a credential and how to encode it, never the credential.
+// reference — but only when the request's host is one that credential is bound
+// to. This is the §5a boundary twice over: what lands on the request is the
+// name of a credential and how to encode it, never the credential, and it lands
+// only when the destination is a host the spec declares or a human allowed.
+//
+// The set is computed whether or not there is a credential to place, so junk in
+// --allow-host is reported as the usage error it is rather than only on the
+// calls that happen to be authenticated.
 func (b *binder) credentials(req *Request) {
+	allowed, err := AllowedHosts(b.in.Doc, b.in.Profile, b.in.AllowHosts)
+	if err != nil {
+		b.fail("%s", err)
+		return
+	}
+
+	// An empty base URL is one baseURL already refused; Build will return that
+	// problem, and reporting every credential as withheld from "" on top of it
+	// would only bury it.
+	if req.BaseURL == "" {
+		return
+	}
+
+	if !allowed.Allows(req.BaseURL) {
+		host := Host(req.BaseURL)
+		for _, cred := range b.in.Creds {
+			req.Withheld = append(req.Withheld,
+				Withheld{Scheme: cred.Scheme, Reason: WithheldReason, Host: host})
+		}
+
+		return
+	}
+
 	for _, cred := range b.in.Creds {
 		pair := Pair{Name: cred.Name, Value: Secret(cred.Ref, encodingFor(cred.Kind))}
 

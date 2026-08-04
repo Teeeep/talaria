@@ -19,6 +19,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -364,6 +365,11 @@ type callVw struct {
 		URL    string `json:"url"`
 		Body   string `json:"body"`
 	} `json:"request"`
+	CredentialsWithheld []struct {
+		Scheme string `json:"scheme"`
+		Reason string `json:"reason"`
+		Host   string `json:"host"`
+	} `json:"credentials_withheld"`
 	Response *struct {
 		Status int             `json:"status"`
 		Body   json.RawMessage `json:"body"`
@@ -487,8 +493,10 @@ func TestTheDocumentedAgentWorkflowRunsEndToEnd(t *testing.T) {
 	}
 
 	// 7. history replay — the index `history` printed is the index `replay`
-	// takes, and it re-issues the call without the spec being named again.
-	replayed := decode[callVw](t, h.runOK("history", "replay", "1", "--output", "json"))
+	// takes. It re-derives the call through the spec rather than re-sending the
+	// stored line, so the spec and the base URL are named again.
+	replayed := decode[callVw](t, h.runOK("history", "replay", specPath, "1",
+		"--base-url", srv.URL, "--output", "json"))
 	if replayed.Response == nil || replayed.Response.Status != http.StatusOK {
 		t.Fatalf("`history replay 1` did not observe a 200: %s", replayed.stdoutOf())
 	}
@@ -621,22 +629,27 @@ func TestNoStepOfTheWorkflowLeaksTheCredential(t *testing.T) {
 	value := canary.Value("e2e")
 	h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": value})
 	srv := newServer(t)
+	// The spec declares api.invalid, so the credential only reaches the test
+	// server because the host is allowed explicitly. That is the point of the
+	// flag, and without it the leak assertions below would be scanning a
+	// workflow that never carried a credential at all.
+	allow, host := "--allow-host", hostOf(t, srv.URL)
 
 	runs := []result{
 		h.runOK("list", specPath, "--output", "json"),
 		h.runOK("search", specPath, "pet", "--output", "json"),
 		h.runOK("describe", specPath, "listPets", "--output", "json"),
-		h.runOK("call", specPath, "listPets", "--base-url", srv.URL, "--dry-run", "--output", "json"),
-		h.runOK("call", specPath, "listPets", "--base-url", srv.URL, "--output", "json"),
+		h.runOK("call", specPath, "listPets", "--base-url", srv.URL, allow, host, "--dry-run", "--output", "json"),
+		h.runOK("call", specPath, "listPets", "--base-url", srv.URL, allow, host, "--output", "json"),
 		h.runOK("history", "--output", "json"),
 		h.runOK("history", "show", "1", "--output", "json"),
-		h.runOK("history", "replay", "1", "--output", "json"),
+		h.runOK("history", "replay", specPath, "1", "--base-url", srv.URL, allow, host, "--output", "json"),
 		// Exits 5: secureKey is unset. The report is written on the way to that
 		// exit code, with the bearer canary in reach the whole time.
 		h.run("auth", "check", specPath, "--output", "json"),
 		// A failure surface, because §5a's rule is that error paths are where
 		// redaction bugs live.
-		h.run("call", specPath, "getBroken", "--base-url", srv.URL, "--fail-on-error", "--output", "json"),
+		h.run("call", specPath, "getBroken", "--base-url", srv.URL, allow, host, "--fail-on-error", "--output", "json"),
 	}
 
 	// The credential reached the server. Without this the assertions below
@@ -814,7 +827,7 @@ func TestASwagger2SpecFlowsThroughTheWholeLoop(t *testing.T) {
 	// The curl builder: the converted securityDefinition is a header API key
 	// referenced by name, and the path template is filled from --param.
 	called := decode[callVw](t, h.runOK("call", spec2Path, "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--output", "json"))
+		"--base-url", srv.URL, "--allow-host", hostOf(t, srv.URL), "--output", "json"))
 	if !strings.HasSuffix(called.Request.URL, "/pets/42") {
 		t.Errorf("the converted path template produced %q", called.Request.URL)
 	}
@@ -858,4 +871,158 @@ func TestASwagger2SpecFlowsThroughTheWholeLoop(t *testing.T) {
 // scanned along with everything the harness wrote.
 func (v callVw) surfacesOf() []canary.Surface {
 	return []canary.Surface{canary.Stream("call output (swagger 2.0)", v.stdoutOf())}
+}
+
+// hostOf is a test server's authority, for --allow-host.
+func hostOf(t *testing.T, rawURL string) string {
+	t.Helper()
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parsing %q: %v", rawURL, err)
+	}
+
+	return parsed.Host
+}
+
+// A credential goes to a host the spec declares, and to no other, whatever
+// --base-url says.
+//
+// This is the wire-level assertion the finding needs and the only kind that can
+// catch it. Redaction answers *does it print*; every output surface here is
+// already clean, and the canary suite passes today while a production bearer
+// token is delivered to any host the caller names. The question this test asks
+// is *who received it*, and only the listener can answer that.
+func TestACredentialNeverReachesAHostTheSpecDoesNotDeclare(t *testing.T) {
+	t.Parallel()
+
+	value := canary.Value("host-binding")
+	h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": value})
+	srv := newServer(t)
+
+	// The spec declares api.invalid; srv is somewhere else entirely.
+	res := h.runOK("call", specPath, "listPets", "--base-url", srv.URL, "--output", "json")
+
+	got := srv.requests()
+	if len(got) != 1 {
+		t.Fatalf("the server saw %d requests, want 1: %+v", len(got), got)
+	}
+	if auth := got[0].Header.Get("Authorization"); auth != "" {
+		t.Errorf("the off-spec host received Authorization: %q", auth)
+	}
+	// Not just the one header: the canary must be absent from everything that
+	// arrived, whatever position it might have travelled in.
+	for name, values := range got[0].Header {
+		for _, v := range values {
+			if strings.Contains(v, value) {
+				t.Errorf("the off-spec host received the credential in header %s: %q", name, v)
+			}
+		}
+	}
+	if strings.Contains(got[0].Body, value) || strings.Contains(got[0].Path, value) {
+		t.Errorf("the off-spec host received the credential in the request: %+v", got[0])
+	}
+
+	// Withheld, not refused: pointing at a local twin is the common case and
+	// must not need a flag (DESIGN.md §5a). The call ran and exited 0 — runOK
+	// above — and says what it left out.
+	called := decode[callVw](t, res)
+	if len(called.CredentialsWithheld) != 1 {
+		t.Fatalf("credentials_withheld = %+v, want one entry", called.CredentialsWithheld)
+	}
+	withheld := called.CredentialsWithheld[0]
+	if withheld.Scheme != "bearerAuth" || withheld.Host != hostOf(t, srv.URL) || withheld.Reason == "" {
+		t.Errorf("credentials_withheld[0] = %+v, want bearerAuth withheld from %s with a reason",
+			withheld, hostOf(t, srv.URL))
+	}
+	if !strings.Contains(res.stderr, "bearerAuth") || !strings.Contains(res.stderr, "--allow-host") {
+		t.Errorf("stderr does not name the withheld scheme and the flag that permits it: %s", res.stderr)
+	}
+
+	// The deliberate override: the same call with the host allowed delivers it.
+	h.runOK("call", specPath, "listPets", "--base-url", srv.URL,
+		"--allow-host", hostOf(t, srv.URL), "--output", "json")
+	if !srv.sawHeader("Authorization", "Bearer "+value) {
+		t.Errorf("--allow-host did not put the credential on the wire: %+v", srv.requests())
+	}
+}
+
+// `history replay` re-derives where it sends from the spec, so a hand-edited
+// entry cannot redirect a credential-bearing call at a host of its choosing.
+// The store is a plain file: an agent that can write it could otherwise turn
+// replay into "send this to me".
+func TestAnEditedHistoryEntryCannotRetargetAReplay(t *testing.T) {
+	t.Parallel()
+
+	value := canary.Value("replay-retarget")
+	h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": value})
+	srv := newServer(t)
+	steal := newServer(t)
+
+	h.runOK("call", specPath, "getPet", "--param", "petId=42", "--base-url", srv.URL,
+		"--allow-host", hostOf(t, srv.URL), "--output", "json")
+
+	// The one field an attacker with write access to the store would change.
+	rewriteHistory(t, h, func(entry map[string]any) {
+		entry["url"] = steal.URL + "/pets/42"
+	})
+
+	// The stored host is allowed, so this is not the refusal path — it is the
+	// re-derivation path, and it still must not go there.
+	h.runOK("history", "replay", specPath, "1", "--base-url", srv.URL,
+		"--allow-host", hostOf(t, srv.URL), "--allow-host", hostOf(t, steal.URL), "--output", "json")
+
+	if got := steal.requests(); len(got) != 0 {
+		t.Fatalf("the replay went to the host the stored line named: %+v", got)
+	}
+	if len(srv.requests()) != 2 {
+		t.Errorf("the replay did not re-issue against the spec's target: %+v", srv.requests())
+	}
+
+	// And with the stored host outside the allowed set, replay refuses rather
+	// than silently retargeting (DESIGN.md:407). The replay above appended an
+	// entry of its own, so the edit is applied again to cover it.
+	rewriteHistory(t, h, func(entry map[string]any) {
+		entry["url"] = steal.URL + "/pets/42"
+	})
+
+	res := h.run("history", "replay", specPath, "1", "--base-url", srv.URL, "--output", "json")
+	if res.code != 2 {
+		t.Errorf("`%s` = %d, want 2", res.label(), res.code)
+	}
+	if got := steal.requests(); len(got) != 0 {
+		t.Errorf("the refused replay still reached the stored host: %+v", got)
+	}
+}
+
+// rewriteHistory applies edit to every line of the store, standing in for
+// whatever else on the machine can write that file.
+func rewriteHistory(t *testing.T, h *harness, edit func(map[string]any)) {
+	t.Helper()
+
+	path := filepath.Join(h.state, "talaria", "history.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the history store: %v", err)
+	}
+
+	var out strings.Builder
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("decoding a history line: %v", err)
+		}
+		edit(entry)
+
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("encoding a history line: %v", err)
+		}
+		out.Write(encoded)
+		out.WriteByte('\n')
+	}
+
+	if err := os.WriteFile(path, []byte(out.String()), 0o600); err != nil {
+		t.Fatalf("rewriting the history store: %v", err)
+	}
 }

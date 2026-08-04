@@ -64,6 +64,23 @@ server it cannot fully substitute, so "the hosts the spec declares" means its ou
 raw URLs. Read the spec's servers through it or the host set is computed from templates. Redaction answers *does it print*; it does not answer *who receives
 it*. Both questions need an answer for every new path that carries a credential.
 
+`internal/request/hosts.go` is the single implementation: `request.AllowedHosts(doc, prof,
+allowHosts)` builds the set (spec servers ∪ `--allow-host` ∪ a profile's `allow_hosts:`),
+`HostSet.Allows(url)` is the only comparison, and `request.Host(url)` is its canonical form for
+messages and envelope fields. Never compare hosts by hand — case, a default port and a trailing
+root dot are all the same host, and a suffix match admits `api.example.com.attacker.com`. Where a
+request goes is `request.ResolveBaseURL` (or `request.Target`, which reads "no base URL" as an
+answer rather than a failure); every command that reports on or sends to a host reads both through
+`hostFlags(cmd)` in `cmd/talaria/call.go`, so `auth check` cannot drift from what `call` does. An
+off-spec host **withholds** rather than refuses: the credential is left off, `Request.Withheld`
+carries the fact into the envelope as `credentials_withheld`, and one line goes to stderr. Both
+surfaces, every time.
+
+A history entry is data, never instruction. `history replay` re-derives through the spec —
+operation, params and body from the entry; target host and credentials from the spec, the flags
+and the environment. Nothing stored is resolved, and a stored credential position is dropped, not
+read. New code that reads a history entry inherits this rule.
+
 **The spec is untrusted input, and so is the history file.** Both are fetched or edited outside
 this process. Bound every read, size-check before allocating, and treat any spec-derived string
 that reaches the wire as hostile until checked — a media type became a header-injection vector

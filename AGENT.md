@@ -64,6 +64,12 @@ talaria call getPet --param petId=42 --query verbose=true --header X-Trace=abc
   (exit 2) rather than a request. So is a base URL carrying credentials —
   `http://user:password@host` — because a base URL is copied whole into the emitted `curl` and
   into history; set `TALARIA_AUTH_BASIC=user:password` instead.
+- A credential goes only to a host the spec's `servers[]` declares. A `--base-url` pointing
+  anywhere else still runs, but the credential is **withheld**: stderr names the scheme and the
+  host, and the envelope carries `credentials_withheld` with the same fact. Pass
+  `--allow-host <host[:port]>` (repeatable) to send it there anyway, or set `allow_hosts:` in the
+  profile. `auth check` reports `"withheld": true` for a scheme this would happen to, so check
+  there before assuming a missing variable.
 - Every request is bounded: 10s to connect, 30s in total, `--timeout <seconds>` to change the
   total. An API that stops answering exits 1 with curl's status 28 in the message — talaria
   never hangs waiting for one.
@@ -196,15 +202,17 @@ a row by index re-issue the same entry twice; two by id re-issue the two you ask
 is stable only under filters, which do not renumber it. An entry recorded by an older talaria has
 no id and lists as `-`; only its index can name it.
 
-`talaria history replay <id|n>` re-sends an entry and records the result as a new one;
+`talaria history replay [spec] <id|n>` re-sends an entry and records the result as a new one;
 replaying a mutation needs `--allow-mutations` too. Dry runs are never recorded. Recording is off
 where a profile says so, or everywhere under `TALARIA_HISTORY=off` — if history is empty, that is
 usually why.
 
-Credentials are stored as names, so nothing in history can be read back into a value. On replay
-only the names talaria itself records are resolved — `TALARIA_AUTH_BEARER`, `TALARIA_AUTH_BASIC`,
-`TALARIA_AUTH_APIKEY_*`, and the variables the selected profile's `auth:` map names. An entry
-naming any other variable is refused with exit 2 rather than resolved.
+Replay re-derives the call rather than re-sending the stored line, so it needs a spec (positional,
+`--spec` or `$TALARIA_SPEC`) and takes `--base-url` and `--allow-host` like `call` does. The entry
+supplies the operation, its parameters and its body; where the request goes and which credentials
+it carries come from the spec, the flags and the environment. Nothing in the entry is resolved: a
+stored credential position is dropped and re-supplied from the environment, and an entry recorded
+against a host outside the currently allowed set exits 2 rather than being retargeted.
 
 ## Rules
 

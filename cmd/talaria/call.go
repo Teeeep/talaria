@@ -28,10 +28,15 @@ import (
 // everything except the response and validation blocks, so an agent parses one
 // structure whether or not the request was sent.
 type callView struct {
-	DryRun     bool             `json:"dry_run"`
-	Request    requestView      `json:"request"`
-	Response   *responseView    `json:"response,omitempty"`
-	Validation *validate.Result `json:"validation,omitempty"`
+	DryRun  bool        `json:"dry_run"`
+	Request requestView `json:"request"`
+	// CredentialsWithheld names the credentials this request resolved and did
+	// not send, because its host is not one they are bound to (DESIGN.md §5a).
+	// It sits beside the request rather than inside it because it describes what
+	// is *absent* from the request block above.
+	CredentialsWithheld []request.Withheld `json:"credentials_withheld,omitempty"`
+	Response            *responseView      `json:"response,omitempty"`
+	Validation          *validate.Result   `json:"validation,omitempty"`
 }
 
 // requestView is what was, or would have been, sent. Curl is the symbolic
@@ -154,6 +159,7 @@ func newCallCmd() *cobra.Command {
 			// request's shape, and an emitted curl is a command the caller may
 			// well run.
 			warnQueryCredentials(cmd.ErrOrStderr(), warner, req)
+			warnWithheldCredentials(cmd.ErrOrStderr(), req)
 
 			store, err := openHistory(cmd, cfg)
 			if err != nil {
@@ -284,21 +290,22 @@ func buildRequest(
 		return nil, err
 	}
 
-	baseURL, err := cmd.Flags().GetString("base-url")
+	baseURL, allowHosts, err := hostFlags(cmd)
 	if err != nil {
-		return nil, clierr.Usage("%w", err)
+		return nil, err
 	}
 
 	return request.Build(request.Inputs{
-		Op:      op,
-		Doc:     doc,
-		Profile: prof,
-		Creds:   creds,
-		BaseURL: baseURL,
-		Params:  params,
-		Query:   queries,
-		Headers: headers,
-		Body:    body,
+		Op:         op,
+		Doc:        doc,
+		Profile:    prof,
+		Creds:      creds,
+		BaseURL:    baseURL,
+		AllowHosts: allowHosts,
+		Params:     params,
+		Query:      queries,
+		Headers:    headers,
+		Body:       body,
 		// The same list history is redacted with. A pattern that hides a value
 		// in the permanent artifact but not on the stdout an agent reads has
 		// the firewall backwards.
@@ -308,6 +315,42 @@ func buildRequest(
 		// else (DESIGN.md §5a).
 		Stdin: cmd.InOrStdin(),
 	})
+}
+
+// hostFlags reads the two persistent flags that decide where a request goes and
+// which hosts its credentials are bound to. They are read together because
+// every caller needs both: --base-url without --allow-host is what withholds a
+// credential, and reading one without the other is how a command comes to
+// report a host it will not actually send to.
+func hostFlags(cmd *cobra.Command) (baseURL string, allowHosts []string, err error) {
+	if baseURL, err = cmd.Flags().GetString("base-url"); err != nil {
+		return "", nil, clierr.Usage("%w", err)
+	}
+	if allowHosts, err = cmd.Flags().GetStringArray("allow-host"); err != nil {
+		return "", nil, clierr.Usage("%w", err)
+	}
+
+	return baseURL, allowHosts, nil
+}
+
+// warnWithheldCredentials reports, in one line on stderr, every credential this
+// request resolved and did not carry. The envelope carries the same facts as
+// `credentials_withheld` for an agent; this is for the human watching, who
+// would otherwise see only a 401 (DESIGN.md §5a).
+func warnWithheldCredentials(stderr io.Writer, req *request.Request) {
+	if len(req.Withheld) == 0 {
+		return
+	}
+
+	schemes := make([]string, 0, len(req.Withheld))
+	for _, w := range req.Withheld {
+		schemes = append(schemes, w.Scheme)
+	}
+
+	fmt.Fprintf(stderr,
+		"warning: %s withheld from %s: it is not a host the spec declares; "+
+			"pass --allow-host %s to send credentials there\n",
+		strings.Join(schemes, ", "), req.Withheld[0].Host, req.Withheld[0].Host)
 }
 
 // selectProfile picks the profile named by --profile out of an already-loaded
@@ -438,7 +481,8 @@ func pluralise(n int, noun string) string {
 // exec time, and it hands back a Response rather than a Request (§5a).
 func callPayload(req *request.Request, resp *responseView, result *validate.Result) output.Payload {
 	view := callView{
-		DryRun: resp == nil,
+		DryRun:              resp == nil,
+		CredentialsWithheld: req.Withheld,
 		Request: requestView{
 			Curl:    curl.Render(req),
 			Method:  req.Method,

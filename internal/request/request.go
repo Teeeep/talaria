@@ -265,6 +265,24 @@ type Request struct {
 	Headers []Pair `json:"headers,omitempty"`
 	Cookies []Pair `json:"cookies,omitempty"`
 	Body    *Body  `json:"body,omitempty"`
+	// Withheld names the credentials this request does *not* carry because its
+	// host is not one they are bound to. It is on the Request rather than
+	// reported out of band so every surface that renders a request — the call
+	// envelope, a replay — says so the same way.
+	Withheld []Withheld `json:"credentials_withheld,omitempty"`
+}
+
+// Withheld is one credential that was resolved and then not attached, because
+// the request's host is neither declared by the spec nor explicitly allowed
+// (DESIGN.md §5a).
+//
+// It is reported rather than silently dropped so an agent acts on the field
+// instead of inferring it from a downstream 401 — and rather than refused, so
+// that pointing --base-url at a local twin, the common case, needs no flag.
+type Withheld struct {
+	Scheme string `json:"scheme"`
+	Reason string `json:"reason"`
+	Host   string `json:"host"`
 }
 
 // URL builds the full request URL, rendering any credential in the query string

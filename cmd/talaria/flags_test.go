@@ -9,7 +9,7 @@ import "testing"
 func TestProfileAndBaseURLArePersistentOnRoot(t *testing.T) {
 	root := newRootCmd()
 
-	for _, flag := range []string{"profile", "base-url"} {
+	for _, flag := range []string{"profile", "base-url", "allow-host"} {
 		if root.PersistentFlags().Lookup(flag) == nil {
 			t.Errorf("--%s is not registered as a persistent flag on the root command", flag)
 		}

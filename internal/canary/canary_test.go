@@ -339,19 +339,27 @@ func TestNoAuthMechanismLeaksIntoAnyOutputSurface(t *testing.T) {
 				h := newHarness(t, mech.env(value))
 				srv := newServer(t, `{"id":"42","name":"Rex"}`)
 
+				// The spec declares api.invalid, so the test server is an
+				// off-spec host and the credential only goes there because the
+				// case allows it explicitly. Without the flag every assertion
+				// below would be scanning output for a value that was never
+				// sent (internal/request.AllowedHosts).
+				allow, host := "--allow-host", canaryHost(t, srv.URL)
+
 				var runs []result
 				runs = append(runs,
 					h.runOK("call", specPath, mech.op,
-						"--base-url", srv.URL, "--output", format, "--dry-run"),
+						"--base-url", srv.URL, allow, host, "--output", format, "--dry-run"),
 					h.runOK("call", specPath, mech.op,
-						"--base-url", srv.URL, "--output", format),
+						"--base-url", srv.URL, allow, host, "--output", format),
 					// Exits 5: the fixture declares every scheme and this case
 					// sets one. The report is the surface being checked, and it
 					// is written on the way to that exit code.
 					h.run("auth", "check", specPath, "--output", format),
 					h.runOK("history", "--output", format),
 					h.runOK("history", "show", "1", "--output", format),
-					h.runOK("history", "replay", "1", "--output", format),
+					h.runOK("history", "replay", specPath, "1",
+						"--base-url", srv.URL, allow, host, "--output", format),
 					h.runOK("describe", specPath, mech.op, "--output", format),
 					h.runOK("list", specPath, "--output", format),
 				)
@@ -980,7 +988,8 @@ func TestAPlantedCurlrcCannotCaptureTheCredential(t *testing.T) {
 		t.Fatalf("planting the .curlrc: %v", err)
 	}
 
-	res := h.runOK("call", specPath, "getBearer", "--base-url", srv.URL, "--output", "json")
+	res := h.runOK("call", specPath, "getBearer", "--base-url", srv.URL,
+		"--allow-host", canaryHost(t, srv.URL), "--output", "json")
 
 	// The call has to have happened with the credential on it, or a missing
 	// trace file would mean nothing.
@@ -1069,4 +1078,19 @@ func writeConfig(t *testing.T, h *harness, yaml string) {
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0o600); err != nil {
 		t.Fatalf("writing the config file: %v", err)
 	}
+}
+
+// canaryHost is a test server's authority, for --allow-host. A credential goes
+// only to a host the spec declares or a caller allowed, and the fixture's
+// servers[] is deliberately unroutable, so every case that means to put a
+// credential on the wire has to name the host it is going to.
+func canaryHost(t *testing.T, rawURL string) string {
+	t.Helper()
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parsing %q: %v", rawURL, err)
+	}
+
+	return parsed.Host
 }

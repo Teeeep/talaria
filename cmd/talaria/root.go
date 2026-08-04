@@ -73,6 +73,13 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().String("base-url", "",
 		"override the spec's server URL")
 
+	// Persistent alongside --base-url because it is the answer to what
+	// --base-url does: a credential goes only to a host the spec declares, and
+	// this is how a human says otherwise. call, auth check and history replay
+	// all need it, and history replay reads it before it reads the entry.
+	root.PersistentFlags().StringArray("allow-host", nil,
+		"also send credentials to this host, e.g. localhost:9000 (repeatable)")
+
 	// A bad flag is a bad invocation, not a failed request; without this it
 	// would reach the translator as a bare error and exit 1.
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {

@@ -214,3 +214,28 @@ func TestHistoryEnabledDefaultsToOn(t *testing.T) {
 		})
 	}
 }
+
+// The decoder runs with KnownFields(true), so a profile key the struct does not
+// declare is a hard parse error — not a silently ignored line. Every profile
+// carrying allow_hosts: would fail to load without the field, which would take
+// out `call`, `auth check` and `history replay` alike.
+func TestProfileParsesAllowHosts(t *testing.T) {
+	path := writeConfig(t, 0o600, "profiles:\n  twin:\n    base-url: http://localhost:9000\n"+
+		"    allow_hosts:\n      - localhost:9000\n      - twin.internal\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	prof, err := cfg.Profile("twin")
+	if err != nil {
+		t.Fatalf("Profile(twin): %v", err)
+	}
+	if got, want := len(prof.AllowHosts), 2; got != want {
+		t.Fatalf("AllowHosts = %v, want %d entries", prof.AllowHosts, want)
+	}
+	if prof.AllowHosts[0] != "localhost:9000" || prof.AllowHosts[1] != "twin.internal" {
+		t.Errorf("AllowHosts = %v, want [localhost:9000 twin.internal]", prof.AllowHosts)
+	}
+}

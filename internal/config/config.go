@@ -61,6 +61,12 @@ type Profile struct {
 	BaseURL string `yaml:"base-url"`
 	// Headers are sent with every request made under this profile.
 	Headers map[string]string `yaml:"headers"`
+	// AllowHosts extends the set of hosts this profile's credentials may be sent
+	// to, beyond the ones the spec declares. It is the written-down form of
+	// --allow-host: a team pointing at a shared twin says so once here rather
+	// than on every call. Entries are hosts, optionally with a port — never
+	// URLs; internal/request.AllowedHosts is what reads them.
+	AllowHosts []string `yaml:"allow_hosts"`
 	// Auth maps a security scheme name from the spec to an environment-variable
 	// reference such as ${STAGING_TOKEN}. It holds references, never values:
 	// see Resolve.

@@ -217,7 +217,7 @@ func TestCallExitsFiveBeforeSendingWhenACredentialIsMissing(t *testing.T) {
 	var out, errOut strings.Builder
 	code := run([]string{
 		"call", "testdata/call.yaml", "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--output", "json",
+		"--base-url", srv.URL, allowHost(t, srv), "--output", "json",
 	}, &out, &errOut)
 
 	if code != int(clierr.CodeCredentialMissing) {
@@ -289,4 +289,73 @@ func decodeAuthEntries(t *testing.T, stdout string) map[string]authEntry {
 	}
 
 	return out
+}
+
+// `auth check` reports against the *resolved* host set, so "present" never
+// means "will actually be sent" (DESIGN.md:389-390).
+//
+// Without this, the report answers a different question from the one the agent
+// asked: the credential is exported, so `present:true`, and the very next
+// `call` to the same --base-url withholds it. That is the §5 clause — "auth
+// check never reports a scheme satisfied when the call would refuse it" —
+// broken through the host-binding door.
+func TestAuthCheckReportsACredentialWithheldFromAnOffSpecHost(t *testing.T) {
+	isolateAuthEnv(t)
+	t.Setenv(config.EnvBearer, authCanary)
+
+	code, stdout, stderr := runAuth(t, "testdata/auth.yaml",
+		"--base-url", "http://127.0.0.1:19951", "--output", "json")
+	if code != 0 {
+		t.Fatalf("auth check = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	got := decodeAuth(t, stdout)
+	if len(got.Schemes) != 1 {
+		t.Fatalf("reported %d schemes, want 1:\n%s", len(got.Schemes), stdout)
+	}
+
+	var scheme struct {
+		Present  bool `json:"present"`
+		Withheld bool `json:"withheld"`
+	}
+	if err := json.Unmarshal(got.Schemes[0], &scheme); err != nil {
+		t.Fatalf("decoding the scheme entry: %v", err)
+	}
+	if !scheme.Withheld {
+		t.Errorf("scheme entry = %s, want withheld:true for an off-spec --base-url", got.Schemes[0])
+	}
+
+	// And the same invocation with the host allowed reports it plainly, which
+	// is what makes the field a distinction rather than a constant.
+	code, stdout, stderr = runAuth(t, "testdata/auth.yaml",
+		"--base-url", "http://127.0.0.1:19951", "--allow-host", "127.0.0.1:19951", "--output", "json")
+	if code != 0 {
+		t.Fatalf("auth check --allow-host = %d, want 0; stderr: %s", code, stderr)
+	}
+	if strings.Contains(stdout, `"withheld"`) {
+		t.Errorf("an allowed host still reports withheld:\n%s", stdout)
+	}
+}
+
+// The guard: host-awareness must not perturb the ordinary invocation. With no
+// --base-url, or one the spec declares, the report is exactly what it was.
+func TestAuthCheckIsUnchangedForAnOnSpecHost(t *testing.T) {
+	isolateAuthEnv(t)
+	t.Setenv(config.EnvBearer, authCanary)
+
+	const want = `{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","present":true}`
+	for _, args := range [][]string{
+		{"testdata/auth.yaml", "--output", "json"},
+		{"testdata/auth.yaml", "--base-url", "https://api.invalid/v1", "--output", "json"},
+	} {
+		code, stdout, stderr := runAuth(t, args...)
+		if code != 0 {
+			t.Fatalf("auth check %v = %d, want 0; stderr: %s", args, code, stderr)
+		}
+
+		got := decodeAuth(t, stdout)
+		if len(got.Schemes) != 1 || string(got.Schemes[0]) != want {
+			t.Errorf("auth check %v reported\n %s\nwant\n %s", args, stdout, want)
+		}
+	}
 }

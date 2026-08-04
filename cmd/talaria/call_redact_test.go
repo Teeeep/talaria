@@ -123,7 +123,7 @@ func TestCallWarnsOnceThatAQueryStringKeyReachesServerLogs(t *testing.T) {
 	srv := newCallServer(t, jsonPet)
 
 	code, stdout, stderr := runCall(t,
-		"testdata/call.yaml", "getKeyed", "--base-url", srv.URL, "--output", "json")
+		"testdata/call.yaml", "getKeyed", "--base-url", srv.URL, allowHost(t, srv), "--output", "json")
 	if code != 0 {
 		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
 	}
@@ -144,7 +144,7 @@ func TestCallDoesNotWarnWhenNoCredentialIsInTheQueryString(t *testing.T) {
 
 	code, _, stderr := runCall(t,
 		"testdata/call.yaml", "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--output", "json")
+		"--base-url", srv.URL, allowHost(t, srv), "--output", "json")
 	if code != 0 {
 		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
 	}

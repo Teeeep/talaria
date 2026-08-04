@@ -9,6 +9,8 @@ import (
 	"github.com/Teeeep/talaria/internal/config"
 	"github.com/Teeeep/talaria/internal/operation"
 	"github.com/Teeeep/talaria/internal/output"
+	"github.com/Teeeep/talaria/internal/request"
+	"github.com/Teeeep/talaria/internal/spec"
 )
 
 // authView is the JSON payload: one entry per security scheme the spec
@@ -17,14 +19,20 @@ type authView struct {
 	Schemes []authScheme `json:"schemes"`
 }
 
-// authScheme is DESIGN.md §4's object, field for field. The source is a *name* —
-// `env:TALARIA_AUTH_BEARER` — because that is the whole of what an agent needs
-// and the whole of what it may learn: it turns the name into "export this and
-// retry" without ever holding the value.
+// authScheme is DESIGN.md §4's object plus the withheld field §5a adds. The
+// source is a *name* — `env:TALARIA_AUTH_BEARER` — because that is the whole of
+// what an agent needs and the whole of what it may learn: it turns the name into
+// "export this and retry" without ever holding the value.
 type authScheme struct {
 	Scheme  string `json:"scheme"`
 	Source  string `json:"source"`
 	Present bool   `json:"present"`
+	// Withheld reports that the credential is exported but would not be sent to
+	// the host this invocation resolves to. Without it "present" would mean
+	// something `call` disagrees with, which is the §5 clause — "auth check
+	// never reports a scheme satisfied when the call would refuse it" — read
+	// through the host-binding door.
+	Withheld bool `json:"withheld,omitempty"`
 }
 
 func newAuthCmd() *cobra.Command {
@@ -76,7 +84,12 @@ func newAuthCheckCmd() *cobra.Command {
 				return err
 			}
 
-			if err := output.New(format, cmd.OutOrStdout()).Render(authPayload(creds)); err != nil {
+			withheld, err := credentialsWithheld(cmd, doc, prof)
+			if err != nil {
+				return err
+			}
+
+			if err := output.New(format, cmd.OutOrStdout()).Render(authPayload(creds, withheld)); err != nil {
 				return err
 			}
 
@@ -88,27 +101,60 @@ func newAuthCheckCmd() *cobra.Command {
 	}
 }
 
-func authPayload(creds []config.Credential) output.Payload {
+// credentialsWithheld reports whether the host this invocation resolves to is
+// one the spec's credentials are bound to.
+//
+// It reads the same two flags and calls the same two functions `call` does, so
+// the answer cannot drift from what a call would actually do. A spec that
+// declares no server and an invocation with no --base-url resolve to no host at
+// all: there is nothing to withhold from, so the report is the plain one.
+func credentialsWithheld(cmd *cobra.Command, doc *spec.Document, prof *config.Profile) (bool, error) {
+	baseURL, allowHosts, err := hostFlags(cmd)
+	if err != nil {
+		return false, err
+	}
+
+	allowed, err := request.AllowedHosts(doc, prof, allowHosts)
+	if err != nil {
+		return false, err
+	}
+
+	target := request.Target(baseURL, prof, doc)
+
+	return target != "" && !allowed.Allows(target), nil
+}
+
+func authPayload(creds []config.Credential, withheld bool) output.Payload {
 	view := authView{Schemes: make([]authScheme, 0, len(creds))}
 	rows := make([][]string, 0, len(creds))
 
 	for _, cred := range creds {
+		// A credential that is not set is not withheld: there is nothing to
+		// withhold, and reporting both would send a reader to --allow-host when
+		// what they need is to export the variable.
 		present := cred.Present()
+		hidden := present && withheld
+
 		view.Schemes = append(view.Schemes, authScheme{
-			Scheme:  cred.Scheme,
-			Source:  cred.Ref.Location(),
-			Present: present,
+			Scheme:   cred.Scheme,
+			Source:   cred.Ref.Location(),
+			Present:  present,
+			Withheld: hidden,
 		})
-		rows = append(rows, []string{cred.Scheme, cred.Ref.Location(), presenceLabel(present)})
+		rows = append(rows, []string{cred.Scheme, cred.Ref.Location(), presenceLabel(present, hidden)})
 	}
 
 	return output.Payload{Data: view, Table: output.Table{Rows: rows}}
 }
 
-// presenceLabel is the pretty and TSV form of the present field. The words name
-// the two states a reader acts on, and "missing" is the one to go export.
-func presenceLabel(present bool) string {
-	if present {
+// presenceLabel is the pretty and TSV form of the present and withheld fields.
+// The words name the three states a reader acts on: "missing" is the one to go
+// export, and "withheld" is the one to go pass --allow-host for.
+func presenceLabel(present, withheld bool) string {
+	switch {
+	case withheld:
+		return "withheld"
+	case present:
 		return "present"
 	}
 

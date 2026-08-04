@@ -194,6 +194,43 @@ whole into the request, the emitted `curl` and `history.jsonl`, so a password wr
 be one talaria stores in cleartext forever. Use `TALARIA_AUTH_BASIC=user:password` instead, which
 stays a reference everywhere but on the wire.
 
+### Credentials are bound to hosts
+
+A resolved credential goes only to a host the spec's `servers[]` declares, or to one you named
+explicitly. Point `--base-url` anywhere else — a local twin, a mock, a host an agent chose — and
+the call still runs, but the credential is **withheld**: the request goes out without it, one line
+on stderr names the scheme and the offending host, and the JSON envelope carries the same fact as
+`credentials_withheld` so an agent acts on it instead of guessing from a 401.
+
+```json
+"credentials_withheld": [
+  {"scheme": "bearerAuth", "reason": "host not in spec servers[]", "host": "localhost:9000"}
+]
+```
+
+Withholding rather than refusing is deliberate: pointing at a local twin is the common case and
+must not need a flag. Sending the real credential somewhere off-spec does:
+
+```
+talaria call ./openapi.yaml getPet --param petId=42 \
+  --base-url http://localhost:9000 --allow-host localhost:9000
+```
+
+`--allow-host` takes a host, optionally with a port — not a URL — and repeats. A profile writes
+the same thing down once:
+
+```yaml
+profiles:
+  twin:
+    base-url: http://localhost:9000
+    allow_hosts:
+      - localhost:9000
+```
+
+`auth check` reports against the same resolved host set, so a scheme that is exported but would
+not be sent to this invocation's host reports `"withheld": true` rather than a bare
+`"present": true`.
+
 A profile may also switch its own recording off with `history: {enabled: false}` — see
 [History](#history).
 
@@ -384,19 +421,20 @@ renumber it — but a *write* does, and `call`, `run` and `replay` all write. Th
 that does not move: it is assigned once, at record time, and both `show` and `replay` prefer it
 over an index. Entries written before ids existed have none and list as `-`.
 
-`history show <id|n>` prints one entry in full; `history replay <id|n>` sends it again and records
-the result as a new entry, leaving the original alone. Replay resolves credentials from the
-environment exactly as the original call did — history holds their *names*, so there is nothing
-in the file to read back. It is gated the same way `call` is: replaying a `POST` needs
-`--allow-mutations`. A header whose value was a literal talaria redacted by name cannot be
-reproduced, and replay says so on stderr rather than pretending it sent one.
+`history show <id|n>` prints one entry in full; `history replay [spec] <id|n>` sends it again and
+records the result as a new entry, leaving the original alone. It is gated the same way `call` is:
+replaying a `POST` needs `--allow-mutations`.
 
-The names replay will resolve are an allowlist, not whatever the file asks for: `TALARIA_AUTH_BEARER`,
-`TALARIA_AUTH_BASIC`, any `TALARIA_AUTH_APIKEY_*`, and the variables the selected profile's `auth:`
-map names. That is exactly the set talaria records, so a normal replay is unaffected — but the store
-is a plain file, and an entry edited to name some other variable would otherwise make replay a way to
-read it and send it to a host of the file's choosing. Such an entry is refused with exit 2, naming
-the variable and the field it stood in.
+**Replay re-derives; it does not re-send.** The entry supplies the operation, its parameters and
+its body. Everything else comes from the spec, the flags and the environment as they are *now*, so
+replay needs a spec (positional, `--spec` or `$TALARIA_SPEC`) and honours `--base-url` and
+`--allow-host`. Nothing in the file is resolved: credentials come back through the ordinary
+resolution path, and a stored `<redacted:env:NAME>` is dropped rather than read, so an edited entry
+cannot name a variable for talaria to fetch. Where the request goes comes from `--base-url`, the
+profile or the spec — never from the stored URL — and an entry recorded against a host outside the
+currently allowed set is refused with exit 2 rather than silently retargeted. An entry whose
+operationId the spec no longer has, whose method disagrees with it, or whose path does not match
+the operation's template fails *that entry* the same way.
 
 Entries are written **redacted, at write time**. The store is the highest-risk artifact talaria
 produces, so un-redacted recording is not an option and there is no flag for it. It lives at

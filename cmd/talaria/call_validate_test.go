@@ -126,7 +126,7 @@ func TestCallFailOnErrorExitsFourOnAValidationFailure(t *testing.T) {
 
 	code, stdout, stderr := runCall(t,
 		"testdata/call_validate.yaml", "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--fail-on-error", "--output", "json")
+		"--base-url", srv.URL, allowHost(t, srv), "--fail-on-error", "--output", "json")
 	if code != 4 {
 		t.Fatalf("call --fail-on-error against a violation = %d, want 4; stderr: %s", code, stderr)
 	}
@@ -150,7 +150,7 @@ func TestCallFailOnErrorExitsFourOnAnHTTPError(t *testing.T) {
 
 	code, stdout, stderr := runCall(t,
 		"testdata/call_validate.yaml", "getPet", "--param", "petId=42",
-		"--base-url", srv.URL, "--fail-on-error", "--output", "json")
+		"--base-url", srv.URL, allowHost(t, srv), "--fail-on-error", "--output", "json")
 	if code != 4 {
 		t.Fatalf("call --fail-on-error against a 404 = %d, want 4; stderr: %s", code, stderr)
 	}
