@@ -481,6 +481,21 @@ matches the message `checkRedirect` writes, since the transport refuses `file://
 an error alone would prove nothing about the redirect policy. Neuter the implementation and watch
 the test go red before you believe it.
 
+**A test never orders itself with a sleep.** A sleep asserts about the scheduler, and this suite
+runs on a 4-vCPU box that has been OOM-killed twice. Signal one, so it is concrete: `run` calls
+`curl.SweepStale()` — an `os.ReadDir` over `TMPDIR` plus `os.RemoveAll` calls — *before*
+`signalContext()` installs the handler, so a `time.Sleep` before `Signal(os.Interrupt)` can land in
+that window, kill the child by default disposition, and fail with the message a real "the context
+does not reach the read" regression produces. Wait on something observable instead, and prefer the
+state the code under test is actually in over a proxy for it: `TestASecondSignalTerminatesTheProcess`
+has the child print `ready` and `awaitLine`s on it, and `TestSIGINTEndsACallWaitingOnStdin` — whose
+child is the real binary and cannot be made to announce anything — writes `stdinFill` (1 MiB) into
+the child's stdin and waits for the *write* to return, which it cannot until the reader has drained
+everything past the pipe's 64 KiB capacity. That proves the child is inside the `io.ReadAll`, which
+is strictly later than the handler being installed; nothing closes the write end, so the read still
+cannot end on its own. The child in `runSignalChild` sleeps for a different reason and stays — going
+deaf *is* its subject, and a bare channel receive would trip Go's deadlock detector and exit.
+
 ## Scope note
 
 `talaria run`, `internal/gen` and the JUnit report were removed on 2026-08-03 — see

@@ -180,8 +180,9 @@ func TestSIGINTEndsACallWaitingOnStdin(t *testing.T) {
 		"--dry-run", "--body", "-")
 	child.Env = append(os.Environ(), signalChildEnv+"=run")
 
-	// Held open for the lifetime of the test: the writer never writes and never
-	// closes, so the child's read can only end by being cancelled.
+	// Held open for the lifetime of the test: nothing ever closes the write end,
+	// so the child's read can only end by being cancelled. What is written to it
+	// is the readiness handshake below, not a body anything reads back.
 	stdin, hold, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
@@ -198,10 +199,16 @@ func TestSIGINTEndsACallWaitingOnStdin(t *testing.T) {
 	}
 	t.Cleanup(func() { child.Process.Kill() }) //nolint:errcheck // Already dead on the happy path.
 
-	// One signal, sent late enough that the handler is certainly installed —
-	// run installs it before it does anything else. A second one would prove
-	// nothing here: it kills by default, which is the other test's subject.
-	time.Sleep(500 * time.Millisecond)
+	// One signal, sent once the child is demonstrably inside the read it has to
+	// interrupt. That is strictly later than run installing the handler, and the
+	// window matters: run calls curl.SweepStale — an os.ReadDir over TMPDIR and
+	// os.RemoveAll calls — *before* signalContext, so a signal timed by a sleep
+	// can land while the default disposition is still in force. The child then
+	// dies of SIGINT and assertExitedWith reports the same failure a real "the
+	// context does not reach the stdin read" regression produces. A second signal
+	// would prove nothing here: it kills by default, which is the other test's
+	// subject.
+	awaitStdinDrain(t, hold)
 	if err := child.Process.Signal(os.Interrupt); err != nil {
 		t.Fatalf("SIGINT: %v", err)
 	}
@@ -222,6 +229,39 @@ func TestSIGINTEndsACallWaitingOnStdin(t *testing.T) {
 
 	if !strings.Contains(stderr.String(), "stdin") {
 		t.Errorf("stderr = %q, want it to name the stdin read that was cancelled", stderr.String())
+	}
+}
+
+// stdinFill is how much awaitStdinDrain writes into the child's stdin. It has
+// to exceed the pipe's capacity by enough that a completed write means bytes
+// were consumed rather than merely buffered: a Linux pipe holds 64 KiB by
+// default, a Darwin one at most that.
+const stdinFill = 1 << 20
+
+// awaitStdinDrain blocks until the child is inside the stdin read, and is the
+// synchronisation this test used to get from a 500ms sleep. A pipe write of
+// stdinFill bytes cannot return until the reader has taken everything past the
+// pipe's capacity, so a write that completed is proof the child reached
+// io.ReadAll — where a sleep only asserts about the scheduler, and on a loaded
+// box either flakes or signals a process that has not installed its handler
+// yet. Nothing closes the write end, so the read still cannot end on its own.
+func awaitStdinDrain(t *testing.T, w io.Writer) {
+	t.Helper()
+
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := w.Write(make([]byte, stdinFill))
+		wrote <- err
+	}()
+
+	select {
+	case err := <-wrote:
+		if err != nil {
+			t.Fatalf("writing %d bytes to the child's stdin: %v", stdinFill, err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the child consumed less than %d bytes of stdin in 10s: it never reached "+
+			"the --body - read this test signals", stdinFill)
 	}
 }
 
