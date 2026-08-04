@@ -236,10 +236,17 @@ entry. The check cannot live in `internal/config` — the charset rules are `int
 **A request body is redacted where it is displayed, and referenced where it was not typed.**
 `request.Body` carries its origin — `BodyArgv` (the zero value), `BodyFile` with `Path`, or
 `BodyStdin` — set by `binder.bodyData` from which branch of `--body` ran. Two consequences, and
-neither changes a byte on the wire. `curl.bodyDirective` (`internal/curl/render.go`) inlines
-only `BodyArgv` as `--data-raw`; the other two become `--data-binary @path` / `--data-binary @-`,
-because a body a human or a CI job wrote is not a body the agent reading stdout already has
-(§3 principle 0). `--data-binary`, not `--data`: `--data` strips newlines out of a file, and
+neither changes a byte on the wire. `curl.BodyReference(body)` (`internal/curl/render.go`) is the
+one place that spells a reference: `@path` for a file, `@-` for stdin, `ok` false for an argv
+body. `bodyDirective` asks it and writes `--data-binary` on a yes, `--data-raw` with the bytes on
+a no; `callPayload` asks the *same* function for `request.body` rather than branching on `Origin`
+itself, because a body a human or a CI job wrote is not a body the agent reading stdout already
+has (§3 principle 0) and DESIGN.md §3.4 binds that to every stdout surface, not only the curl
+field. Two branches on one enum is how two fields answer one question differently — `fileRef` is
+the concrete case, a body file named `-` being `@./-` in both places or in neither. `history
+replay` gets it for free: it hands the stored body over as stdin, so both fields say `@-` and the
+recorded bytes are `history show`'s to print, not the replay envelope's. Never re-derive the
+reference at a display site. `--data-binary`, not `--data`: `--data` strips newlines out of a file, and
 `TestThePreviewedCommandSendsWhatTheCallSends` fails on a pretty-printed body file if you change
 it. And `callPayload` builds *every* display field from `displayRequest(req, red)` — a copy of
 the request whose `Body.Data` has been through `redactors.Response.Body`, the same list history
@@ -250,7 +257,10 @@ redacting at each separately is how they drifted: the JSON field printed `<redac
 curl line beside it carried the live token, in the field §5a promises is *"useless to
 exfiltrate"*. It is a copy, not a mutation, because `req` is what the executor sends and what
 `recordCall` stores. `assertCurlInlinesTheShownBody` (`cmd/talaria/call_redact_test.go`) is the
-agreement between the two. Never assign `string(req.Body.Data)` to a field a caller reads, and
+agreement between the two for an argv body, and
+`TestTheShownBodyReferencesABodyTheCallerDidNotType` (`cmd/talaria/call_test.go`) is the agreement
+across all three origins — its canary is a `client_secret`, deliberately, since no built-in path
+covers that name and only the referencing rule keeps it off stdout. Never assign `string(req.Body.Data)` to a field a caller reads, and
 never hand `curl.Render` the unredacted `req`.
 
 The user-visible half of that is a *documented* one: `redact.body-paths` reaches the request body
@@ -577,6 +587,16 @@ never constructed, so a credential that reached a URL field encoded went unseen.
 `TestACanaryIsAlwaysDistinctFromItsPercentEncoding` is what keeps that true. The config directory
 is deliberately outside `h.written()`: it is an input the user wrote, and a case that plants a
 canary there would otherwise catch its own fixture.
+
+A case whose canary is in a *request body* names it `client_secret`, not `refresh_token`: the
+built-in path list rewrites the token names, so a canary under one of them was caught by the
+redactor and the gate could not see the class at all — every non-token secret in a body was
+unwatched from the day the case was written. `TestABodyFileSecretReachesNoOutputSurface` runs with
+`TALARIA_HISTORY=off` for the other half of the same honesty: the store keeps a request body
+verbatim so `history replay` can re-send it, and the caller's `redact.body-paths` is the only
+thing that rewrites a field the built-in list does not name, so a canary reaching `history.jsonl`
+there is a documented behaviour rather than a leak. Off, not unscanned — everything else under
+`h.written()`, the spec cache included, stays in the assertion.
 
 **A test for a size bound is written so that failing it costs nothing.** An unbounded generator —
 a reader that never returns EOF, a handler that writes forever — is the faithful adversary, but

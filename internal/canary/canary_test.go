@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/Teeeep/talaria/internal/canary"
+	"github.com/Teeeep/talaria/internal/corpus"
 )
 
 // specPath is the fixture declaring one security scheme per auth mechanism.
@@ -1199,14 +1200,30 @@ paths:
 // by a human or a CI job, not by the agent reading stdout, so it is exactly the
 // asymmetry §3 principle 0 forbids — and history was already redacting it while
 // stdout printed it whole.
+//
+// The canary is under client_secret, not refresh_token: the built-in path list
+// rewrites the token names, so a canary there was caught by the redactor and
+// this gate could not see the class at all. What keeps a client_secret off
+// stdout is the rule that a referenced body is named rather than shown, which
+// is the thing under test.
+//
+// Recording is off for the same reason it is on everywhere else. history.jsonl
+// stores the request body verbatim so `history replay` can re-send it, and the
+// only thing that rewrites a field the built-in list does not name is the
+// caller's own redact.body-paths — so a canary there would be this case finding
+// a documented behaviour rather than a leak. Off rather than unscanned: every
+// other file talaria writes, the spec cache included, stays under h.written().
 func TestABodyFileSecretReachesNoOutputSurface(t *testing.T) {
 	t.Parallel()
 
 	value := canary.Value("requestbody")
-	h := newHarness(t, map[string]string{"TALARIA_AUTH_BEARER": canary.Value("bodybearer")})
+	h := newHarness(t, map[string]string{
+		"TALARIA_AUTH_BEARER": canary.Value("bodybearer"),
+		corpus.EnvHistory:     "off",
+	})
 	srv := newServer(t, `{"ok":true}`)
 
-	sent := `{"refresh_token":"` + value + `"}`
+	sent := `{"client_secret":"` + value + `"}`
 	path := filepath.Join(t.TempDir(), "body.json")
 	if err := os.WriteFile(path, []byte(sent), 0o600); err != nil {
 		t.Fatalf("writing the body file: %v", err)

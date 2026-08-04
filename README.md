@@ -276,8 +276,12 @@ out as coming back. Two consequences worth knowing before you configure a path:
 - So the emitted curl is no longer a byte-for-byte reproduction of the call when a configured (or
   built-in) path matches the body you sent. It reproduces the *redacted* body, which is the same
   body the `request.body` field beside it shows — the two always agree with each other. A body
-  read from a file or stdin is referenced rather than inlined (`--data-binary @path`,
-  `--data-binary @-`), so there the command still reads the real bytes when you re-run it.
+  read from a file or stdin is referenced rather than inlined in *both* of them: the command gets
+  `--data-binary @path` / `--data-binary @-` and `request.body` gets the same `@path` / `@-`
+  string rather than the contents. So the command still reads the real bytes when you re-run it,
+  and nothing prints a body you did not type on the command line — which is why a secret in a body
+  file needs no `body-paths` entry to stay off stdout, and why one is still worth configuring for
+  the copy `history.jsonl` keeps so a replay can re-send it.
 
 ## Checking credentials without seeing them
 

@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -521,4 +523,114 @@ func TestCallStopsWhenTheProcessIsCancelled(t *testing.T) {
 	if rec := srv.received(); rec.Path != "" {
 		t.Errorf("server saw %s %s, want a cancelled call to have sent nothing", rec.Method, rec.Path)
 	}
+}
+
+// bodyOriginCanary stands for a secret in a body the agent reading stdout never
+// typed — a file a human or a CI job wrote, or bytes piped in. It is spelled
+// client_secret deliberately: no built-in redaction path covers that name, so
+// only the referenced-body rule can keep it off stdout.
+const bodyOriginCanary = "origin-secret-CANARY-4b91de"
+
+// TestTheShownBodyReferencesABodyTheCallerDidNotType is DESIGN.md §3.4 applied
+// to the field beside the emitted curl. request.body and request.curl are two
+// views of one body, so a body the reproduction only *names* must be named in
+// both: printing it in one of them hands the agent bytes it was never given,
+// which is the asymmetry §3 principle 0 forbids.
+func TestTheShownBodyReferencesABodyTheCallerDidNotType(t *testing.T) {
+	sent := `{"client_secret":"` + bodyOriginCanary + `"}`
+
+	file := filepath.Join(t.TempDir(), "body.json")
+	if err := os.WriteFile(file, []byte(sent), 0o600); err != nil {
+		t.Fatalf("writing the body file: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		flag string
+		// stdin says the case feeds the bytes on this process's standard input,
+		// which the binder — not curl — is the one that reads (§5a).
+		stdin bool
+		// body is the whole request.body field, and directive the substring of
+		// request.curl that must carry the same answer.
+		body      string
+		directive string
+		// inlined says request.body holds the bytes themselves, so the canary is
+		// expected on stdout rather than forbidden there.
+		inlined bool
+	}{
+		{
+			name:      "typed on the command line",
+			flag:      sent,
+			body:      sent,
+			directive: `--data-raw '` + sent + `'`,
+			inlined:   true,
+		},
+		{
+			name:      "read from a file",
+			flag:      "@" + file,
+			body:      "@" + file,
+			directive: `--data-binary '@` + file + `'`,
+		},
+		{
+			name:      "read from stdin",
+			flag:      "-",
+			stdin:     true,
+			body:      "@-",
+			directive: `--data-binary '@-'`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.stdin {
+				feedStdin(t, file)
+			}
+
+			srv := newCallServer(t, jsonPet)
+
+			code, stdout, stderr := runCall(t,
+				"testdata/call.yaml", "createPet", "--allow-mutations", "--body", tc.flag,
+				"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
+			if code != 0 {
+				t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
+			}
+
+			// The bytes reached the server. Without this the absence assertion
+			// below would pass for a talaria that sent no body at all.
+			if got := srv.received().Body; got != sent {
+				t.Fatalf("the server received %q, want the body's bytes %q", got, sent)
+			}
+
+			got := decodeCall(t, stdout)
+			if got.Request.Body != tc.body {
+				t.Errorf("request.body = %q, want %q", got.Request.Body, tc.body)
+			}
+			if !strings.Contains(got.Request.Curl, tc.directive) {
+				t.Errorf("request.curl = %s\nwant it to carry %s", got.Request.Curl, tc.directive)
+			}
+			if leaked := strings.Contains(stdout, bodyOriginCanary); leaked != tc.inlined {
+				t.Errorf("the canary is on stdout = %v, want %v:\n%s", leaked, tc.inlined, stdout)
+			}
+		})
+	}
+}
+
+// feedStdin points this process's standard input at path for the duration of
+// the test. `--body -` is read by the Go process rather than by curl, so the
+// only way to exercise that origin end to end is to give the process a real
+// stdin.
+func feedStdin(t *testing.T, path string) {
+	t.Helper()
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("opening the stdin fixture: %v", err)
+	}
+
+	saved := os.Stdin
+	os.Stdin = f
+	t.Cleanup(func() {
+		os.Stdin = saved
+		_ = f.Close()
+	})
 }

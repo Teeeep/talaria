@@ -159,13 +159,31 @@ func bodyArgs(req *request.Request) []string {
 // bytes than the call sent. TestThePreviewedCommandSendsWhatTheCallSends fails
 // on a pretty-printed body file if this is --data.
 func bodyDirective(body *request.Body) (flag, value string) {
+	if ref, ok := BodyReference(body); ok {
+		return "--data-binary", ref
+	}
+
+	return "--data-raw", string(body.Data)
+}
+
+// BodyReference is how a body the caller did not type is *named* rather than
+// shown: `@path` for a file, `@-` for stdin, and ok false for a body given as
+// the --body value, which the caller already holds.
+//
+// It is exported because the reproduction is not the only display surface the
+// rule reaches (DESIGN.md §3.4): the envelope's request.body field answers the
+// same question one field over, and callPayload asks here rather than branching
+// on Origin itself, so the two cannot come to disagree about which spelling a
+// referenced body has. fileRef is the whole reason that matters — a file named
+// `-` is `@./-` in both places or in neither.
+func BodyReference(body *request.Body) (ref string, ok bool) {
 	switch body.Origin {
 	case request.BodyFile:
-		return "--data-binary", "@" + fileRef(body.Path)
+		return "@" + fileRef(body.Path), true
 	case request.BodyStdin:
-		return "--data-binary", "@-"
+		return "@-", true
 	default:
-		return "--data-raw", string(body.Data)
+		return "", false
 	}
 }
 

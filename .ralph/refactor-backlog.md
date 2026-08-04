@@ -208,3 +208,10 @@ that pass — and task 6's before it — deliberately did not do, and why.
   cobra, where no test can reach it without a command tree. The seam is an `authReport(doc,
   index, prof, hosts)` in a package that owns the sequence and hands the command a payload plus
   a verdict; `hosts.go`'s `allowedHosts` is the precedent for lifting a step out of RunE.
+
+- `cmd/talaria/call_test.go` is 636 lines and holds two things: the shared test apparatus every
+  `call`-family file imports (`callExecJSON`, `newCallServer`/`recordedRequest`, `jsonPet`,
+  `decodeCall`, and now `feedStdin`) plus its own behaviour tests. The seam is the apparatus into
+  a `call_harness_test.go` — `call_redact_test.go`, `call_dryrun_test.go`, `history_replay_test.go`
+  and `hosts_test.go` all reach into it, so the file is really the package's fixture library with
+  tests appended. Same pass as the `call_redact_test.go` split recorded above.

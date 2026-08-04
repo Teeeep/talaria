@@ -123,7 +123,15 @@ func TestCallLeavesAnUnmatchedBodyExactlyAsItCame(t *testing.T) {
 // backwards.
 const bodyCanary = "file-refresh-CANARY-31d8ab"
 
+// TestCallRedactsASecretInARequestBodyReadFromAFile is the half of the file
+// case that outlived §3.4's referenced-body rule. The envelope stopped showing
+// a body it only names — that assertion is
+// TestTheShownBodyReferencesABodyTheCallerDidNotType — but history keeps the
+// bytes so a replay can re-send them, and that copy is the permanent artifact
+// §5a is strictest about.
 func TestCallRedactsASecretInARequestBodyReadFromAFile(t *testing.T) {
+	store := isolateHistory(t)
+
 	sent := `{"refresh_token":"` + bodyCanary + `"}`
 	path := filepath.Join(t.TempDir(), "body.json")
 	if err := os.WriteFile(path, []byte(sent), 0o600); err != nil {
@@ -150,14 +158,34 @@ func TestCallRedactsASecretInARequestBodyReadFromAFile(t *testing.T) {
 		t.Fatalf("call printed a secret out of the request body file:\n%s", stdout)
 	}
 
+	recorded, err := os.ReadFile(store)
+	if err != nil {
+		t.Fatalf("reading the history store: %v", err)
+	}
+	if strings.Contains(string(recorded), bodyCanary) {
+		t.Fatalf("history stored a secret out of the request body file:\n%s", recorded)
+	}
+	// The store kept the entry, redacted — an empty file would pass the check
+	// above for a call that recorded nothing at all.
+	var entry struct {
+		Request struct {
+			Body struct {
+				Data string `json:"data"`
+			} `json:"body"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(recorded, &entry); err != nil {
+		t.Fatalf("the stored line is not an entry: %v", err)
+	}
+
 	var body struct {
 		RefreshToken string `json:"refresh_token"`
 	}
-	if err := json.Unmarshal([]byte(decodeCall(t, stdout).Request.Body), &body); err != nil {
-		t.Fatalf("request.body is not JSON: %v", err)
+	if err := json.Unmarshal([]byte(entry.Request.Body.Data), &body); err != nil {
+		t.Fatalf("the stored request body is not JSON: %v", err)
 	}
 	if body.RefreshToken != "<redacted>" {
-		t.Errorf("request.body.refresh_token = %q, want <redacted>", body.RefreshToken)
+		t.Errorf("history request body refresh_token = %q, want <redacted>", body.RefreshToken)
 	}
 }
 
@@ -360,24 +388,23 @@ func TestCallStillShowsABodyTheCallerTyped(t *testing.T) {
 // content looks like the placeholder. Redaction rewrites the displayed copy and
 // nothing else, so a second pass over an already-redacted value has to leave it
 // alone and the wire has to carry the literal text the caller wrote.
+// The body is typed rather than read from a file: a referenced body is not
+// shown at all (§3.4), so only the inlining origin can answer what a second
+// pass over an already-redacted value does.
 func TestCallSendsABodyThatAlreadyReadsAsRedacted(t *testing.T) {
 	sent := `{"refresh_token":"<redacted>"}`
-	path := filepath.Join(t.TempDir(), "body.json")
-	if err := os.WriteFile(path, []byte(sent), 0o600); err != nil {
-		t.Fatalf("writing the body file: %v", err)
-	}
 
 	srv := newCallServer(t, jsonPet)
 
 	code, stdout, stderr := runCall(t,
-		"testdata/call.yaml", "createPet", "--allow-mutations", "--body", "@"+path,
+		"testdata/call.yaml", "createPet", "--allow-mutations", "--body", sent,
 		"--base-url", srv.URL, "--allow-host", "127.0.0.1", "--output", "json")
 	if code != 0 {
 		t.Fatalf("call = %d, want 0; stderr: %s", code, stderr)
 	}
 
 	if got := srv.received().Body; got != sent {
-		t.Errorf("the server received %q, want the file's bytes %q", got, sent)
+		t.Errorf("the server received %q, want the typed bytes %q", got, sent)
 	}
 
 	var body struct {

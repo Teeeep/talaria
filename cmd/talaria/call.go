@@ -432,7 +432,17 @@ func callPayload(
 		},
 	}
 	if shown.Body != nil {
-		view.Request.Body = string(shown.Body.Data)
+		// The same rule the emitted curl follows, one field over: a body read
+		// from a file or from stdin is named, never shown (§3.4). The bytes came
+		// from a human or a CI job, so printing them hands the agent reading
+		// stdout a document it was never given — §3 principle 0 — and a
+		// client_secret in one is under no redaction path by default. curl's own
+		// answer, so the two fields cannot disagree about the spelling.
+		ref, referenced := curl.BodyReference(shown.Body)
+		view.Request.Body = ref
+		if !referenced {
+			view.Request.Body = string(shown.Body.Data)
+		}
 	}
 	view.CredentialsWithheld = req.Withheld
 

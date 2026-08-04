@@ -513,3 +513,41 @@ func TestHistoryReplaySendsAStoredBodyVerbatim(t *testing.T) {
 // `history show` prints the entry for a human to read. A base64 body is not
 // text, and printing its stored form as if it were the body would be a lie
 // about what was sent.
+
+// TestHistoryReplayReferencesTheStoredBodyRatherThanShowingIt is §3.4's
+// referenced-body rule on the command that has no binder. A replay hands the
+// stored bytes to the builder as stdin, so both display fields name `@-` — and
+// they must, for a stronger reason than `call` has: the bytes came out of a
+// file on disk that every other talaria on the machine appends to, which is the
+// definition of a body the agent reading stdout did not type.
+func TestHistoryReplayReferencesTheStoredBodyRatherThanShowingIt(t *testing.T) {
+	isolateHistory(t)
+	srv := newCallServer(t, jsonPet)
+
+	stored := `{"client_secret":"` + bodyOriginCanary + `"}`
+	entry := seedEntry(corpus.SourceCall, time.Minute, "createPet", "POST", srv.URL+"/pets", 0)
+	entry.Request.Body = &corpus.Body{ContentType: "application/json", Data: stored}
+	seedHistory(t, entry)
+
+	code, stdout, stderr := runReplay(t, srv, "1", "--allow-mutations")
+	if code != 0 {
+		t.Fatalf("history replay = %d, want 0; stderr: %s", code, stderr)
+	}
+
+	// The stored bytes went back on the wire. The assertions below say nothing
+	// about a replay that sent an empty body.
+	if got := srv.received().Body; got != stored {
+		t.Fatalf("the server received %q, want the stored bytes %q", got, stored)
+	}
+
+	got := decodeCall(t, stdout)
+	if got.Request.Body != "@-" {
+		t.Errorf("request.body = %q, want the stdin reference @-", got.Request.Body)
+	}
+	if !strings.Contains(got.Request.Curl, `--data-binary '@-'`) {
+		t.Errorf("request.curl = %s\nwant it to reference stdin", got.Request.Curl)
+	}
+	if strings.Contains(stdout, bodyOriginCanary) {
+		t.Fatalf("replay printed a secret out of the stored body:\n%s", stdout)
+	}
+}

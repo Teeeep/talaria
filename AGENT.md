@@ -209,9 +209,17 @@ too, so if the body you sent carried one of the JSON paths being redacted — th
 the `--data-raw` in that command shows `<redacted>` where the call sent the real value. The wire
 was unaffected; only the display is. The `request.body` field of the envelope shows the same
 redacted body, so the two never disagree: if you need to reason about what was sent, read either,
-and do not assume you can re-run the command to reproduce the result exactly. A body you passed
-with `--body @file` or `--body -` is referenced rather than inlined (`--data-binary @path`), so
-there the command still reads the real bytes.
+and do not assume you can re-run the command to reproduce the result exactly.
+
+A body you passed with `--body @file` or `--body -` is *referenced* rather than inlined, in both
+fields: the command carries `--data-binary '@/path/to/file'` or `--data-binary '@-'`, and
+`request.body` carries the same `@/path/to/file` or `@-` string instead of the bytes. So a
+`request.body` beginning with `@` is a reference, not a body — the contents are whatever that file
+or that stdin held, which talaria will not print back to you because you did not hand them to it
+(a body file written by a human or a CI job routinely holds a `client_secret`, which no redaction
+path covers by default). The command still reads the real bytes when you re-run it. `history
+replay` references its stored body the same way, as `@-`; `talaria history show <n>` is where the
+recorded body is displayed.
 
 One thing redaction cannot fix: an API key that belongs in the *query string* travels in the URL
 and lands in server access logs. talaria warns once on stderr. Report the warning; it is a

@@ -264,12 +264,19 @@ Supports Swagger 2.0 and OpenAPI 3.0/3.1/3.2, JSON and YAML (§5).
   "request": {
     "curl": "curl -q -s -H \"Authorization: Bearer $TALARIA_AUTH_BEARER\" 'https://…'",
     "method": "GET", "url": "…",
-    "headers": { "Authorization": "<redacted:env:TALARIA_AUTH_BEARER>" }
+    "headers": { "Authorization": "<redacted:env:TALARIA_AUTH_BEARER>" },
+    "body": "@/path/to/body.json"
   },
   "response": { "status": 200, "headers": {}, "body": {}, "timing_ms": 143 },
   "validation": { "status_documented": true, "body_valid": true, "errors": [] }
 }
 ```
+
+`request.body` is present only when the call had one, and it is the same answer `request.curl`
+gives one field over (§3.4): the bytes for a body typed into argv, redacted; `"@/path"` or `"@-"`
+for a body read from a file or from stdin. A value beginning with `@` is therefore a reference,
+never a body — and a body is never a reference, because an argv body is inlined whatever it looks
+like.
 
 ### Exit codes
 
