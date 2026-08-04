@@ -90,6 +90,7 @@ keep cycling, and a malformed severity line means a real bug gets silently skipp
 - **Reviewer:** <reviewer name>
 - **Severity:** CRIT
 - **Blocked-by:** none
+- **Introduced-by:** `none`, or `task N` / a commit sha
 - **Repeat-of:** none
 - **File:** path/to/file.ext:42
 - **Description:** What is wrong and why it matters.
@@ -128,6 +129,19 @@ same unwritten rule. Patching instances of a missing invariant is how a review l
 State the missing decision explicitly in the Description: *"DESIGN.md specifies X but never
 states Y; a fix must choose between Y1 and Y2."*
 
+### Introduced-by — did this branch create it?
+
+**The single most important field on a finding.** `git log` and `git blame` answer it; do not
+guess. Set `**Introduced-by:** task N` (or a commit sha) when the defect did not exist on the base
+branch and this branch's own work created it. Otherwise `none`.
+
+A fix that creates a critical is the failure mode that ended the previous attempt at this phase,
+at one to two per cycle, and no counter could see it because reviewers only ever said so in prose.
+The loop stops on this field, so an inaccurate one either hides the failure or halts a healthy run.
+
+It is independent of `Repeat-of`. A finding carried from the input review is `Introduced-by: none`
+even when its task has not run yet — that is the normal mid-phase case and it is not a regression.
+
 ### Repeat-of — did a previous fix fail?
 
 If `REVIEW_FINDINGS_PREV.md` exists, read it first. When a finding is the same defect as one a
@@ -161,5 +175,5 @@ git rm -f REVIEW_FINDINGS.md 2>/dev/null; git commit --allow-empty -m "review: c
 - Do not report on code outside the diff. Pre-existing problems are not this branch's findings.
 - Read `REVIEW_FINDINGS_PREV.md` before writing findings, if it exists, and set `Repeat-of`
   honestly. A defect that survived a fix is the single most important thing you can report.
-- Every finding carries `Blocked-by` and `Repeat-of`. `none` is a valid, common value for both;
+- Every finding carries `Blocked-by`, `Introduced-by` and `Repeat-of`. `none` is a valid, common value for both;
   omitting the field is not.

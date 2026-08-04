@@ -414,6 +414,20 @@ count_crits_with() {
 count_design_blocked_crits() { count_crits_with "Blocked-by" "design"; }
 count_repeat_crits()         { count_crits_with "Repeat-of"  "cycle"; }
 
+# CRITs this branch's own work created, as opposed to ones it has not reached yet.
+#
+# Repeat-of cannot answer that question. It reads "cycle 2 finding 1" for a
+# finding carried from the *input* review as well as for one that survived a fix
+# in this run, and during an unfinished phase the first is the normal case: at
+# arm B's first checkpoint, four of five CRITs were original findings whose tasks
+# were still queued, and the repeat gate escalated on them as "a fix failed".
+# That was a counter reading a field that does not mean what the gate assumed —
+# the same defect as the severity miscount it replaced.
+#
+# Introduced-by is the field that does answer it, and it is the one that matters:
+# a fix creating a critical is what actually broke arm A, at one to two per cycle.
+count_introduced_crits() { count_crits_with "Introduced-by" "task"; }
+
 # Everything the loop could not resolve on its own, in one file for the human.
 write_escalation() {
   local reason="$1" cycle="$2"
@@ -457,7 +471,7 @@ write_escalation() {
 # ── Phases ───────────────────────────────────────────────────────────────────
 
 phase_stack() {
-  banner "PHASE 1/5 — STACK DETECTION"
+  banner "PHASE 1/6 — STACK DETECTION"
   set_phase stack
   tracker_phase stack
   run_claude "$RALPH_DIR/PROMPT_stack.md" "stack" || true
@@ -495,7 +509,7 @@ phase_plan() {
 }
 
 phase_build() {
-  banner "PHASE 3/5 — BUILD"
+  banner "PHASE 3/6 — BUILD"
   set_phase build
   tracker_phase build
 
@@ -574,7 +588,7 @@ archive_review() {
 }
 
 phase_review() {
-  banner "PHASE 4/5 — REVIEW"
+  banner "PHASE 4/6 — REVIEW"
   set_phase review
   tracker_phase review
 
@@ -624,16 +638,17 @@ phase_review() {
       return 1
     fi
 
-    local findings crits blocked repeats blocked_crits repeat_crits
+    local findings crits blocked repeats blocked_crits repeat_crits introduced_crits
     findings=$(count_findings)
     crits=$(count_crits)
     blocked=$(count_design_blocked)
     repeats=$(count_repeats)
     blocked_crits=$(count_design_blocked_crits)
     repeat_crits=$(count_repeat_crits)
+    introduced_crits=$(count_introduced_crits)
     echo "$crits" >> "$RALPH_DIR/review_history"
     log "Findings: $findings total, $crits CRIT ($blocked design-blocked, $repeats repeat)"
-    log "Of the CRITs: $blocked_crits design-blocked, $repeat_crits repeat"
+    log "Of the CRITs: $blocked_crits design-blocked, $repeat_crits repeat, $introduced_crits self-inflicted"
     archive_review "$cycle"
 
     # ── Guardrails: stop rather than spin ────────────────────────────────────
@@ -649,10 +664,16 @@ phase_review() {
       push_changes; unset RALPH_REVIEW_CYCLE; return 5
     fi
 
-    if [ "$repeat_crits" -gt 0 ]; then
-      log "$repeat_crits CRIT finding(s) survived a previous fix — the approach is not working."
-      write_escalation "$repeat_crits CRIT finding(s) repeat after a failed fix" "$cycle"
+    if [ "$introduced_crits" -gt 0 ]; then
+      log "$introduced_crits CRIT finding(s) were introduced by this branch's own fixes."
+      write_escalation "$introduced_crits CRIT finding(s) created by the fixes themselves" "$cycle"
       push_changes; unset RALPH_REVIEW_CYCLE; return 5
+    fi
+
+    # A repeat is no longer grounds to stop. Mid-phase it usually means "this
+    # finding's task has not run yet", which is the plan working, not failing.
+    if [ "$repeat_crits" -gt 0 ]; then
+      log "Note: $repeat_crits CRIT finding(s) carry Repeat-of — check they are queued, not stalled."
     fi
 
     # Non-CRIT versions of the two conditions above: worth saying out loud every
