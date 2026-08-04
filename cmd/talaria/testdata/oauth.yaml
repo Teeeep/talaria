@@ -1,0 +1,30 @@
+openapi: 3.0.3
+info:
+  title: OAuth-only Fixture
+  version: 1.0.0
+servers:
+  # Deliberately unroutable: the tests that do not pass --base-url are dry runs
+  # and pre-flight checks, so anything that reached the network is a bug.
+  - url: https://api.invalid/v1
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.invalid/token
+          scopes:
+            "pets:read": read pets
+# The only scheme in the file, and required for every operation: talaria cannot
+# run the flow, so the spec is unusable unless the caller brings a token.
+security:
+  - oauth2:
+      - "pets:read"
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      responses:
+        "200":
+          description: Pets

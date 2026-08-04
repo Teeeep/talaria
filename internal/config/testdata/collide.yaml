@@ -1,0 +1,28 @@
+openapi: 3.0.3
+info:
+  title: Colliding scheme names
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /either:
+    get:
+      operationId: getEither
+      security:
+        - key-a: []
+        - key.a: []
+      responses:
+        "200":
+          description: OK
+components:
+  securitySchemes:
+    # Two distinct names that envSuffix flattens onto the same variable,
+    # TALARIA_AUTH_APIKEY_KEY_A. One export would silently answer for both.
+    key-a:
+      type: apiKey
+      in: header
+      name: X-A
+    key.a:
+      type: apiKey
+      in: header
+      name: X-Dot-A

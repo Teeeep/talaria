@@ -88,7 +88,7 @@ func TestAuthCheckReportsPresenceInTheDocumentedShape(t *testing.T) {
 
 	// The §4 sketch, character for character: an agent prompt keys off these
 	// three fields, and the source is the *name* an agent asks a human to set.
-	want := `{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","present":true}`
+	want := `{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","supported":true,"present":true}`
 	if got := string(got.Schemes[0]); got != want {
 		t.Errorf("scheme entry =\n %s\nwant\n %s", got, want)
 	}
@@ -110,7 +110,7 @@ func TestAuthCheckExitsFiveWhenTheCredentialIsMissing(t *testing.T) {
 		t.Fatalf("reported %d schemes, want 1:\n%s", len(got.Schemes), stdout)
 	}
 
-	want := `{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","present":false}`
+	want := `{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","supported":true,"present":false}`
 	if got := string(got.Schemes[0]); got != want {
 		t.Errorf("scheme entry =\n %s\nwant\n %s", got, want)
 	}
@@ -268,12 +268,118 @@ func TestAuthCheckAndCallPickTheSameAlternative(t *testing.T) {
 	}
 }
 
+// A scheme talaria cannot run the flow for used to be dropped from the report
+// entirely, so `auth check` printed `{"schemes":[]}` and exited 0 on a spec
+// `call` refuses. §5: unsupported, not invisible.
+func TestAuthCheckReportsAnUnsupportedSchemeAndExitsFive(t *testing.T) {
+	isolateAuthEnv(t)
+
+	code, stdout, stderr := runAuth(t, "testdata/oauth.yaml", "--output", "json")
+	if code != int(clierr.CodeCredentialMissing) {
+		t.Fatalf("auth check = %d, want 5 for an oauth2-only spec with no token; stderr: %s", code, stderr)
+	}
+
+	got := decodeAuth(t, stdout)
+	if len(got.Schemes) != 1 {
+		t.Fatalf("reported %d schemes, want 1:\n%s", len(got.Schemes), stdout)
+	}
+
+	want := `{"scheme":"oauth2","source":"env:TALARIA_AUTH_BEARER","supported":false,"present":false}`
+	if got := string(got.Schemes[0]); got != want {
+		t.Errorf("scheme entry =\n %s\nwant\n %s", got, want)
+	}
+
+	// The report says the scheme exists; the error says what to do about it.
+	if err := decodeErr(t, stderr); !strings.Contains(err.Error.Message, "$"+config.EnvBearer) ||
+		!strings.Contains(err.Error.Message, "oauth2") {
+		t.Errorf("error = %q, want it to name oauth2 and $%s", err.Error.Message, config.EnvBearer)
+	}
+}
+
+// The bring-your-own-token clause, through both doors at once: the pre-flight
+// and the call have to reach the same verdict from the same token.
+func TestAuthCheckAndCallAcceptATokenForAnUnsupportedScheme(t *testing.T) {
+	isolateAuthEnv(t)
+	t.Setenv(config.EnvBearer, authCanary)
+
+	code, stdout, stderr := runAuth(t, "testdata/oauth.yaml", "--output", "json")
+	if code != 0 {
+		t.Fatalf("auth check = %d, want 0 with a token exported; stderr: %s", code, stderr)
+	}
+	if entry := decodeAuthEntries(t, stdout)["oauth2"]; !entry.Present || entry.Supported {
+		t.Errorf("oauth2 entry = %+v, want present and unsupported", entry)
+	}
+
+	srv := newCallServer(t, jsonPet)
+
+	var out, errOut strings.Builder
+	code = run([]string{
+		"call", "testdata/oauth.yaml", "listPets",
+		"--base-url", srv.URL, allowHost(t, srv), "--output", "json",
+	}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("call = %d, want 0 with a token exported; stderr: %s", code, errOut.String())
+	}
+
+	// The real value went on the wire; only the reference came back out.
+	if got, want := srv.received().Header.Get("Authorization"), "Bearer "+authCanary; got != want {
+		t.Errorf("the server saw Authorization %q, want %q", got, want)
+	}
+	if strings.Contains(out.String(), authCanary) {
+		t.Errorf("call leaked the token on stdout:\n%s", out.String())
+	}
+}
+
+// Without a token there is nothing to preview either: the spec names no
+// variable for an oauth2 scheme, so emitting a curl with one would invent a
+// credential the spec never described.
+func TestCallRefusesAnUnsupportedSchemeWithNoToken(t *testing.T) {
+	isolateAuthEnv(t)
+
+	var out, errOut strings.Builder
+	code := run([]string{
+		"call", "testdata/oauth.yaml", "listPets", "--dry-run", "--output", "json",
+	}, &out, &errOut)
+
+	if code != int(clierr.CodeCredentialMissing) {
+		t.Fatalf("call --dry-run = %d, want 5; stdout: %s stderr: %s", code, out.String(), errOut.String())
+	}
+	if err := decodeErr(t, errOut.String()); !strings.Contains(err.Error.Message, "oauth2") ||
+		!strings.Contains(err.Error.Message, "$"+config.EnvBearer) {
+		t.Errorf("error = %q, want it to name oauth2 and $%s", err.Error.Message, config.EnvBearer)
+	}
+}
+
+// A requirement naming a scheme components.securitySchemes never declares is a
+// broken spec, not a missing credential: exit 5 would send an agent to export a
+// variable that cannot exist. Both doors have to say so.
+func TestAnUndeclaredSchemeIsAUsageErrorInBothDoors(t *testing.T) {
+	isolateAuthEnv(t)
+
+	code, stdout, stderr := runAuth(t, "testdata/undeclared.yaml", "--output", "json")
+	if code != int(clierr.CodeUsage) {
+		t.Fatalf("auth check = %d, want 2; stdout: %s stderr: %s", code, stdout, stderr)
+	}
+	if err := decodeErr(t, stderr); !strings.Contains(err.Error.Message, "ghostKey") {
+		t.Errorf("error = %q, want it to name ghostKey", err.Error.Message)
+	}
+
+	var out, errOut strings.Builder
+	code = run([]string{
+		"call", "testdata/undeclared.yaml", "listPets", "--dry-run", "--output", "json",
+	}, &out, &errOut)
+	if code != int(clierr.CodeUsage) {
+		t.Fatalf("call --dry-run = %d, want 2; stderr: %s", code, errOut.String())
+	}
+}
+
 // authEntry is one decoded scheme report, for the tests that look at fields
 // rather than at the exact document.
 type authEntry struct {
-	Scheme  string `json:"scheme"`
-	Source  string `json:"source"`
-	Present bool   `json:"present"`
+	Scheme    string `json:"scheme"`
+	Source    string `json:"source"`
+	Supported bool   `json:"supported"`
+	Present   bool   `json:"present"`
 }
 
 func decodeAuthEntries(t *testing.T, stdout string) map[string]authEntry {
@@ -343,7 +449,7 @@ func TestAuthCheckIsUnchangedForAnOnSpecHost(t *testing.T) {
 	isolateAuthEnv(t)
 	t.Setenv(config.EnvBearer, authCanary)
 
-	const want = `{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","present":true}`
+	const want = `{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","supported":true,"present":true}`
 	for _, args := range [][]string{
 		{"testdata/auth.yaml", "--output", "json"},
 		{"testdata/auth.yaml", "--base-url", "https://api.invalid/v1", "--output", "json"},

@@ -30,16 +30,16 @@
       "title": "Report unsupported security schemes instead of hiding them",
       "depends_on": [],
       "line_start": 376,
-      "line_end": 462,
-      "done": false
+      "line_end": 482,
+      "done": true
     },
     {
       "id": 4,
       "section": "4",
       "title": "Refuse a spec-supplied media type that would inject headers",
       "depends_on": [],
-      "line_start": 466,
-      "line_end": 533,
+      "line_start": 486,
+      "line_end": 553,
       "done": false
     },
     {
@@ -47,8 +47,8 @@
       "section": "5",
       "title": "Stop printing a secret-bearing request body, and reference it in the emitted curl",
       "depends_on": [],
-      "line_start": 537,
-      "line_end": 615,
+      "line_start": 557,
+      "line_end": 635,
       "done": false
     },
     {
@@ -58,8 +58,8 @@
       "depends_on": [
         5
       ],
-      "line_start": 619,
-      "line_end": 652,
+      "line_start": 639,
+      "line_end": 672,
       "done": false
     },
     {
@@ -67,8 +67,8 @@
       "section": "7",
       "title": "Bound every read of untrusted input \u2014 the remote spec and the history file",
       "depends_on": [],
-      "line_start": 656,
-      "line_end": 787,
+      "line_start": 676,
+      "line_end": 807,
       "done": false
     },
     {
@@ -76,8 +76,8 @@
       "section": "8",
       "title": "Zero the config document that actually held the credential",
       "depends_on": [],
-      "line_start": 791,
-      "line_end": 848,
+      "line_start": 811,
+      "line_end": 868,
       "done": false
     },
     {
@@ -85,8 +85,8 @@
       "section": "9",
       "title": "Cut `internal/corpus`'s dependency on `internal/curl`, and guard it",
       "depends_on": [],
-      "line_start": 852,
-      "line_end": 908,
+      "line_start": 872,
+      "line_end": 928,
       "done": false
     },
     {
@@ -97,8 +97,8 @@
         2,
         3
       ],
-      "line_start": 912,
-      "line_end": 1000,
+      "line_start": 932,
+      "line_end": 1020,
       "done": false
     },
     {
@@ -108,8 +108,8 @@
       "depends_on": [
         10
       ],
-      "line_start": 1004,
-      "line_end": 1021,
+      "line_start": 1024,
+      "line_end": 1041,
       "done": false
     },
     {
@@ -117,8 +117,8 @@
       "section": "12",
       "title": "Make `--output tsv` structurally valid",
       "depends_on": [],
-      "line_start": 1025,
-      "line_end": 1087,
+      "line_start": 1045,
+      "line_end": 1107,
       "done": false
     },
     {
@@ -126,8 +126,8 @@
       "section": "13",
       "title": "Stop curl prompting on a TTY, and bound the version preflight",
       "depends_on": [],
-      "line_start": 1091,
-      "line_end": 1156,
+      "line_start": 1111,
+      "line_end": 1176,
       "done": false
     },
     {
@@ -135,8 +135,8 @@
       "section": "14",
       "title": "Make Ctrl-C and SIGTERM work",
       "depends_on": [],
-      "line_start": 1160,
-      "line_end": 1237,
+      "line_start": 1180,
+      "line_end": 1257,
       "done": false
     },
     {
@@ -144,8 +144,8 @@
       "section": "15",
       "title": "Stop the tool lying about history",
       "depends_on": [],
-      "line_start": 1241,
-      "line_end": 1335,
+      "line_start": 1261,
+      "line_end": 1355,
       "done": false
     },
     {
@@ -155,8 +155,8 @@
       "depends_on": [
         14
       ],
-      "line_start": 1339,
-      "line_end": 1435,
+      "line_start": 1359,
+      "line_end": 1455,
       "done": false
     },
     {
@@ -166,8 +166,8 @@
       "depends_on": [
         16
       ],
-      "line_start": 1439,
-      "line_end": 1460,
+      "line_start": 1459,
+      "line_end": 1480,
       "done": false
     },
     {
@@ -177,8 +177,8 @@
       "depends_on": [
         17
       ],
-      "line_start": 1464,
-      "line_end": 1536,
+      "line_start": 1484,
+      "line_end": 1556,
       "done": false
     },
     {
@@ -190,8 +190,8 @@
         14,
         15
       ],
-      "line_start": 1540,
-      "line_end": 1595,
+      "line_start": 1560,
+      "line_end": 1615,
       "done": false
     },
     {
@@ -201,8 +201,8 @@
       "depends_on": [
         19
       ],
-      "line_start": 1599,
-      "line_end": 1655,
+      "line_start": 1619,
+      "line_end": 1675,
       "done": false
     },
     {
@@ -212,7 +212,7 @@
       "depends_on": [
         20
       ],
-      "line_start": 1659,
+      "line_start": 1679,
       "line_end": 1708,
       "done": false
     }

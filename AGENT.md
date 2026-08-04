@@ -124,11 +124,18 @@ declares onto an environment variable, and carries the name:
 
 ```sh
 talaria auth check ./openapi.yaml
-{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","present":true}
+{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","supported":true,"present":true}
+{"scheme":"oauth2","source":"env:TALARIA_AUTH_BEARER","supported":false,"present":false}
 ```
 
 `present` is a lookup; the value is never read. A profile can redirect a scheme to a different
 variable, and `auth check` reports whichever one is actually in force.
+
+`supported: false` is a scheme talaria cannot run the flow for — `oauth2`, `openIdConnect`,
+`mutualTLS`, an `apiKey` in a place a request has no room for. It is reported, not hidden, and
+it still exits 5 while unset. The `source` is where to put a token the human obtained by running
+the flow themselves; ask for that, exactly as you would for any other missing credential. Do not
+try to run the flow.
 
 **When a credential is missing** (exit 5, or `present: false`), the fix is one sentence to a
 human — name the variable and stop:

@@ -1,0 +1,17 @@
+openapi: 3.0.3
+info:
+  title: Undeclared Scheme Fixture
+  version: 1.0.0
+servers:
+  - url: https://api.invalid/v1
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      # components.securitySchemes declares nothing, so no exported variable
+      # could ever satisfy this: the spec itself is broken.
+      security:
+        - ghostKey: []
+      responses:
+        "200":
+          description: Pets

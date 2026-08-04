@@ -461,6 +461,26 @@ scheme's report is unchanged) as the guard that you did not move the supported p
 worthless to an agent."* Three §5 clauses break at once today, and the exit-code contract that
 agents branch on is wrong for the one case it exists to serve.
 
+**Built as (2026-08-04), where it differs from the sketch above:**
+- *Both* gates opened, not one. Green step 2 said "open exactly one of `Schemes` or
+  `supportedCredentials`", but red test 2 requires `call` to put the token on the wire, which
+  only `supportedCredentials` can do, and gating the two differently is the drift §5 forbids.
+  `supportedCredentials` is now `declaredCredentials` and both build the same set.
+- The terminal error in `Resolve` splits by cause. A *declared* scheme with no token is exit 5
+  (`CredentialMissing`, naming `$TALARIA_AUTH_BEARER`); a requirement naming a scheme
+  `components.securitySchemes` never declares stays exit **2**, because no variable would fix a
+  broken spec. `Covers` now reads "absent from the credential map" as exactly that case.
+- `cmd/talaria/auth.go`'s `satisfied` had to change with it: `Unsupported` used to be skipped,
+  which is *how* an oauth2-only spec exited 0. It now blocks, and `unsatisfied` grew the exit-2
+  branch for undeclared schemes so `auth check` reaches the same verdict `call` does.
+- The env-var collision (adversarial 1) is **reported**, not tolerated: `checkEnvCollisions`
+  refuses two apiKey schemes reading one conventional variable with exit 2. It only looks at
+  conventional refs — a profile entry pointing two schemes at one variable is a deliberate choice.
+- The `call` tests live in `cmd/talaria/auth_test.go` beside their siblings rather than in
+  `call_test.go`; new fixtures are `cmd/talaria/testdata/oauth.yaml` and `undeclared.yaml`.
+- Deleted the `%s` case from `TestResolveNeverCarriesACredentialValue`: `Credential` now holds a
+  bool, so vet and staticcheck both reject `%s` on it, and `%v` covers the same fields.
+
 ---
 
 ### Task 4: Refuse a spec-supplied media type that would inject headers

@@ -61,35 +61,35 @@ func TestResolveMapsSchemesToConventionalEnvVars(t *testing.T) {
 			id: "getBearer",
 			want: Credential{
 				Scheme: "bearerAuth", Kind: KindBearer, In: InHeader, Name: "Authorization",
-				Ref: secret.Env("TALARIA_AUTH_BEARER"),
+				Ref: secret.Env("TALARIA_AUTH_BEARER"), Supported: true,
 			},
 		},
 		{
 			id: "getBasic",
 			want: Credential{
 				Scheme: "basicAuth", Kind: KindBasic, In: InHeader, Name: "Authorization",
-				Ref: secret.Env("TALARIA_AUTH_BASIC"),
+				Ref: secret.Env("TALARIA_AUTH_BASIC"), Supported: true,
 			},
 		},
 		{
 			id: "getHeaderKey",
 			want: Credential{
 				Scheme: "petKey", Kind: KindAPIKey, In: InHeader, Name: "X-Pet-Key",
-				Ref: secret.Env("TALARIA_AUTH_APIKEY_PETKEY"),
+				Ref: secret.Env("TALARIA_AUTH_APIKEY_PETKEY"), Supported: true,
 			},
 		},
 		{
 			id: "getQueryKey",
 			want: Credential{
 				Scheme: "queryKey", Kind: KindAPIKey, In: InQuery, Name: "api_key",
-				Ref: secret.Env("TALARIA_AUTH_APIKEY_QUERYKEY"),
+				Ref: secret.Env("TALARIA_AUTH_APIKEY_QUERYKEY"), Supported: true,
 			},
 		},
 		{
 			id: "getCookieKey",
 			want: Credential{
 				Scheme: "cookieKey", Kind: KindAPIKey, In: InCookie, Name: "session",
-				Ref: secret.Env("TALARIA_AUTH_APIKEY_COOKIEKEY"),
+				Ref: secret.Env("TALARIA_AUTH_APIKEY_COOKIEKEY"), Supported: true,
 			},
 		},
 	}
@@ -123,8 +123,11 @@ func TestResolveReturnsEverySchemeOfARequirement(t *testing.T) {
 }
 
 func TestResolveSkipsRequirementsItCannotSatisfy(t *testing.T) {
-	// The operation offers oauth2 first and bearer second. OAuth flows are out
-	// of v1 scope, so the second alternative is the one to use.
+	// The operation offers oauth2 first and bearer second. With no token to
+	// bring, talaria cannot run the OAuth flow, so the second alternative is the
+	// one whose variable an agent can be told to export.
+	t.Setenv(EnvBearer, "")
+
 	creds := resolveFixture(t, "getOAuthOrBearer", nil)
 
 	if len(creds) != 1 || creds[0].Scheme != "bearerAuth" {
@@ -139,13 +142,14 @@ const (
 	envKeyB = EnvAPIKeyPrefix + "KEYB"
 )
 
-// isolateKeys unsets both alternatives' variables, so each test states exactly
-// which credentials exist and a developer's own environment cannot decide the
-// answer for it.
+// isolateKeys unsets every variable the agreement cases read, so each test
+// states exactly which credentials exist and a developer's own environment
+// cannot decide the answer for it.
 func isolateKeys(t *testing.T) {
 	t.Helper()
 	t.Setenv(envKeyA, "")
 	t.Setenv(envKeyB, "")
+	t.Setenv(EnvBearer, "")
 }
 
 func TestResolvePrefersTheAlternativeWhoseCredentialIsSet(t *testing.T) {
@@ -186,12 +190,20 @@ func TestResolveAgreesWithTheCoverageAuthCheckReports(t *testing.T) {
 	// the pre-flight blesses a call that then fails, or refuses one that works.
 	tests := []struct {
 		name string
+		op   string
 		set  []string
+		want bool
 	}{
-		{name: "neither"},
-		{name: "first", set: []string{envKeyA}},
-		{name: "second", set: []string{envKeyB}},
-		{name: "both", set: []string{envKeyA, envKeyB}},
+		{name: "neither", op: "getEitherKey"},
+		{name: "first", op: "getEitherKey", set: []string{envKeyA}, want: true},
+		{name: "second", op: "getEitherKey", set: []string{envKeyB}, want: true},
+		{name: "both", op: "getEitherKey", set: []string{envKeyA, envKeyB}, want: true},
+		// The arrangement they used to disagree on outright: `auth check` reported
+		// no schemes at all and exited 0, and `call` refused the same spec.
+		{name: "unsupported alone", op: "getOAuthOnly"},
+		{name: "unsupported with a token", op: "getOAuthOnly", set: []string{EnvBearer}, want: true},
+		{name: "unsupported beside a supported one", op: "getOAuthOrBearer"},
+		{name: "either satisfied by one token", op: "getOAuthOrBearer", set: []string{EnvBearer}, want: true},
 	}
 
 	for _, tt := range tests {
@@ -201,7 +213,7 @@ func TestResolveAgreesWithTheCoverageAuthCheckReports(t *testing.T) {
 				t.Setenv(name, canary)
 			}
 
-			op, doc := fixtureOp(t, "getEitherKey")
+			op, doc := fixtureOp(t, tt.op)
 
 			declared, err := Schemes(doc, nil)
 			if err != nil {
@@ -220,9 +232,10 @@ func TestResolveAgreesWithTheCoverageAuthCheckReports(t *testing.T) {
 				}
 			}
 
-			// `call`'s verdict: every credential Resolve chose is set.
-			creds := resolveFixture(t, "getEitherKey", nil)
-			resolved := true
+			// `call`'s verdict: Resolve succeeded and every credential it chose is
+			// set. A refusal is as much a verdict as a credential is.
+			creds, err := Resolve(op, doc, nil)
+			resolved := err == nil
 			for _, cred := range creds {
 				if !cred.Present() {
 					resolved = false
@@ -230,27 +243,176 @@ func TestResolveAgreesWithTheCoverageAuthCheckReports(t *testing.T) {
 			}
 
 			if checked != resolved {
-				t.Fatalf("auth check says satisfied=%v, but Resolve chose %+v (satisfied=%v)",
-					checked, creds, resolved)
+				t.Fatalf("auth check says satisfied=%v, but Resolve gave %+v, %v (satisfied=%v)",
+					checked, creds, err, resolved)
 			}
-			if want := len(tt.set) > 0; checked != want {
-				t.Fatalf("satisfied = %v with %v exported, want %v", checked, tt.set, want)
+			if checked != tt.want {
+				t.Fatalf("satisfied = %v with %v exported, want %v", checked, tt.set, tt.want)
 			}
 		})
 	}
 }
 
-func TestResolveReportsWhenNoRequirementIsSupported(t *testing.T) {
+// A scheme talaria cannot run the flow for is unsupported, not invisible
+// (DESIGN.md §5). With no token to substitute the operation is unsatisfiable,
+// and the error has to say which variable would make it satisfiable — exit 2
+// sends an agent looking for a mistake in its own invocation.
+func TestResolveReportsAnUnsupportedSchemeAsAMissingCredential(t *testing.T) {
+	t.Setenv(EnvBearer, "")
+
 	op, doc := fixtureOp(t, "getOAuthOnly")
 
 	_, err := Resolve(op, doc, nil)
 	if err == nil {
-		t.Fatal("Resolve(getOAuthOnly) succeeded; oauth2 is out of v1 scope and must be reported")
+		t.Fatal("Resolve(getOAuthOnly) succeeded; oauth2 has no credential and must be reported")
 	}
 
 	var cerr *clierr.Error
-	if !errors.As(err, &cerr) || cerr.Code != clierr.CodeUsage {
-		t.Fatalf("Resolve(getOAuthOnly) error = %v (code %v), want a usage error (2)", err, clierr.From(err).Code)
+	if !errors.As(err, &cerr) || cerr.Code != clierr.CodeCredentialMissing {
+		t.Fatalf("Resolve(getOAuthOnly) error = %v (code %v), want a credential-missing error (5)",
+			err, clierr.From(err).Code)
+	}
+	for _, want := range []string{"oauth2", EnvBearer} {
+		if !strings.Contains(cerr.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", cerr, want)
+		}
+	}
+}
+
+// The bring-your-own-token clause: the user obtained the token however the flow
+// demands, and talaria carries it.
+func TestResolveSatisfiesAnUnsupportedSchemeWithABearerToken(t *testing.T) {
+	t.Setenv(EnvBearer, canary)
+
+	creds := resolveFixture(t, "getOAuthOnly", nil)
+
+	want := Credential{
+		Scheme: "oauth2", Kind: KindBearer, In: InHeader, Name: "Authorization",
+		Ref: secret.Env(EnvBearer), Supported: false,
+	}
+	if len(creds) != 1 || !reflect.DeepEqual(creds[0], want) {
+		t.Fatalf("Resolve(getOAuthOnly) = %+v, want %+v", creds, want)
+	}
+	if !creds[0].Present() {
+		t.Error("the token is exported but the credential reports absent")
+	}
+}
+
+// Every kind of unsupported scheme behaves the same way, whether the type is
+// out of scope or an apiKey names a place a request does not have.
+func TestUnsupportedSchemeKindsAllBehaveAlike(t *testing.T) {
+	for _, tc := range []struct{ id, scheme string }{
+		{"getOAuthOnly", "oauth2"},
+		{"getOIDCOnly", "openIdConnect"},
+		{"getMutualTLSOnly", "mutualTLS"},
+		{"getBodyKeyOnly", "bodyKey"},
+	} {
+		t.Run(tc.scheme, func(t *testing.T) {
+			op, doc := fixtureOp(t, tc.id)
+
+			t.Setenv(EnvBearer, "")
+			if _, err := Resolve(op, doc, nil); clierr.From(err).Code != clierr.CodeCredentialMissing {
+				t.Fatalf("Resolve(%s) with no token = %v, want a credential-missing error (5)", tc.id, err)
+			}
+
+			t.Setenv(EnvBearer, canary)
+			creds, err := Resolve(op, doc, nil)
+			if err != nil {
+				t.Fatalf("Resolve(%s) with a token: %v", tc.id, err)
+			}
+			if len(creds) != 1 || creds[0].Scheme != tc.scheme || creds[0].Supported || !creds[0].Present() {
+				t.Fatalf("Resolve(%s) = %+v, want the %s scheme carried by the token", tc.id, creds, tc.scheme)
+			}
+		})
+	}
+}
+
+// Schemes answers "which credentials does this spec ask for at all", which is
+// the question `auth check` reports on. A scheme it leaves out is one a caller
+// cannot discover exists.
+func TestSchemesReportsUnsupportedSchemesRatherThanHidingThem(t *testing.T) {
+	_, doc := fixtureOp(t, "getBearer")
+
+	declared, err := Schemes(doc, nil)
+	if err != nil {
+		t.Fatalf("Schemes: %v", err)
+	}
+
+	byName := map[string]Credential{}
+	for _, cred := range declared {
+		byName[cred.Scheme] = cred
+	}
+
+	for _, name := range []string{"oauth2", "openIdConnect", "mutualTLS", "bodyKey"} {
+		cred, ok := byName[name]
+		switch {
+		case !ok:
+			t.Errorf("Schemes left out %s; an unsupported scheme is reported, not hidden", name)
+		case cred.Supported:
+			t.Errorf("%s reported as supported", name)
+		case cred.Ref != secret.Env(EnvBearer):
+			t.Errorf("%s source = %v, want %v: it is the variable a caller can act on",
+				name, cred.Ref, secret.Env(EnvBearer))
+		}
+	}
+
+	// The guard that the supported path did not move with it.
+	if cred := byName["bearerAuth"]; !cred.Supported || cred.Ref != secret.Env(EnvBearer) {
+		t.Errorf("bearerAuth = %+v, want supported with its conventional variable", cred)
+	}
+}
+
+// A requirement naming a scheme the document never declares is a broken spec,
+// not a missing credential: no variable would fix it, so exit 5 would send an
+// agent to export something that cannot help.
+func TestResolveReportsARequirementNamingAnUndeclaredScheme(t *testing.T) {
+	t.Setenv(EnvBearer, canary)
+
+	op, doc := fixtureOp(t, "getUndeclared")
+
+	_, err := Resolve(op, doc, nil)
+	if err == nil {
+		t.Fatal("Resolve(getUndeclared) succeeded; ghostKey is not declared anywhere")
+	}
+	if code := clierr.From(err).Code; code != clierr.CodeUsage {
+		t.Fatalf("error code = %d, want %d for a spec that names an undeclared scheme", code, clierr.CodeUsage)
+	}
+	if !strings.Contains(err.Error(), "ghostKey") {
+		t.Errorf("error = %q, want it to name the undeclared scheme", err)
+	}
+}
+
+// envSuffix flattens every rune outside [A-Z0-9] to _, so `key-a` and `key.a`
+// both read TALARIA_AUTH_APIKEY_KEY_A. Silently letting one export answer for
+// two different schemes sends a credential somewhere its owner never named.
+func TestCollidingSchemeNamesAreReportedRatherThanSharingOneVariable(t *testing.T) {
+	doc, err := spec.LoadFile(filepath.Join("testdata", "collide.yaml"))
+	if err != nil {
+		t.Fatalf("LoadFile(collide.yaml): %v", err)
+	}
+
+	var op operation.Operation
+	for _, candidate := range operation.Extract(doc) {
+		if candidate.ID == "getEither" {
+			op = candidate
+		}
+	}
+
+	for name, err := range map[string]error{
+		"Schemes": func() error { _, err := Schemes(doc, nil); return err }(),
+		"Resolve": func() error { _, err := Resolve(op, doc, nil); return err }(),
+	} {
+		if err == nil {
+			t.Fatalf("%s accepted two schemes sharing one environment variable", name)
+		}
+		if code := clierr.From(err).Code; code != clierr.CodeUsage {
+			t.Errorf("%s error code = %d, want %d", name, code, clierr.CodeUsage)
+		}
+		for _, want := range []string{"key-a", "key.a", EnvAPIKeyPrefix + "KEY_A"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s error = %q, want it to name %q", name, err, want)
+			}
+		}
 	}
 }
 
@@ -270,12 +432,14 @@ func TestResolveNeverCarriesACredentialValue(t *testing.T) {
 		t.Fatalf("Marshal(creds): %v", err)
 	}
 
+	// %s used to be here too. Credential now holds a bool, so vet and
+	// staticcheck both reject %s on it: no code that lints can reach that
+	// rendering, and %v covers the same fields through the same Ref.
 	for name, rendering := range map[string]string{
 		"json": string(body),
 		"%v":   fmt.Sprintf("%v", creds),
 		"%+v":  fmt.Sprintf("%+v", creds),
 		"%#v":  fmt.Sprintf("%#v", creds),
-		"%s":   fmt.Sprintf("%s", creds),
 	} {
 		if strings.Contains(rendering, canary) {
 			t.Errorf("%s rendering of a credential leaked the value: %s", name, rendering)

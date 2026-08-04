@@ -84,6 +84,40 @@ paths:
       responses:
         "200":
           description: OK
+  /oidc-only:
+    get:
+      operationId: getOIDCOnly
+      security:
+        - openIdConnect: []
+      responses:
+        "200":
+          description: OK
+  /mtls-only:
+    get:
+      operationId: getMutualTLSOnly
+      security:
+        - mutualTLS: []
+      responses:
+        "200":
+          description: OK
+  /body-key-only:
+    get:
+      operationId: getBodyKeyOnly
+      security:
+        - bodyKey: []
+      responses:
+        "200":
+          description: OK
+  /undeclared:
+    get:
+      operationId: getUndeclared
+      # The requirement names a scheme components.securitySchemes does not
+      # declare: a broken spec, not a missing credential.
+      security:
+        - ghostKey: []
+      responses:
+        "200":
+          description: OK
   /open:
     get:
       operationId: getOpen
@@ -127,3 +161,14 @@ components:
           tokenUrl: https://api.example.com/token
           scopes:
             "pets:read": read pets
+    openIdConnect:
+      type: openIdConnect
+      openIdConnectUrl: https://api.example.com/.well-known/openid-configuration
+    mutualTLS:
+      type: mutualTLS
+    # An API key in a place a request does not have. Unsupported for a
+    # different reason from oauth2, and it must behave the same way.
+    bodyKey:
+      type: apiKey
+      in: body
+      name: api_key

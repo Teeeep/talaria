@@ -162,13 +162,24 @@ environment variable by convention, and carries the *name* from there on:
 | `type: http`, `scheme: basic` | `TALARIA_AUTH_BASIC` (as `user:password`) |
 | `type: apiKey`, named `petKey` | `TALARIA_AUTH_APIKEY_PETKEY` |
 
-API keys are supported in all three locations — `header`, `query` and `cookie`. OAuth2 and
-OpenID Connect flows are out of scope for v1: bring your own token and let a `bearer` scheme
-carry it. When a spec offers several alternative security requirements, talaria uses the first
-one it can supply *and* has every credential for, so a spec offering "OAuth2 or a bearer token"
-resolves to the bearer token, and one offering either of two API keys resolves to whichever key
-you exported. When no alternative is fully covered, the first supported one is named in the
-exit-5 error, so there is always a variable to go set.
+API keys are supported in all three locations — `header`, `query` and `cookie`. Running an
+OAuth2 or OpenID Connect *flow* is out of scope for v1, but such a scheme is **unsupported, not
+invisible**: it reads `TALARIA_AUTH_BEARER` too, so a token you obtained however the flow
+demands satisfies it and goes out as `Authorization: Bearer …`. With that variable unset the
+operation is unsatisfiable, and both `auth check` and `call` exit **5** naming the scheme and
+the variable — a spec talaria cannot call is never silently reported as fine. The same applies
+to `mutualTLS` and to an `apiKey` in a place a request does not have.
+
+Two API-key schemes whose names differ only outside `[A-Z0-9]` — `key-a` and `key.a` — would
+read the same `TALARIA_AUTH_APIKEY_KEY_A`. That is refused with exit 2 rather than letting one
+export answer for both; give one of them its own variable with a profile `auth:` entry.
+
+When a spec offers several alternative security requirements, talaria uses the first one it can
+supply *and* has every credential for, so a spec offering "OAuth2 or a bearer token" with only
+`TALARIA_AUTH_BEARER` set resolves to whichever it lists first — both carry the same token —
+and one offering either of two API keys resolves to whichever key you exported. When no
+alternative is fully covered, the first supported one is named in the exit-5 error, so there is
+always a variable to go set.
 
 For more than one environment, `~/.config/talaria/config.yaml` holds named profiles selected
 with `--profile`. `--profile` and `--base-url` are accepted by every command that makes
@@ -277,8 +288,13 @@ there? It reports every security scheme the spec declares, the variable it comes
 whether that variable is set — never what it is set to.
 
 ```json
-{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","present":true}
+{"scheme":"bearerAuth","source":"env:TALARIA_AUTH_BEARER","supported":true,"present":true}
+{"scheme":"oauth2","source":"env:TALARIA_AUTH_BEARER","supported":false,"present":false}
 ```
+
+`supported` is whether talaria resolves that scheme's *type*. `false` means you must obtain the
+token yourself before exporting the variable in `source`; the scheme is still reported, and
+still counted against the exit code.
 
 The source follows the same resolution `call` uses, so `--profile staging` reports the
 profile's variable (`env:STAGING_TOKEN`) rather than the convention's. Presence is tested with
@@ -287,10 +303,11 @@ a lookup; the value is never read.
 It exits **5** when an operation in the spec has no credential to authenticate it with, naming
 each scheme and the variable to export. Exit 5 is distinct from a usage error on purpose: it is
 the one failure whose fix is "ask a human to set `$NAME`" rather than "correct the invocation".
-An operation that accepts several alternatives is satisfied by any one of them, and schemes
-talaria cannot supply at all (OAuth2, OpenID Connect) are left out rather than reported missing.
-The report is printed either way — a code 5 with nothing to read would say what failed but not
-what to do.
+An operation that accepts several alternatives is satisfied by any one of them. A scheme whose
+type talaria cannot resolve (OAuth2, OpenID Connect) is reported with `"supported":false` and
+counted, not left out. A requirement naming a scheme `components.securitySchemes` never
+declares is exit **2** instead: the spec is broken, and no variable would fix it. The report is
+printed either way — a code 5 with nothing to read would say what failed but not what to do.
 
 ## Making a call
 

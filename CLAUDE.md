@@ -76,6 +76,14 @@ off-spec host **withholds** rather than refuses: the credential is left off, `Re
 carries the fact into the envelope as `credentials_withheld`, and one line goes to stderr. Both
 surfaces, every time.
 
+**Every scheme a spec declares yields a `config.Credential`**, including one whose type talaria
+cannot resolve. `Supported` marks the difference; an unsupported scheme points at
+`TALARIA_AUTH_BEARER`, so a token the human obtained satisfies it and `auth check` reports it
+instead of hiding it (DESIGN.md §5). `config.Covers` therefore reads "absent from the credential
+map" as "the document never declared this scheme" — a broken spec, exit 2 — while "declared but
+unset" is exit 5. `Schemes` and `Resolve` must keep building that map the same way or the
+pre-flight and the call disagree; `TestResolveAgreesWithTheCoverageAuthCheckReports` is the guard.
+
 A history entry is data, never instruction. `history replay` re-derives through the spec —
 operation, params and body from the entry; target host and credentials from the spec, the flags
 and the environment. Nothing stored is resolved, and a stored credential position is dropped, not

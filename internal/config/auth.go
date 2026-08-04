@@ -61,6 +61,11 @@ type Credential struct {
 	Name string `json:"name"`
 	// Ref names the credential. It marshals redacted, like everywhere else.
 	Ref secret.SecretRef `json:"source"`
+	// Supported reports whether talaria resolves this scheme's *type* — bearer,
+	// basic, or an apiKey somewhere a request has. A scheme it does not, such as
+	// oauth2, is still reported: Ref points at EnvBearer, and a caller who
+	// obtained a token out of band makes it satisfiable (§5 Auth).
+	Supported bool `json:"supported"`
 }
 
 // Present reports whether the credential this names is set, without reading it.
@@ -73,8 +78,9 @@ func (c Credential) Present() bool { return c.Ref.Present() }
 type Coverage int
 
 const (
-	// Unsupported means the requirement names a scheme talaria has no way to
-	// supply, such as OAuth2. There is no variable to report missing.
+	// Unsupported means the requirement is one talaria cannot put on the wire at
+	// all: it names a scheme the document does not declare, or one whose type is
+	// out of scope with no bring-your-own token exported to stand in for it.
 	Unsupported Coverage = iota
 	// Incomplete means talaria can supply every scheme the requirement names,
 	// but at least one credential is not set.
@@ -88,8 +94,9 @@ const (
 
 // Covers classifies one security requirement against byName, which maps a
 // scheme name to the credential that satisfies it — Schemes' result for a
-// document, or the map Resolve builds for an operation. A scheme missing from
-// byName is one talaria cannot supply, since both sources leave those out.
+// document, or the map Resolve builds for an operation. Both sources carry every
+// scheme the document declares, so a scheme missing from byName is one the
+// document never declared.
 //
 // This is the one rule behind both Resolve's choice of alternative and `auth
 // check`'s verdict. The two used to derive it separately, in separate packages,
@@ -110,7 +117,14 @@ func Covers(req operation.SecurityRequirement, byName map[string]Credential) Cov
 		switch {
 		case !ok:
 			return Unsupported
-		case !cred.Present():
+		case cred.Present():
+			// A token stands in for an unsupported scheme just as the
+			// conventional variable does for a supported one.
+		case !cred.Supported:
+			// Nothing to preview and nothing to send: the spec named no variable
+			// for this scheme, and the caller exported no token to stand in.
+			return Unsupported
+		default:
 			coverage = Incomplete
 		}
 	}
@@ -133,13 +147,14 @@ func Covers(req operation.SecurityRequirement, byName map[string]Credential) Cov
 func Resolve(op operation.Operation, doc *spec.Document, prof *Profile) ([]Credential, error) {
 	schemes := securitySchemes(doc)
 
-	byName, err := supportedCredentials(op, schemes, prof)
+	byName, err := declaredCredentials(op, schemes, prof)
 	if err != nil {
 		return nil, err
 	}
 
 	var (
 		unsupported []string
+		undeclared  bool
 		fallback    []Credential
 	)
 	for _, req := range op.Security {
@@ -147,7 +162,9 @@ func Resolve(op operation.Operation, doc *spec.Document, prof *Profile) ([]Crede
 		case Optional:
 			return nil, nil
 		case Unsupported:
-			unsupported = append(unsupported, unsupportedReason(req, schemes))
+			reason, missing := unsupportedReason(req, schemes)
+			unsupported = append(unsupported, reason)
+			undeclared = undeclared || missing
 		case Satisfied:
 			return credentials(req, byName), nil
 		case Incomplete:
@@ -162,61 +179,114 @@ func Resolve(op operation.Operation, doc *spec.Document, prof *Profile) ([]Crede
 		return fallback, nil
 	case len(unsupported) == 0:
 		return nil, nil
+	case undeclared:
+		// A scheme the document never declares is a broken spec. No variable
+		// would fix it, so exit 5 would send an agent to export something that
+		// cannot help.
+		return nil, clierr.Usage("no usable security scheme for %s: %s",
+			operationName(op), strings.Join(unsupported, "; "))
 	}
 
-	return nil, clierr.Usage("no usable security scheme for %s: %s",
+	// Exit 5 is the published contract for "credential missing for a required
+	// security scheme", and that is what this is: the reasons name the variable
+	// that would satisfy each alternative.
+	return nil, clierr.CredentialMissing("no usable security scheme for %s: %s",
 		operationName(op), strings.Join(unsupported, "; "))
 }
 
-// Schemes lists every security scheme the document declares that talaria can
-// satisfy, as the credential that would satisfy it, sorted by scheme name.
+// Schemes lists every security scheme the document declares, as the credential
+// that would satisfy it, sorted by scheme name.
 //
 // Resolve answers "which credentials does this call use". This answers "which
 // credentials does this spec ask for at all", which is the question `auth
-// check` reports on. Schemes talaria has no way to supply — OAuth2, OpenID
-// Connect, an API key in a place a request does not have — are left out: there
-// is no variable to tell a human to set, so there is nothing to report (§5).
+// check` reports on. A scheme talaria has no way to resolve — OAuth2, OpenID
+// Connect, an API key in a place a request does not have — is reported with
+// Supported false rather than left out: it points at EnvBearer, which is the
+// one thing a caller can do about it (§5).
 func Schemes(doc *spec.Document, prof *Profile) ([]Credential, error) {
 	declared := securitySchemes(doc)
 
 	names := make([]string, 0, len(declared))
-	for name, scheme := range declared {
-		if schemeReason(name, scheme) == "" {
-			names = append(names, name)
-		}
+	for name := range declared {
+		names = append(names, name)
 	}
 	// Sorted, because the map iteration behind it is not, and a report whose
 	// line order changes between runs is one no diff can be taken of.
 	sort.Strings(names)
 
 	out := make([]Credential, 0, len(names))
+	byName := make(map[string]Credential, len(names))
 	for _, name := range names {
 		cred, err := credentialFor(name, declared[name], prof)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, cred)
+		byName[name] = cred
+	}
+
+	if err := checkEnvCollisions(byName); err != nil {
+		return nil, err
 	}
 
 	return out, nil
 }
 
-// unsupportedReason returns why this requirement cannot be satisfied, or "" if
-// it can. A requirement's schemes apply together, so one unusable scheme makes
-// the whole alternative unusable.
-func unsupportedReason(req operation.SecurityRequirement, schemes map[string]*v3high.SecurityScheme) string {
+// unsupportedReason returns why this requirement cannot be satisfied, and
+// whether the cause is a scheme the document never declares — the one cause no
+// exported variable can fix. A requirement's schemes apply together, so one
+// unusable scheme makes the whole alternative unusable.
+func unsupportedReason(
+	req operation.SecurityRequirement,
+	schemes map[string]*v3high.SecurityScheme,
+) (reason string, undeclared bool) {
 	for _, want := range req.Schemes {
 		scheme, ok := schemes[want.Name]
 		if !ok {
-			return "scheme " + want.Name + " is not declared in components.securitySchemes"
+			return "scheme " + want.Name + " is not declared in components.securitySchemes", true
 		}
 
 		if reason := schemeReason(want.Name, scheme); reason != "" {
-			return reason
+			// The actionable half: talaria cannot run the flow, but it will carry
+			// a token the caller obtained by running it.
+			return reason + "; set $" + EnvBearer + " to a token for it", false
 		}
 	}
 
-	return ""
+	return "", false
+}
+
+// checkEnvCollisions reports two scheme names that read the same conventional
+// API-key variable. envSuffix flattens every rune outside [A-Z0-9] to _, so
+// `key-a` and `key.a` both read TALARIA_AUTH_APIKEY_KEY_A, and one export would
+// silently answer for a scheme its owner never named it for. A profile entry
+// points somewhere else and is the caller's own explicit choice, so it is not a
+// collision.
+func checkEnvCollisions(byName map[string]Credential) error {
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	first := map[string]string{}
+	for _, name := range names {
+		cred := byName[name]
+		conventional := EnvAPIKeyPrefix + envSuffix(name)
+		if cred.Kind != KindAPIKey || cred.Ref != secret.Env(conventional) {
+			continue
+		}
+
+		if other, ok := first[conventional]; ok {
+			return clierr.Usage(
+				"security schemes %q and %q both read $%s: "+
+					"give one of them its own variable with a profile auth entry",
+				other, name, conventional)
+		}
+		first[conventional] = name
+	}
+
+	return nil
 }
 
 // schemeReason returns why talaria cannot use one declared scheme, or "" if it
@@ -238,16 +308,18 @@ func schemeReason(name string, scheme *v3high.SecurityScheme) string {
 	}
 }
 
-// supportedCredentials builds the credential for every scheme op names that
-// talaria can actually supply, keyed by scheme name. Schemes it cannot supply
-// are left out, which is what Covers reads as an unsupported alternative.
+// declaredCredentials builds the credential for every scheme op names that the
+// document declares, keyed by scheme name. A scheme the document does not
+// declare is left out, which is what Covers reads as an unsupported
+// alternative; one whose type is out of scope is included, carrying EnvBearer
+// and marked unsupported, so `auth check` and Resolve see the same set.
 //
 // It is built for the whole operation rather than per alternative because the
 // choice between alternatives depends on which credentials are present, which
-// cannot be known before they are built. The only failure is a malformed
-// profile entry, which is fatal rather than a reason to try another
-// alternative: the user meant to configure this scheme and got it wrong.
-func supportedCredentials(
+// cannot be known before they are built. The failures — a malformed profile
+// entry, two schemes sharing one variable — are fatal rather than a reason to
+// try another alternative: the user meant to configure this and got it wrong.
+func declaredCredentials(
 	op operation.Operation,
 	schemes map[string]*v3high.SecurityScheme,
 	prof *Profile,
@@ -256,7 +328,7 @@ func supportedCredentials(
 	for _, req := range op.Security {
 		for _, want := range req.Schemes {
 			scheme, ok := schemes[want.Name]
-			if _, done := out[want.Name]; done || !ok || schemeReason(want.Name, scheme) != "" {
+			if _, done := out[want.Name]; done || !ok {
 				continue
 			}
 
@@ -267,6 +339,10 @@ func supportedCredentials(
 
 			out[want.Name] = cred
 		}
+	}
+
+	if err := checkEnvCollisions(out); err != nil {
+		return nil, err
 	}
 
 	return out, nil
@@ -283,11 +359,18 @@ func credentials(req operation.SecurityRequirement, byName map[string]Credential
 	return out
 }
 
-// credentialFor builds the Credential for one supported scheme: where the value
+// credentialFor builds the Credential for one declared scheme: where the value
 // goes on the request, and the name of the value that goes there.
+//
+// A scheme whose type is out of scope resolves to EnvBearer in an Authorization
+// header, marked unsupported. That is DESIGN.md §5's bring-your-own-token
+// clause: talaria cannot run the flow, but a token the caller obtained by
+// running it goes on the wire the same way any other bearer token does.
 func credentialFor(name string, scheme *v3high.SecurityScheme, prof *Profile) (Credential, error) {
-	cred := Credential{Scheme: name, In: InHeader, Name: "Authorization"}
+	cred := Credential{Scheme: name, In: InHeader, Name: "Authorization", Supported: true}
 	switch {
+	case schemeReason(name, scheme) != "":
+		cred.Kind, cred.Ref, cred.Supported = KindBearer, secret.Env(EnvBearer), false
 	case isHTTP(scheme, "bearer"):
 		cred.Kind, cred.Ref = KindBearer, secret.Env(EnvBearer)
 	case isHTTP(scheme, "basic"):

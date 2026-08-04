@@ -20,3 +20,8 @@ refactor pass drains them later.
   `internal/canary/canary_test.go:canaryHost` and `internal/e2e/e2e_test.go:hostOf` — four
   near-copies of "a test server's authority, for --allow-host", in three packages that cannot
   share a helper without a testing-support package. Third occurrence is the rule of three.
+- `internal/config/auth.go:1` — 513 lines and it is now three concerns: the Credential/Coverage
+  model, the resolution rules (`Resolve`, `Covers`, `Schemes`, `credentialFor`), and the
+  env-var/profile naming machinery (`envSuffix`, `envRef`, `profileRef`, `ReferencesEnv`,
+  `checkEnvCollisions`). The naming machinery is the clean seam: it has no dependency on
+  `operation` or `spec` and would test standalone as `internal/config/envnames.go`.
