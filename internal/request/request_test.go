@@ -1234,6 +1234,99 @@ func TestCredentialsAskTheHostSetTheURLTheRequestWillUse(t *testing.T) {
 	}
 }
 
+// An apiKey scheme's `name:` is spec-controlled text that becomes a header
+// name, a query name or a cookie name on the wire — the same class the media
+// type, the path template and the server variable each already gate, and the
+// one place it was still unchecked. The whole document is hostile here: the
+// name arrives through config.Resolve exactly as a fetched spec would deliver
+// it.
+func TestBuildRefusesACredentialWhoseSchemeNameWouldSplitTheRequest(t *testing.T) {
+	op, doc := fixture(t, "getInjectedHeader")
+
+	creds, err := config.Resolve(op, doc, nil)
+	if err != nil {
+		t.Fatalf("config.Resolve: %v", err)
+	}
+	if len(creds) == 0 {
+		t.Fatal("the fixture resolved no credentials, so this test proves nothing")
+	}
+
+	err = buildErr(t, Inputs{Op: op, Doc: doc, Creds: creds, Hosts: specHosts(t, doc)})
+	if !strings.Contains(err.Error(), "splitHeaderKey") {
+		t.Errorf("error %v does not name the scheme it refused", err)
+	}
+}
+
+// Every location, and the two charsets that go with them: a header name is an
+// HTTP field name, while a query or cookie name is an ordinary string that only
+// has to stay inside its own field. The rule is the one binder.located holds a
+// declared parameter to — a credential's name is no more trustworthy for having
+// come from components.securitySchemes.
+func TestCredentialNamesAreHeldToTheSameCharsetAsParameterNames(t *testing.T) {
+	cred := func(in, name string) config.Credential {
+		return config.Credential{
+			Scheme: "hostile", Kind: config.KindAPIKey, In: in, Name: name,
+			Ref: secret.Env("TALARIA_AUTH_APIKEY_HOSTILE"), Supported: true,
+		}
+	}
+
+	refused := []struct {
+		name string
+		cred config.Credential
+	}{
+		{"header carriage return", cred(config.InHeader, "X-Key\rX-Injected: yes")},
+		{"header newline", cred(config.InHeader, "X-Key\nX-Injected: yes")},
+		{"header colon", cred(config.InHeader, "X-Key: yes")},
+		{"header space", cred(config.InHeader, "X-Key yes")},
+		{"header empty", cred(config.InHeader, "")},
+		{"query newline", cred(config.InQuery, "api_key\r\nX-Injected: yes")},
+		{"cookie newline", cred(config.InCookie, "session\r\nX-Injected: yes")},
+	}
+
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			op, doc := fixture(t, "getSecured")
+
+			err := buildErr(t, Inputs{
+				Op: op, Doc: doc, Creds: []config.Credential{tc.cred},
+				Hosts: specHosts(t, doc),
+			})
+			if !strings.Contains(err.Error(), "hostile") {
+				t.Errorf("error %v does not name the scheme it refused", err)
+			}
+		})
+	}
+
+	// The other half. A query or cookie name is not a field name, so a rule
+	// borrowed from the header case would refuse names an API is free to spell.
+	for _, tc := range []struct {
+		name string
+		cred config.Credential
+	}{
+		{"header token", cred(config.InHeader, "X-Api-Key")},
+		{"query bracket", cred(config.InQuery, "filter[key]")},
+		{"cookie dot", cred(config.InCookie, "session.id")},
+	} {
+		t.Run("allowed "+tc.name, func(t *testing.T) {
+			op, doc := fixture(t, "getSecured")
+
+			req := build(t, Inputs{
+				Op: op, Doc: doc, Creds: []config.Credential{tc.cred},
+				Hosts: specHosts(t, doc),
+			})
+
+			for _, pairs := range [][]Pair{req.Headers, req.Query, req.Cookies} {
+				for _, p := range pairs {
+					if p.Name == tc.cred.Name && p.Value.IsSecret() {
+						return
+					}
+				}
+			}
+			t.Errorf("credential %q was not attached anywhere: %+v", tc.cred.Name, req)
+		})
+	}
+}
+
 // A `paths:` key is spec-controlled text that reaches the wire, and the spec is
 // untrusted. Refusing it where it is read turns a hostile document into an exit
 // 2 instead of a request nobody asked for.

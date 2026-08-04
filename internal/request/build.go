@@ -430,6 +430,10 @@ func (b *binder) credentials(req *Request) {
 	allowed := b.in.Hosts.Allows(target)
 
 	for _, cred := range b.in.Creds {
+		if !b.credentialName(cred) {
+			continue
+		}
+
 		if !allowed {
 			req.Withheld = append(req.Withheld, Withheld{
 				Scheme: cred.Scheme,
@@ -453,6 +457,38 @@ func (b *binder) credentials(req *Request) {
 				cred.Scheme, cred.In)
 		}
 	}
+}
+
+// credentialName reports whether the credential's name can go where its scheme
+// says it goes, failing the binding when it cannot.
+//
+// For an apiKey scheme the name is `components.securitySchemes.<x>.name` — a
+// string the spec supplies and this process puts on the wire as a header name,
+// a query name or a cookie name. That is the same class as a media type, a
+// `paths:` key and a server variable, each of which is gated where it is read;
+// this was the last member of it with no gate. A name carrying a colon renders
+// the malformed header `X-Key: yes: <credential>`, and one carrying a CR or LF
+// ends the line early and appends a header nobody wrote — with the credential
+// attached, since it is the credential's own header.
+//
+// The rule is exactly binder.located's, because the two names end up in the
+// same places: only a header name is an HTTP field name, while a query or
+// cookie name is an ordinary string an API is free to spell `filter[key]` and
+// only has to stay inside its own field. It is checked before the host set is
+// consulted, so a hostile document is exit 2 wherever the call was pointed.
+func (b *binder) credentialName(cred config.Credential) bool {
+	switch {
+	case cred.In == inHeader && !isFieldName(cred.Name):
+		b.fail("scheme %q sends its credential in header %q, which is not a valid HTTP header name",
+			cred.Scheme, cred.Name)
+		return false
+	case cred.In != inHeader && SplitsRequest(cred.Name, ""):
+		b.fail("scheme %q sends its credential in %s %q, whose name carries a carriage return or "+
+			"newline and would append a header the caller did not write", cred.Scheme, cred.In, cred.Name)
+		return false
+	}
+
+	return true
 }
 
 func encodingFor(kind config.Kind) Encoding {

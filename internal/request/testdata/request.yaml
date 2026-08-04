@@ -18,6 +18,10 @@ components:
       type: apiKey
       in: cookie
       name: session_id
+    splitHeaderKey:
+      type: apiKey
+      in: header
+      name: "X-Key\r\nX-Injected: yes"
 paths:
   /pets/{petId}:
     get:
@@ -79,6 +83,14 @@ paths:
         - bearerAuth: []
           queryKey: []
           cookieKey: []
+      responses:
+        '200':
+          description: ok
+  /injected:
+    get:
+      operationId: getInjectedHeader
+      security:
+        - splitHeaderKey: []
       responses:
         '200':
           description: ok

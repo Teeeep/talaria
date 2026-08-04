@@ -2347,6 +2347,15 @@ would refuse, so `auth check` exits 2 too, or add a row to
 say which in CLAUDE.md's agreement rule** — an undocumented deliberate disagreement is how the two
 drifted the first time.
 
+**Note from task 39 (landed):** there is now a *second* cell of the same shape, and it wants the
+same decision in the same commit. `binder.credentialName` refuses an `apiKey` scheme whose `name:`
+is not usable where the scheme sends it, so `call` exits 2 on such a spec; `auth check`'s exit code
+is `config.Unsatisfied` alone, and nothing in `internal/config` inspects that name's charset, so it
+still exits 0. The check cannot move into `config` — the charset rules live in `internal/request`,
+which imports `config` — so the two options are the same two as above: have `auth check` ask
+`request` about the scheme names as it already asks it about hosts, or record both cells as
+deliberate.
+
 **Verify:** `go test ./cmd/... ./internal/request/...`
 
 ---

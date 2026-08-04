@@ -218,6 +218,19 @@ binder. `bodyContentType` is the single seam both surfaces read: `document.body`
 `bodyArgs` drops the directive, so the executed document and the printed reproduction cannot
 disagree. Do not re-inline `req.Body.ContentType` at either call site.
 
+**A security scheme's `name:` is spec-controlled text on the wire too, and it was the last one
+without a gate.** `components.securitySchemes.<x>.name` becomes a header, query or cookie name on
+an `apiKey` credential — a colon in it renders the malformed header `X-Key: yes: <credential>`,
+a CR or LF appends a header nobody wrote, and both carry the credential, because it is the
+credential's own field. `binder.credentialName` (`internal/request/build.go`) is the gate, and its
+rule is deliberately `binder.located`'s rather than a new one: only a header name is an
+`isFieldName`, a query or cookie name may be anything that does not `SplitsRequest`, because an
+API is free to spell one `filter[key]`. It runs *before* the host set is consulted, so a hostile
+document is exit 2 wherever the call was pointed rather than exit 0 with a `credentials_withheld`
+entry. The check cannot live in `internal/config` — the charset rules are `internal/request`'s and
+`request` imports `config` — which is why `auth check` does not yet make it; task 40 owns that
+disagreement.
+
 **A request body is redacted where it is displayed, and referenced where it was not typed.**
 `request.Body` carries its origin — `BodyArgv` (the zero value), `BodyFile` with `Path`, or
 `BodyStdin` — set by `binder.bodyData` from which branch of `--body` ran. Two consequences, and

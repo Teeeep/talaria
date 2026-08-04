@@ -184,3 +184,18 @@ that pass — and task 6's before it — deliberately did not do, and why.
   describes; a `buffer.go` beside `firewall.go` would give it a file, and `config_test.go` (the
   shape of the document) already splits cleanly from `firewall_test.go` (the buffer) on the
   same line.
+
+- `internal/request/build.go:292`, `:336`, `:474` — third spelling of "is this name usable where
+  it is going": `located` checks a declared parameter's name (field name for a header, no CR/LF
+  otherwise), `headers` checks a profile header's name, and task 39's `credentialName` checks a
+  security scheme's. Rule of three. The seam is a predicate in `wire.go` —
+  `usableName(name, in string) bool` beside `isFieldName` — with each caller keeping its own
+  message, which is the part that actually differs (a `--param`, a profile entry and a scheme
+  each want naming differently). Not taken mid-task: it is three call sites in the file the task
+  was already editing, and folding them wants its own test that the two charsets stay two.
+
+- `internal/request/build.go` is 524 lines and holds the whole binder. The seam is the credential
+  half — `credentials`, `credentialName`, `encodingFor`, `WithheldOffSpec`, `Withheld` — into a
+  `credentials.go`, leaving parameter/path/header/query binding here. It is the same split
+  `hosts.go` already made for "where may a credential go"; this is "what does a credential look
+  like on the request". `request_test.go`'s recorded `build_test.go` seam splits on the same line.
