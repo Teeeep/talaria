@@ -708,10 +708,26 @@ phase_review() {
       push_changes; unset RALPH_REVIEW_CYCLE; return 5
     fi
 
+    # Self-inflicted CRITs are fixable — Blocked-by is none by definition, since
+    # the branch wrote the code. So one is work for the fix round, not a question
+    # for a human. What ended arm A was the rate never falling, so that is what
+    # this stops on: a count that did not improve on the previous cycle's.
+    #
+    # It also has to survive a noisy instrument. Four consecutive reviews of this
+    # branch returned 24, 26, 36 and 45 findings and 5, 8, 6 and 9 CRITs, and the
+    # last two ran against byte-identical product code. A gate that fires on any
+    # single occurrence is reading that noise.
+    echo "$introduced_crits" >> "$RALPH_DIR/introduced_history"
+    local prev_introduced
+    prev_introduced=$(sed -n "$((cycle - 1))p" "$RALPH_DIR/introduced_history" 2>/dev/null)
     if [ "$introduced_crits" -gt 0 ]; then
       log "$introduced_crits CRIT finding(s) were introduced by this branch's own fixes."
-      write_escalation "$introduced_crits CRIT finding(s) created by the fixes themselves" "$cycle"
-      push_changes; unset RALPH_REVIEW_CYCLE; return 5
+      if [ "$cycle" -gt 1 ] && [ -n "$prev_introduced" ] && [ "$introduced_crits" -ge "$prev_introduced" ]; then
+        log "That is no better than cycle $((cycle - 1))'s $prev_introduced — the fixes are not converging."
+        write_escalation "self-inflicted CRITs did not fall between cycles ($prev_introduced -> $introduced_crits)" "$cycle"
+        push_changes; unset RALPH_REVIEW_CYCLE; return 5
+      fi
+      log "Sending them to the fix round rather than to a human: nothing here needs a decision."
     fi
 
     # A repeat is no longer grounds to stop. Mid-phase it usually means "this
